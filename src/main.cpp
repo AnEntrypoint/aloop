@@ -12,6 +12,7 @@
 #include "host/lv2_host.h"
 #include "link/link_bridge.h"
 #include "control/telemetry.h"
+#include "control/midi.h"
 
 #include <sys/mman.h>
 #include <csignal>
@@ -19,6 +20,7 @@
 #include <cstring>
 #include <string>
 #include <atomic>
+#include <thread>
 #include <unistd.h>
 
 namespace {
@@ -75,6 +77,13 @@ int main(int argc, char** argv) {
     link.start((double)cfg.sampleRate, /*enabled=*/true);
     aloop::Telemetry telem;
     telem.start(/*udpPort=*/4445);
+
+    // MIDI control on its own thread (the control surface — the APC knobs/commands).
+    // It writes the shared param store; the audio thread reads it. Runs on the
+    // control core alongside Link. A missing controller is fine (params hold).
+    aloop::ParamStore params;
+    std::thread midiThread([&]{ aloop::runMidiLoop(params, "auto"); });
+    midiThread.detach();
 
     // Start the RT audio pipeline (opens the ALSA/f_uac2 PCM, spawns the pinned
     // SCHED_FIFO worker that runs DSP -> host.runBlock() -> PCM each block).

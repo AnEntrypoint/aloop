@@ -16,14 +16,11 @@
 #define ALOOP_HAVE_ALSA 1
 #endif
 
+#include "midi.h"
+
 namespace aloop {
 
-// The normalized param store the audio thread reads via the snapshot. Indices
-// match the dubfx param_mapping.md (HP/LP/res, reverb/delay/time, pitch semis/
-// formant/engaged, microrepeat div, thru/loop/mix). Single-writer (this thread).
-struct ParamStore {
-    std::atomic<float> value[32];   // normalized [0,1] or the mapped range
-};
+// ParamStore is declared in midi.h (shared with main.cpp, which spawns this loop).
 
 // Reproduce looper's CC→normalized mapping (param_mapping.md). The exact table:
 //   CC51→HP, CC54→LPres, CC55→LP, CC48→reverb, CC49→delay, CC50→time (all /127);
