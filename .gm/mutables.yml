@@ -13,3 +13,8 @@
   status: witnessed
   witness: gh api users/AnEntrypoint = Organization, lanmower authed (confirmed for dubfx); reconfirm create perms
   witness_evidence: 'dubfx CONFIRMED this exact flow: gh authed as lanmower, AnEntrypoint is an Organization lanmower can create private repos under (AnEntrypoint/dubfx created+pushed successfully this session). Same creds+org apply to AnEntrypoint/aloop. gh repo create AnEntrypoint/aloop --private --push will work.'
+- id: faust-loop-engine-feasible
+  question: Can the loop engine be pure Faust (rwtable record/play/loop)?
+  status: witnessed
+  witness: compile a minimal Faust rwtable looper
+  witness_evidence: 'WITNESSED: dsp/loop_min.dsp (rwtable record-into-ring-while-rec, loop-play at wrapping phase) compiled via native faust -lang cpp to build/loop_min.cpp (157 lines). The generated compute loop has the REAL logic: ftbl0[iTemp0]=rec*input0[i0] (WRITE input into ring gated by rec), output0[i0]=ftbl0[iTemp0] (READ ring back), iRec0 recursive phase counter. Same rwtable mechanism dubfx microrepeat proved for stutter, scaled to a looper. CONCLUSION: the loop engine CAN be Faust. The maintainability win is real.'

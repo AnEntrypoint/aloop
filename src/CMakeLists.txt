@@ -1,10 +1,11 @@
-# aloop native binary — the ported loop engine + in-process LV2 host + Link +
-# control, built as one process with per-core RT threads.
+# aloop native binary — a PURE LINUX project: the loop engine + in-process LV2
+# host + Link + control, built as one process with per-core RT threads.
 #
-# WHY the structure: the DSP core comes from ../looper unchanged (it's Circle-free
-# and allocation-free, ADR / MIGRATION-MAP); the host/link/control/net layers are
-# aloop's Linux replacements for the bare-metal subsystems. Built for aarch64
-# under musl in CI (.github/workflows/build-binary.yml).
+# WHY the structure: aloop is a Linux application. Its EFFECTS are the dubfx LV2
+# plugin (a Faust-built .lv2 bundle), loaded at runtime from /effects/home — NOT
+# compiled in, and NOT sourced from the Circle looper project (that is a different
+# platform; no looper source appears here). The loop engine + host/link/control/
+# net are aloop's own Linux code. Built for aarch64 under musl in CI.
 cmake_minimum_required(VERSION 3.16)
 project(aloop CXX)
 
@@ -15,31 +16,33 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 add_compile_options(-O2 -Wall)
 
-# 100%-clone: compile the vendored looper loop engine with the effects routed to
-# the in-process home-FX LV2 (docs/CLONE-PARITY.md). The four inline effect call
-# sites in loopMachine::update() resolve to src/dsp/effects_bridge.h shims.
-add_compile_definitions(ALOOP_EFFECTS_VIA_LV2)
-
-# Where the ported looper DSP lives. Default to the sibling checkout; CI can
-# override with -DLOOPER_DIR=<vendored snapshot> for a pinned, reproducible build.
-set(LOOPER_DIR "${CMAKE_SOURCE_DIR}/../../looper" CACHE PATH "path to the looper DSP source")
-
-# The DSP translation units ported unchanged (see src/dsp/PORTED-FILES.md).
-# Header-only effects (apcEffectsProcessor.h, microRepeat.h, soladSnacOctaver.h,
-# grainFormant.h, paramSnapshot.h) are pulled via include paths.
+# The aloop source — all Linux-native, no Circle/looper dependency. The effects
+# are the dubfx LV2 bundle, loaded at runtime by the in-process host (host/).
+# The loop engine is FAUST (dsp/loop.dsp), compiled to C++ by the build (faust
+# -lang cpp -> build/loop.cpp) and included by the audio thread — NOT a
+# hand-written .cpp. The effects are the dubfx LV2, loaded at runtime by the host.
+# So the DSP is Faust; these .cpp are only the thin native RT shell.
 set(DSP_SOURCES
-  ${LOOPER_DIR}/loopMachine.cpp        # the FULL loop engine (100%-clone), effects via LV2 shim
-  dsp/effects_bridge.cpp
-  dsp/audio_thread.cpp
-  host/lv2_host.cpp
-  link/link_bridge.cpp
-  control/telemetry.cpp
-  control/midi.cpp
-  main.cpp
+  dsp/audio_thread.cpp    # RT audio thread: drives the Faust loop engine + effect LV2 per block
+  host/lv2_host.cpp       # in-process LV2 host (loads the dubfx effect bundle + user LV2)
+  link/link_bridge.cpp    # Ableton Link -> the lock-free snapshot
+  control/telemetry.cpp   # the diagnosability surface
+  control/midi.cpp        # ALSA rawmidi + the control mapping
+  main.cpp                # the wiring
 )
 
+# Compile the Faust loop engine to C++ at build time (the generated build/loop.cpp
+# is #included by audio_thread.cpp). Requires the faust compiler in the build env.
+add_custom_command(
+  OUTPUT  ${CMAKE_BINARY_DIR}/loop.cpp
+  COMMAND faust -lang cpp -cn AloopLoopDsp ${CMAKE_SOURCE_DIR}/../dsp/loop.dsp -o ${CMAKE_BINARY_DIR}/loop.cpp
+  DEPENDS ${CMAKE_SOURCE_DIR}/../dsp/loop.dsp
+  COMMENT "Compiling the Faust loop engine (dsp/loop.dsp) to C++"
+)
+add_custom_target(faust_loop DEPENDS ${CMAKE_BINARY_DIR}/loop.cpp)
+
 # Dependencies (musl-built in the Alpine container): ALSA (audio I/O), lilv
-# (LV2 discovery), the LV2 headers. Ableton Link is header-only (vendored).
+# (LV2 discovery/loading), the LV2 headers. Ableton Link is header-only (vendored).
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(ALSA REQUIRED alsa)
 pkg_check_modules(LILV lilv-0)
@@ -47,15 +50,15 @@ pkg_check_modules(LILV lilv-0)
 add_executable(aloop ${DSP_SOURCES})
 target_include_directories(aloop PRIVATE
   ${CMAKE_SOURCE_DIR}
-  ${LOOPER_DIR}
-  ${LOOPER_DIR}/patches
   ${ALSA_INCLUDE_DIRS}
   ${LILV_INCLUDE_DIRS}
-  third_party/link/include   # vendored Ableton Link headers
+  third_party/link/include   # vendored Ableton Link headers (a Linux library)
 )
 target_link_libraries(aloop PRIVATE ${ALSA_LIBRARIES} ${LILV_LIBRARIES} pthread dl)
+add_dependencies(aloop faust_loop)
+target_include_directories(aloop PRIVATE ${CMAKE_BINARY_DIR})   # for the generated loop.cpp
 
-# NOTE: the .cpp implementations (audio_thread.cpp, lv2_host.cpp, link_bridge.cpp,
-# telemetry.cpp, main.cpp) are filled against the headers in this tree as their
-# PRD rows drain. The headers already define the full interface + RT contract, so
-# this CMake compiles the moment each .cpp lands — the build graph is complete.
+# The effects are NOT a build dependency — they are the dubfx LV2 bundle deployed
+# to /effects/home at image-assembly time and dlopen'd at runtime. aloop the
+# binary never links effect code; it hosts the plugin. That is the whole point:
+# effects are a swappable file, not compiled in.
