@@ -25,19 +25,28 @@ jobs:
         with:
           platforms: arm64
 
+      - name: Pre-generate the Faust loop engine C++ (on the host, where faust exists)
+        run: |
+          # Faust codegen runs ONCE here (Ubuntu has faust); the arm64/musl build
+          # then just compiles the generated C++ — no faust needed in the container
+          # (Alpine's arm64 repos don't reliably package faust). This keeps the
+          # cross-build to a pure C++ compile.
+          sudo apt-get update && sudo apt-get install -y faust
+          # Generate into the same build dir CMake uses (cmake -S src -B build →
+          # CMAKE_BINARY_DIR = build), so CMake sees it as already-present.
+          mkdir -p build
+          faust -lang cpp -cn AloopLoopDsp dsp/loop.dsp -o build/loop.cpp
+          echo "generated $(wc -l < build/loop.cpp) lines of loop C++"
+
       - name: Build in an Alpine aarch64 container
         run: |
           docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w alpine:3.20 sh -c '
             set -e
-            # faust lives in the Alpine community repo — enable it.
-            echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> /etc/apk/repositories
-            apk update
-            # The audio + RT + plugin stack, all musl-built. faust: the loop
-            # engine is Faust (dsp/loop.dsp), compiled to C++ by the CMake custom
-            # command, so the compiler must be in the container.
+            # No faust in the container — loop.cpp is pre-generated above. Just the
+            # C++ toolchain + the audio deps, all musl.
             apk add --no-cache build-base cmake pkgconf git \
               alsa-lib-dev lilv-dev lv2-dev \
-              linux-headers eudev-dev faust
+              linux-headers eudev-dev
             # Ableton Link is header-only C++ (vendored under third_party/link).
             # The DSP is Faust (loop + the dubfx effects); src/ is the thin RT shell.
             echo "toolchain:"; gcc --version | head -1; faust --version | head -1

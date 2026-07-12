@@ -31,15 +31,26 @@ set(DSP_SOURCES
   main.cpp                # the wiring
 )
 
-# Compile the Faust loop engine to C++ at build time (the generated build/loop.cpp
-# is #included by audio_thread.cpp). Requires the faust compiler in the build env.
-add_custom_command(
-  OUTPUT  ${CMAKE_BINARY_DIR}/loop.cpp
-  COMMAND faust -lang cpp -cn AloopLoopDsp ${CMAKE_SOURCE_DIR}/../dsp/loop.dsp -o ${CMAKE_BINARY_DIR}/loop.cpp
-  DEPENDS ${CMAKE_SOURCE_DIR}/../dsp/loop.dsp
-  COMMENT "Compiling the Faust loop engine (dsp/loop.dsp) to C++"
-)
-add_custom_target(faust_loop DEPENDS ${CMAKE_BINARY_DIR}/loop.cpp)
+# The Faust loop engine is compiled to C++ (loop.cpp) and #included by
+# audio_thread.cpp. CI pre-generates it (where faust exists) into
+# ${CMAKE_BINARY_DIR}/loop.cpp; if it is already there we use it, otherwise we
+# generate it here (local builds that have faust). Either way loop.cpp ends up in
+# the binary dir on the include path.
+if(NOT EXISTS ${CMAKE_BINARY_DIR}/loop.cpp)
+  find_program(FAUST_BIN faust)
+  if(FAUST_BIN)
+    add_custom_command(
+      OUTPUT  ${CMAKE_BINARY_DIR}/loop.cpp
+      COMMAND ${FAUST_BIN} -lang cpp -cn AloopLoopDsp ${CMAKE_SOURCE_DIR}/../dsp/loop.dsp -o ${CMAKE_BINARY_DIR}/loop.cpp
+      DEPENDS ${CMAKE_SOURCE_DIR}/../dsp/loop.dsp
+      COMMENT "Compiling the Faust loop engine (dsp/loop.dsp) to C++")
+    add_custom_target(faust_loop DEPENDS ${CMAKE_BINARY_DIR}/loop.cpp)
+  else()
+    message(FATAL_ERROR "loop.cpp not pre-generated and faust not found — pre-generate it or install faust")
+  endif()
+else()
+  add_custom_target(faust_loop)   # pre-generated; nothing to do
+endif()
 
 # Dependencies (musl-built in the Alpine container): ALSA (audio I/O), lilv
 # (LV2 discovery/loading), the LV2 headers.
