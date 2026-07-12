@@ -29,10 +29,13 @@ jobs:
         run: |
           docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w alpine:3.20 sh -c '
             set -e
+            # faust lives in the Alpine community repo — enable it.
+            echo "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" >> /etc/apk/repositories
+            apk update
             # The audio + RT + plugin stack, all musl-built. faust: the loop
             # engine is Faust (dsp/loop.dsp), compiled to C++ by the CMake custom
             # command, so the compiler must be in the container.
-            apk add --no-cache build-base cmake pkgconf \
+            apk add --no-cache build-base cmake pkgconf git \
               alsa-lib-dev lilv-dev lv2-dev \
               linux-headers eudev-dev faust
             # Ableton Link is header-only C++ (vendored under third_party/link).
