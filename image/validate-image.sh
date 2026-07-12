@@ -68,8 +68,22 @@ if [ -f "$OVLTMP/o.tar.gz" ]; then
     echo "$INV" | grep -q "$p" && ok "apkovl: $p" || bad "apkovl missing: $p"
   done
   # payload (binary + effects) — WARN not FAIL if absent (a layout-only build).
-  echo "$INV" | grep -q 'opt/aloop/aloop$' && ok "apkovl: aloop binary present" \
-    || echo "  WARN apkovl has NO aloop binary (layout-only build — set ALOOP_BIN)"
+  if echo "$INV" | grep -q 'opt/aloop/aloop$'; then
+    ok "apkovl: aloop binary present"
+    # Verify it is an aarch64 ELF (the Pi 4 target) — extract just that file + file(1).
+    ARCHTMP="$(mktemp -d)"
+    tar -xzf "$OVLTMP/o.tar.gz" -C "$ARCHTMP" opt/aloop/aloop 2>/dev/null || true
+    if [ -f "$ARCHTMP/opt/aloop/aloop" ] && command -v file >/dev/null; then
+      ARCH_DESC=$(file -b "$ARCHTMP/opt/aloop/aloop")
+      case "$ARCH_DESC" in
+        *aarch64*|*ARM\ aarch64*|*"ARM aarch64"*) ok "aloop binary is aarch64 ELF ($ARCH_DESC)";;
+        *) bad "aloop binary is NOT aarch64: $ARCH_DESC";;
+      esac
+    fi
+    rm -rf "$ARCHTMP"
+  else
+    echo "  WARN apkovl has NO aloop binary (layout-only build — set ALOOP_BIN)"
+  fi
   echo "$INV" | grep -q 'effects/home/.*\.lv2' && ok "apkovl: home-FX LV2 present" \
     || echo "  WARN apkovl has NO home-FX LV2 (layout-only build — set LV2_DIR)"
   echo "$INV" | grep -q 'effects/user' && ok "apkovl: /effects/user dir present" \
