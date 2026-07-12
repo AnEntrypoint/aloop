@@ -10,6 +10,7 @@
 #include "audio_thread.h"
 #include "../host/lv2_host.h"
 #include "../control/midi.h"
+#include "../link/link_bridge.h"
 
 #include <pthread.h>
 #include <sched.h>
@@ -89,6 +90,7 @@ pthread_t g_worker;
 AudioThread::Telemetry g_telem{};
 AudioConfig g_cfg;
 ParamStore* g_params = nullptr;   // shared control store (from MIDI); read each block
+LinkBridge* g_link = nullptr;     // Ableton Link (tempo/phase); read each block for varispeed sync
 
 // Map a control-map TARGET name ("looper3/rec", "fx/hp") to the Faust zone label
 // the home stack exposes. Loopers use a 2-digit index (looper03/rec); effects use
@@ -198,6 +200,24 @@ static void* worker(void*) {
                     if (!zone.empty()) fui.set(zone.c_str(), g_params->get(target));
                 });
             }
+            // Varispeed Link sync: when synced, set every looper's loop length from
+            // the Link tempo (a musical phrase = a whole number of beats). A tempo
+            // change resizes the loops so they stay locked to the session — the
+            // same behavior as the original looper's masterLoopBlocks recompute.
+            if (g_link) {
+                LinkSnapshot ls = g_link->audioRead();
+                if (ls.synced && ls.bpm > 1.0) {
+                    // one bar (4 beats) as the phrase, rounded to whole blocks.
+                    double beatsPerBar = 4.0;
+                    double samplesPerBeat = (g_cfg.sampleRate * 60.0) / ls.bpm;
+                    double lenSamples = samplesPerBeat * beatsPerBar;
+                    char z[32];
+                    for (int lp = 0; lp < 20; lp++) {
+                        snprintf(z, sizeof z, "looper%2d/len", lp);
+                        fui.set(z, (float)lenSamples);
+                    }
+                }
+            }
             for (int i = 0; i < N; i++) fin[i] = buf[i] / 32768.0f;
             faustHome.compute(N, fins, fouts);
             // the user LV2(s) process the home-stack OUTPUT (fout) on the free
@@ -222,8 +242,8 @@ static void* worker(void*) {
     return nullptr;
 }
 
-bool AudioThread::start(const AudioConfig& cfg, ParamStore* params) {
-    cfg_ = cfg; g_cfg = cfg; g_params = params;
+bool AudioThread::start(const AudioConfig& cfg, ParamStore* params, LinkBridge* link) {
+    cfg_ = cfg; g_cfg = cfg; g_params = params; g_link = link;
     g_running.store(true);
     if (pthread_create(&g_worker, nullptr, worker, nullptr) != 0) {
         fprintf(stderr, "[audio] fatal: could not create audio thread\n");

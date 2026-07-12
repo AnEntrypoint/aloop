@@ -11,6 +11,7 @@
 namespace aloop {
 
 struct ParamStore;   // control values from MIDI (control/midi.h)
+class  LinkBridge;   // Ableton Link tempo/phase (link/link_bridge.h)
 
 struct AudioConfig {
     int sampleRate = 48000;
@@ -33,10 +34,12 @@ struct AudioConfig {
 // read/write (which is the intended blocking point).
 class AudioThread {
 public:
-    // Start the RT audio pipeline. `params` is the shared control store the MIDI
-    // thread writes; the audio thread reads it each block and sets the matching
-    // Faust control zones (the remappable-control path).
-    bool start(const AudioConfig& cfg, struct ParamStore* params = nullptr);
+    // Start the RT audio pipeline. `params` = the shared control store the MIDI
+    // thread writes (the audio thread reads it and sets the Faust control zones).
+    // `link` = the Ableton Link bridge the audio thread reads each block for
+    // varispeed loop-length sync. Both may be null (controls/Link inactive).
+    bool start(const AudioConfig& cfg, struct ParamStore* params = nullptr,
+               class LinkBridge* link = nullptr);
     void stop();
 
     // Telemetry the control thread reads (never written from audio hot path

@@ -88,7 +88,7 @@ int main(int argc, char** argv) {
     // Start the RT audio pipeline (opens the ALSA/f_uac2 PCM, spawns the pinned
     // SCHED_FIFO worker that runs DSP -> host.runBlock() -> PCM each block).
     aloop::AudioThread audio;
-    if (!audio.start(cfg, &params)) {   // the audio thread reads the control store
+    if (!audio.start(cfg, &params, &link)) {   // audio reads the control store + Link (varispeed)
         fprintf(stderr, "[aloop] fatal: could not start audio pipeline\n");
         return 1;
     }
