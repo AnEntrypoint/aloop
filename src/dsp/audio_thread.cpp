@@ -220,10 +220,11 @@ static void* worker(void*) {
                 if (g_params->get("cmd/halfspeed")   > 0.5f) speed = 0.5f;
                 if (g_params->get("cmd/doublespeed") > 0.5f) speed = 2.0f;
                 fui.set("speed", speed);
-                // LOOP_IMMEDIATE 0x08 (SHIFT+pad on the hardware): a synchronized
-                // re-trigger — jump every looper's read head to its mark point.
-                // Engine-global `loopnow` button, held-while-active.
-                fui.set("loopnow", g_params->get("cmd/loopnow") > 0.5f ? 1.0f : 0.0f);
+                // NOTE: LOOP_IMMEDIATE / SET_LOOP_START / CLEAR_LOOP_START (mark-point
+                // restart) are NOT wired — they need an addressable read head, which
+                // the Faust feedback-delay looper does not have (a preserve-on-hold
+                // rwtable playhead is a read-modify-write Faust rejects; see loop.dsp
+                // header + docs/COMMAND-SURFACE.md). Deliberate model difference.
                 // Global STOP-ALL (hardware LOOP_COMMAND_STOP 0x03): clear every
                 // looper's play checkbox so all playback stops. Per-looper stop is
                 // already covered by binding a control to looper<i>/play (=0 stops

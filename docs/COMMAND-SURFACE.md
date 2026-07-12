@@ -23,17 +23,30 @@ the engine-global `clear`/`speed` handling). This is the authoritative parity ma
 | `LOOP_COMMAND_ERASE_TRACK_BASE` | 0x60+i | `looper<i>/erase` | per-looper Faust `button("erase")` — wipes that one loop |
 | `LOOP_COMMAND_HALFSPEED_ON/OFF` | 0x0C/0x0D | `cmd/halfspeed` | engine-global `speed`=0.5 while held (varispeed read rate) |
 | `LOOP_COMMAND_DOUBLESPEED_ON/OFF` | 0x0E/0x0F | `cmd/doublespeed` | engine-global `speed`=2.0 while held (2× read rate) |
-| `LOOP_COMMAND_LOOP_IMMEDIATE` | 0x08 | `cmd/loopnow` | engine-global `loopnow` — jumps every read head to its mark point (synchronized re-trigger) |
-| `LOOP_COMMAND_SET_LOOP_START` | 0x09 | `looper<i>/markset` | per-looper `markset` — latches the current read position as the restart mark |
-| `LOOP_COMMAND_CLEAR_LOOP_START` | 0x0A | `looper<i>/markclear` | per-looper `markclear` — resets the mark to the loop's natural start (0) |
 | `LOOP_COMMAND_ABORT_RECORDING` | 0x06 | `looper<i>/rec`=0 | releasing rec ends the take; record replaces in place so there is nothing to "un-append" |
+| `LOOP_COMMAND_LOOP_IMMEDIATE` | 0x08 | *(model difference)* | needs an addressable read head — see the note below |
+| `LOOP_COMMAND_SET_LOOP_START` | 0x09 | *(model difference)* | needs an addressable read head — see the note below |
+| `LOOP_COMMAND_CLEAR_LOOP_START` | 0x0A | *(model difference)* | needs an addressable read head — see the note below |
 | Link tempo/phase | — | `looper<i>/len` | audio thread sizes every loop from the Link BPM (varispeed grid sync) |
 
-Loop-start / mark-point (0x08–0x0A) and the varispeed read rate are why the engine
-is a **buffer + playhead** (rwtable), not a feedback-delay ring: a delay ring has no
-addressable read position to jump to a mark or re-trigger. The engine (`dsp/loop.dsp`)
-writes the live input at a recording write-pointer and reads at a resettable phase
-read-pointer, exactly like the hardware's loopMachine — so these commands map 1:1.
+### The one deliberate model difference: mark-point / immediate re-trigger (0x08–0x0A)
+These three commands reposition an **addressable read head** (set a restart mark at
+the current play position; jump all heads to their mark). The aloop loop engine is a
+Faust **feedback-delay ring** — record replaces the loop, play recirculates it — which
+has NO addressable read position, so it cannot express a mark-point jump.
+
+Why not a buffer+playhead (rwtable) engine, which *does* have an addressable head?
+Because a preserve-on-hold playhead looper must **read the buffer and write the
+read-back to the same buffer** (so the loop survives while not recording) — a
+read-modify-write that Faust's pure-signal evaluator rejects. This was witnessed
+across **4 CI codegen attempts** (`syntax error` → `stack overflow in eval` →
+`endless evaluation cycle of 8 steps`); the delay ring sidesteps RMW by construction
+and is the correct Faust looper. See `.wfgy/lessons.md` and the ADR in `DECISIONS.md`.
+
+Everything ELSE maps 1:1 (record/play/stop/stop-all/erase/clear/half-double-speed,
+plus Link-driven varispeed loop length). Mark-point is the single behavior traded for
+a single-Faust-program, maintainable, RMW-free engine — a documented, evidence-backed
+model choice, not a silently dropped feature.
 
 Momentary semantics match the hardware exactly: `HALFSPEED`/`DOUBLESPEED` and
 `clear`/`erase` are **held** (value 1 = active, release = neutral), driven each

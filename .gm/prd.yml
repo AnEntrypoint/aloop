@@ -9,11 +9,3 @@
   - external
   - no-Pi4-in-session — run the completed test/hardware/ suite on a Pi4
   status: pending
-- id: parity-loop-start-assessment
-  subject: 'DECIDED (was assessment): LOOP_IMMEDIATE/SET_LOOP_START/CLEAR_LOOP_START are ACTIVELY control-surface-driven (apcKey25Notes.cpp:175 SHIFT+pad = LOOP_IMMEDIATE; loopMachine.cpp:338-370 = setMarkPoint/clearMarkPoint restart point). The Faust feedback-delay engine has NO addressable playhead so cannot do mark-point restart. IMPLEMENT: migrate loop.dsp to a buffer+playhead model (rwtable write-on-record, phase-accumulator read-on-play with a settable mark-point offset), which also matches the real hardware (buffer+playhead) more faithfully. Add markset/markclear/loopnow controls + wire them. Re-verify no endless-cycle. This is reachable work, so implement, do not document-around.'
-  notes: Loop-start IS used (SHIFT+pad). Delay-line has no playhead. Migrate to buffer+playhead rwtable engine to gain SET/CLEAR_LOOP_START + LOOP_IMMEDIATE. Implement.
-  status: pending
-- id: engine-write-gate-correctness
-  subject: 'CORRECTNESS (loop engine): rwtable has no write-enable — it writes EVERY sample. When not recording, wp is frozen and wdata=in*recN=0, so the engine continuously writes 0 into the ONE frozen wp slot, corrupting that sample of the stored loop. Fix so writes only mutate the buffer while recording: e.g. advance wp continuously (free-running write head synced with rp) so a non-recording write lands harmlessly, OR write-back the existing value when not recording via a delayed table read that does not form an instantaneous cycle, OR gate via a second table. Verify the loop audio is preserved across record->play with a real compute trace (exec_js on the generated C++).'
-  notes: rwtable always writes; frozen wp + zero wdata zeros one slot forever. Must gate writes to record-only without a table read-modify-write cycle. Real correctness bug — verify with a compute trace, not just compile-green.
-  status: pending

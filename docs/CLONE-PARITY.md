@@ -10,11 +10,12 @@ looper's inline effects.
 
 **1. The loop engine — a native Faust reimplementation (behaviorally equivalent).**
 The loop engine is `dsp/loop.dsp` — an aloop-native Faust program: 20 independent
-record/play loopers on a **buffer + playhead** model (rwtable — write the live input
-at a recording write-pointer, read at a resettable phase read-pointer), the same
-shape as the hardware's loopMachine, NO overdub. This model (not a feedback-delay
-ring) is what gives the addressable read position the hardware needs for mark-point
-(SET/CLEAR_LOOP_START) and immediate re-trigger (LOOP_IMMEDIATE) — see COMMAND-SURFACE.
+record/play loopers as cycle-free **feedback-delay rings** (record replaces the loop,
+play recirculates it), NO overdub. This is the correct Faust looper: it sidesteps the
+read-modify-write that a buffer+playhead would need (which Faust rejects — see ADR-010
+and COMMAND-SURFACE). One consequence: mark-point restart (SET/CLEAR_LOOP_START,
+LOOP_IMMEDIATE) needs an addressable read head the ring doesn't have, so it is a
+single deliberate, documented model difference; every other loop command maps 1:1.
 aloop contains no Circle/looper code; it reproduces the *behavior* natively. The
 loop grid is driven by Ableton Link phase (varispeed sync), same as the original.
 
