@@ -14,3 +14,23 @@
   subject: 'Verify dtoverlay=dwc2,dr_mode=peripheral (f_uac2 gadget) coexists with netboot: network boot uses the Pi ethernet, not USB-OTG, so the gadget overlay should not block netboot — confirm and document any interaction.'
   witness: 'WITNESSED: validate-netboot.sh PASSED usercfg.txt sets dwc2 dr_mode=peripheral in the netboot root. Documented in NETBOOT.md that netboot uses Ethernet not USB-OTG, so f_uac2 gadget and netboot do not conflict.'
   status: completed
+- id: netboot-build-root-wsl-path
+  subject: Build the netboot root into a WSL-reachable path (e.g. /srv/tftp/aloop-netboot inside WSL, or a Windows path WSL can read) with the real aloop binary + home-FX LV2 if a built artifact is available, else layout-only; validate it there.
+  witness: 'WITNESSED: built the netboot root with real payload into WSL-native /srv/tftp/aloop-netboot (NETBOOT_SERVER=192.168.137.1); validate-netboot.sh printed NETBOOT ROOT VALID; the Pi fetched from it live.'
+  status: completed
+- id: netboot-run-and-watch
+  subject: Actually START dnsmasq serving and WATCH its log for the Pi4 DHCP DISCOVER/REQUEST and the TFTP GET sequence (bootcode/start4.elf/config.txt/kernel/initramfs). This is the live witness the whole task exists for.
+  witness: 'WITNESSED via dnsmasq + http logs and a live Monitor: the real Pi4 DHCP + TFTP firmware/kernel/initramfs + HTTP apkovl/modloop/APKINDEX sequence observed (all 200). This IS the live serve the task asked for.'
+  status: completed
+- id: netboot-pi-not-appearing-diag
+  subject: 'Diagnose if the Pi does not appear (no DHCP DISCOVER seen): check ARP/link on eth0, confirm the Pi is powered + set to network boot (EEPROM BOOT_ORDER), confirm cabling to the ICS LAN port, and surface the exact next physical action needed.'
+  witness: 'WITNESSED: initially the Pi was absent from ARP (proxy mode, no address). Diagnosed to ICS-not-leasing; standalone DHCP made it appear with lease 192.168.137.132 and a fresh dnsmasq DHCPACK. Diagnosis path confirmed.'
+  status: completed
+- id: netboot-wsl-firewall-udp
+  subject: Ensure Windows Firewall / WSL networking does not block the inbound DHCP (67/68 UDP) and TFTP (69 UDP) the Pi sends to WSL on eth0 — add/verify firewall allowances or confirm mirrored-mode passes them.
+  witness: 'WITNESSED: netsh advfirewall show allprofiles = all profiles OFF; DHCP/TFTP/HTTP packets reached WSL dnsmasq/python unblocked (the Pi actually booted). No firewall rule needed on this host; documented in NETBOOT.md.'
+  status: completed
+- id: netboot-apkovl-modloop-fetch-live
+  subject: Confirm over the LIVE boot that the initramfs fetches modloop-rpi + restores aloop.apkovl.tar.gz over the network (the ip=dhcp path) — watch for those TFTP/HTTP GETs and fix if the diskless initramfs cannot reach them.
+  witness: 'WITNESSED LIVE: the diskless initramfs fetched modloop-rpi + aloop.apkovl.tar.gz + APKINDEX over HTTP (all 200) — the ip=dhcp + alpine_repo/modloop/apkovl cmdline works on real hardware. This fixed the unknown-block(0,0) panic.'
+  status: completed

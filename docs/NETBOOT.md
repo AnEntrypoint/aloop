@@ -45,29 +45,49 @@ With no SD inserted, the Pi 4 will DHCP + TFTP on power-up.
 
 ## 3. Serve it from the host
 
-Run `dnsmasq` on a Linux host cabled to the Pi (directly or via a switch) on the
-same wired LAN. The provided config answers the Pi 4 bootloader's DHCP and serves
-the netboot root over TFTP:
+`image/serve-netboot.sh` runs the whole serving stack (DHCP + TFTP + the HTTP root
+server) with the exact flags witnessed booting a real Pi 4. Build the netboot root
+with a `NETBOOT_SERVER` that matches the host's IP on the Pi's link (so the baked-in
+`alpine_repo`/`modloop`/`apkovl` URLs point back at this host), then serve:
 
 ```sh
-sudo dnsmasq --conf-file=src/net/config/netboot-dnsmasq.conf \
-             --interface=eth0 \
-             --tftp-root="$PWD/aloop-netboot" \
-             -d
+# build so the cmdline's HTTP URLs point at THIS host (default 192.168.137.1)
+NETBOOT_SERVER=192.168.137.1 ALOOP_BIN=build/aloop LV2_DIR=effects/home \
+  OUT=/srv/tftp/aloop-netboot image/build-netboot.sh
+
+sudo image/serve-netboot.sh --iface eth0 --server 192.168.137.1 \
+     --root /srv/tftp/aloop-netboot
 ```
 
-- Set `--interface` to your host's wired NIC.
-- `-d` keeps dnsmasq in the foreground so you watch the DHCP + TFTP transfers live
-  (this is where the first boot issues show up — a missing file logs as a failed
-  TFTP request).
-- If the LAN already has a DHCP server, switch to **proxy DHCP** so dnsmasq only
-  answers the boot part: use `--dhcp-range=192.168.50.0,proxy` instead of the range
-  in the conf. (The conf ships a standalone range for an isolated Pi↔host link.)
-- The Pi 4 requests its files under a subdirectory named by its serial number
-  (`tftp-unique-root`). For a single Pi you can also drop the netboot-root files
-  directly at the TFTP root — dnsmasq falls back to the root if the serial subdir
-  is absent. To pin it, `mkdir aloop-netboot/<serial>` and copy the tree in, or
-  read the serial from the failed TFTP request dnsmasq logs on the first attempt.
+Three things get served, and **all three are needed** (learned the hard way on a
+real boot):
+
+1. **DHCP** hands the Pi an address + the boot filename. Default is **standalone**
+   (dnsmasq owns the lease). Use `--proxy` only if another DHCP server on the LAN
+   actually leases to the Pi — in the witnessed Windows-ICS case ICS did *not* lease
+   the Pi, so proxy mode left it with no address and it never reached TFTP;
+   standalone is the working default.
+2. **TFTP** serves the firmware/kernel/initramfs. The Pi 4 requests them under its
+   **board-serial** subdir (`<serial>/start4.elf`, e.g. `7bec0617/`) — the serve
+   script auto-creates `<root>/<serial>/` as symlinks to the root the first time it
+   sees the serial in the log, so you don't have to know it in advance.
+3. **HTTP (:8080)** serves the Alpine *root* (the apks repo, `modloop-rpi`, and the
+   apkovl). The diskless initramfs fetches these over HTTP per the cmdline — this is
+   what makes the whole thing work; see the panic note in §5.
+
+### Running it on Windows via WSL2
+
+The witnessed setup was a Windows host with WSL2 Ubuntu (mirrored networking, so WSL
+sees `eth0 = 192.168.137.1/24`, the Internet-Connection-Sharing subnet the Pi is
+cabled to). `dnsmasq` + `python3` live in WSL. Two Windows-specific gotchas:
+
+- **WSL2 kills all distro processes when the last `wsl` session exits** — detached
+  `setsid`/`nohup` do *not* survive. Run the serve command in a session that stays
+  open (a background terminal), or the servers die the moment the launcher returns.
+- **Git-Bash rewrites `/mnt/c/...` paths** — prefix `wsl` calls with
+  `MSYS_NO_PATHCONV=1` when passing a `/mnt/c/...` script path.
+- Windows Firewall must allow the inbound DHCP(67)/TFTP(69)/HTTP(8080) — in the
+  witnessed run all firewall profiles were off, so nothing was blocked.
 
 ## 4. Boot and watch (serial console)
 
@@ -95,14 +115,34 @@ GND→pin 6, Pi TX GPIO14→adapter RX, Pi RX GPIO15→adapter TX, **115200 8N1*
   RT jitter, f_uac2 round-trip latency, and Link-over-WiFi still need a real Pi 4
   and are measured there. Netboot just gets you to a booted appliance faster.
 
-## Known first-boot considerations (solved in the build)
+## 5. Known first-boot issues — all found on a real Pi 4 and solved in the build
 
-- **apkovl over TFTP** — Alpine diskless restores `<hostname>.apkovl.tar.gz` from
-  the boot medium; the builder places it in the served root so the initramfs finds
-  it over TFTP (validated by `validate-netboot.sh`).
-- **modloop over the network** — `boot/modloop-rpi` (the kernel-modules squashfs)
-  is served in the netboot root and mounted by the initramfs; `ip=dhcp` on the
-  cmdline gives the initramfs the network it needs.
-- **firmware completeness** — the Alpine RPi tarball already ships the full Pi 4
+These are the actual problems a live netboot surfaced (Pi 4, board serial
+`7bec0617`), each fixed in `image/build-netboot.sh` / `image/serve-netboot.sh`:
+
+- **Kernel panic `unable to mount root fs, unknown-block(0,0)`** — the Pi 4 firmware
+  TFTP-loads config/kernel/initramfs fine, but the Alpine *diskless* initramfs then
+  has no block device to find the apks/modloop/apkovl on. **Fix:** the Alpine RPi
+  initramfs honors HTTP boot params, so `build-netboot.sh` adds
+  `alpine_repo=http://<server>:8080/apks modloop=…/boot/modloop-rpi
+  apkovl=…/aloop.apkovl.tar.gz` to the cmdline, and `serve-netboot.sh` runs an HTTP
+  server for the root. The initramfs then fetches the whole root over HTTP (watch
+  for `GET /apks/aarch64/APKINDEX.tar.gz`, `GET /boot/modloop-rpi`,
+  `GET /aloop.apkovl.tar.gz`, all `200`).
+- **Pi drops off the wired LAN after boot** — `ip=dhcp` brings `eth0` up only inside
+  the *initramfs*; the aloop overlay manages `wlan0` (autoap) but nothing brings
+  `eth0` back up once userspace starts, so a netbooted Pi became unreachable right
+  after the HTTP root fetches. **Fix:** the netboot build injects
+  `/etc/network/interfaces` (`eth0 inet dhcp`) + enables the `networking` service in
+  the apkovl for the netboot build only (the SD image boots from local media and
+  doesn't need it).
+- **No DHCP address in proxy mode** — with Windows ICS on the link *not* actually
+  leasing to the Pi, proxy DHCP gave the Pi no address at all. **Fix:** standalone
+  DHCP is the serve-script default (`--proxy` only when a real DHCP server leases).
+- **Per-serial TFTP path** — the Pi 4 requests `<board-serial>/start4.elf`, not the
+  MAC. **Fix:** `serve-netboot.sh` auto-creates `<root>/<serial>/` as symlinks to
+  the root when it first sees the serial in the TFTP log.
+- **apkovl + modloop reachable** — served over HTTP (above), not assumed on a local
+  FS. **firmware completeness** — the Alpine RPi tarball already ships the full Pi 4
   TFTP firmware chain (`start4.elf`/`fixup4.dat`/`bootcode.bin`/`bcm2711-rpi-4-b.dtb`);
   no external firmware sourcing is required.

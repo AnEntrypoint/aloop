@@ -30,3 +30,6 @@ node_modules/
 # cross-compile output
 out/
 dist/
+
+# host-side netboot serving scratch (artifacts + WSL adhoc scripts)
+.netboot-stage/

@@ -33,3 +33,18 @@
   status: witnessed
   witness: unknown until Alpine diskless netboot behavior is confirmed against the boot chain
   witness_evidence: 'WITNESSED from the extracted tree: config.txt sets kernel=boot/vmlinuz-rpi + initramfs boot/initramfs-rpi; cmdline.txt=modules=loop,squashfs,sd-mod,usb-storage quiet. Alpine diskless initramfs restores <hostname>.apkovl.tar.gz AND mounts modloop-rpi from the boot medium. Over pure TFTP there is no mounted boot FS, so the INITIAL ISSUES are: (1) apkovl + modloop-rpi must be served in the TFTP root and reachable by the initramfs; (2) cmdline needs ip=dhcp and the Alpine netboot params (alpine_repo/modloop over network) OR the whole boot tree served so firmware TFTP-fetches config/kernel/initramfs and the initramfs then needs a route to apkovl+modloop. build-netboot.sh places apkovl+modloop in the tftp root; NETBOOT.md documents the cmdline/param solution; real fetch path is the on-Pi blocked row.'
+- id: pi4-on-lan-sends-dhcp
+  question: Is the Pi4 actually powered, cabled to the ICS LAN port, and configured to network-boot so it sends a DHCP DISCOVER on 192.168.137.x?
+  status: witnessed
+  witness: ARP shows no 192.168.137.x Pi entry yet — unknown until dnsmasq runs and logs (or does not log) a DISCOVER from the Pi.
+  witness_evidence: 'WITNESSED LIVE: dnsmasq log shows the Pi4 (MAC e4:5f:01:53:f0:ef, PXEClient:Arch:00000 = Pi4 bootloader, board serial 7bec0617) sent DHCP and got 192.168.137.132 via DHCPACK; active lease in /var/lib/misc/dnsmasq.leases (1783898118 e4:5f:01:53:f0:ef 192.168.137.132); ARP neighbor 192.168.137.132 with the Pi MAC present. The Pi IS on the LAN, powered, and network-booting.'
+- id: real-aloop-artifact-available
+  question: Is a built aarch64 aloop binary + home-FX .lv2 available locally to lay into the netboot root, or is this a layout-only serve?
+  status: witnessed
+  witness: CI builds them as artifacts; unknown whether one is present on this host — check build/ and effects/ or gh artifact download.
+  witness_evidence: 'WITNESSED: gh run download of CI-green artifacts — /tmp/dl/bin/aloop is ELF 64-bit aarch64 musl PIE (592352 bytes, file(1) confirmed), and /tmp/dl/lv2/aloop.lv2/aloop.so is the home-FX LV2. Both laid into the netboot root; validate-netboot.sh confirmed "aloop binary present" + "home-FX LV2 present". This is a REAL-payload serve, not layout-only.'
+- id: wsl-dnsmasq-binds-eth0-udp
+  question: Can dnsmasq in WSL Ubuntu actually bind UDP 67(proxyDHCP)/69(tftp) on eth0 and receive the Pi packets through mirrored networking + Windows Firewall?
+  status: witnessed
+  witness: unknown until dnsmasq is launched and either receives packets or is blocked.
+  witness_evidence: 'WITNESSED: dnsmasq 2.90 launched in WSL Ubuntu bound exclusively to eth0 — log shows "DHCP, proxy on subnet 192.168.137.0", "sockets bound exclusively to interface eth0", "TFTP root is /srv/tftp/aloop-netboot". Ran clean 3s. Proxy DHCP + TFTP bind works through WSL2 mirrored networking on the ICS subnet.'

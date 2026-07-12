@@ -49,14 +49,48 @@ boot_tree_fetch  "$WORK" "$BOOT"
 boot_tree_apkovl "$WORK" "$BOOT"
 boot_tree_config "$BOOT"
 
-# --- 4. Netboot-specific cmdline: bring the NIC up in the initramfs -------------
-# The stock diskless cmdline expects to find the boot medium locally. Over pure
-# TFTP the initramfs must bring up the network (ip=dhcp) so it can reach modloop /
-# apks over the boot path. Append our netboot cmdline additions (idempotent).
-NBCMD="$(cat "$ROOT/image/config/netboot-cmdline.txt")"
+# --- 3b. Netboot overlay augmentation: keep eth0 up in real userspace -----------
+# WITNESSED on the real Pi 4: after the initramfs (which brings eth0 up via
+# ip=dhcp) pivots into the Alpine userspace, NOTHING re-configures eth0 — the aloop
+# overlay only manages wlan0 (autoap). So the netbooted Pi silently drops off the
+# wired LAN the moment userspace starts (ping/telemetry die right after the HTTP
+# root fetches). A netbooted device MUST keep its wired link, so we inject an
+# /etc/network/interfaces (eth0 dhcp) + enable the `networking` service into the
+# apkovl for the netboot build only (the SD image boots from local media and does
+# not need this). Repack the shared apkovl with the addition.
+NBOVL="$WORK/nbovl"
+mkdir -p "$NBOVL"
+tar -xzf "$BOOT/aloop.apkovl.tar.gz" -C "$NBOVL"
+mkdir -p "$NBOVL/etc/network" "$NBOVL/etc/runlevels/boot"
+cat > "$NBOVL/etc/network/interfaces" <<'IFACE'
+auto lo
+iface lo inet loopback
+
+# Netboot: keep the wired link up in userspace (the root came over it).
+auto eth0
+iface eth0 inet dhcp
+IFACE
+# Enable OpenRC networking at boot so eth0 comes up (symlink, marker fallback).
+ln -sf /etc/init.d/networking "$NBOVL/etc/runlevels/boot/networking" 2>/dev/null \
+  || : > "$NBOVL/etc/runlevels/boot/networking"
+( cd "$NBOVL" && tar -czf "$BOOT/aloop.apkovl.tar.gz" . )
+echo "[netboot] overlay: added eth0 dhcp + networking service (wired link stays up in userspace)"
+
+# --- 4. Netboot-specific cmdline: HTTP-served Alpine root over the network -------
+# WITNESSED on a real Pi 4 (docs/NETBOOT.md): the stock diskless cmdline expects a
+# LOCAL boot medium. Over the network the Pi 4 firmware TFTP-loads config/kernel/
+# initramfs, but the diskless initramfs then panics "unable to mount root fs,
+# unknown-block(0,0)" because there is no block device holding the apks/modloop/
+# apkovl. The Alpine RPi initramfs honors HTTP boot params — so we point it at an
+# HTTP server (the serve host, image/serve-netboot.sh runs one on :8080):
+#   ip=dhcp  alpine_repo=<url>/apks  modloop=<url>/boot/modloop-rpi  apkovl=<url>/...
+# @NETBOOT_SERVER@ is substituted with the serve host's IP (env NETBOOT_SERVER,
+# default 192.168.137.1 — the common WSL/ICS layout; override for your LAN).
+NETBOOT_SERVER="${NETBOOT_SERVER:-192.168.137.1}"
+NBCMD="$(sed "s/@NETBOOT_SERVER@/$NETBOOT_SERVER/g" "$ROOT/image/config/netboot-cmdline.txt")"
 if [ -f "$BOOT/cmdline.txt" ] && ! grep -q 'ip=dhcp' "$BOOT/cmdline.txt"; then
   printf ' %s' "$NBCMD" >> "$BOOT/cmdline.txt"
-  echo "[netboot] appended netboot cmdline: $NBCMD"
+  echo "[netboot] appended netboot cmdline (server=$NETBOOT_SERVER): $NBCMD"
 fi
 
 # --- 5. Sanity: the pieces the diskless initramfs needs must be in the root -----

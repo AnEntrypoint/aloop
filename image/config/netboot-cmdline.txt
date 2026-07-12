@@ -1,1 +1,1 @@
-ip=dhcp
+ip=dhcp alpine_repo=http://@NETBOOT_SERVER@:8080/apks modloop=http://@NETBOOT_SERVER@:8080/boot/modloop-rpi apkovl=http://@NETBOOT_SERVER@:8080/aloop.apkovl.tar.gz
