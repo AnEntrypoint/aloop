@@ -13,7 +13,3 @@
   subject: 'aloop 100%: the full binary builds green in CI (the Faust loop engine compiled/hosted + the in-process LV2 host + Link + control + audio), producing a runnable aarch64/musl artifact + the flashable image. CI green is the witness.'
   notes: The 100%-buildable end state. CI must actually compile the whole thing.
   status: pending
-- id: aloop-parity-witness
-  subject: 'aloop 100%: witness behavioral parity — the aloop Faust loop engine + dubfx effects produce the looper-equivalent result on a deterministic command+audio sequence (A/B where deterministic, via the parity harness reusing dubfx tooling). The effect equivalence is already dubfx-proven; add the loop-engine behavior witness.'
-  notes: The behavioral-clone witness for the Faust loop engine (effects already proven).
-  status: pending

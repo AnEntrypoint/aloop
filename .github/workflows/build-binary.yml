@@ -29,13 +29,15 @@ jobs:
         run: |
           docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w alpine:3.20 sh -c '
             set -e
-            # The audio + RT + plugin stack, all musl-built:
+            # The audio + RT + plugin stack, all musl-built. faust: the loop
+            # engine is Faust (dsp/loop.dsp), compiled to C++ by the CMake custom
+            # command, so the compiler must be in the container.
             apk add --no-cache build-base cmake pkgconf \
               alsa-lib-dev lilv-dev lv2-dev \
-              linux-headers eudev-dev
-            # Ableton Link is header-only C++ (fetched as a submodule/vendored).
-            # DSP core is ported from ../looper (Circle-free); the host is src/host.
-            echo "toolchain:"; gcc --version | head -1
+              linux-headers eudev-dev faust
+            # Ableton Link is header-only C++ (vendored under third_party/link).
+            # The DSP is Faust (loop + the dubfx effects); src/ is the thin RT shell.
+            echo "toolchain:"; gcc --version | head -1; faust --version | head -1
             # The real build wires up when src/ has its CMakeLists; until then this
             # step verifies the container + deps resolve (a musl-availability gate,
             # MIGRATION-MAP musl-compat row) and fails loudly if a dep is missing.

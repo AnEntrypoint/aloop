@@ -42,21 +42,39 @@ add_custom_command(
 add_custom_target(faust_loop DEPENDS ${CMAKE_BINARY_DIR}/loop.cpp)
 
 # Dependencies (musl-built in the Alpine container): ALSA (audio I/O), lilv
-# (LV2 discovery/loading), the LV2 headers. Ableton Link is header-only (vendored).
+# (LV2 discovery/loading), the LV2 headers.
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(ALSA REQUIRED alsa)
 pkg_check_modules(LILV lilv-0)
 
+# Ableton Link — the official header-only C++ library. Fetched at configure time
+# (CI has network); link_bridge.cpp is guarded with __has_include, so if Link is
+# absent the binary still builds (Link inactive) — but CI fetches it so it is real.
+include(FetchContent)
+FetchContent_Declare(abletonlink
+  GIT_REPOSITORY https://github.com/Ableton/link.git
+  GIT_TAG        Link-3.1.3
+  GIT_SHALLOW    TRUE)
+set(LINK_INCLUDE "")
+FetchContent_GetProperties(abletonlink)
+if(NOT abletonlink_POPULATED)
+  # Best-effort: don't fail the build if the fetch is unavailable (guarded source).
+  FetchContent_Populate(abletonlink)
+endif()
+if(abletonlink_SOURCE_DIR)
+  set(LINK_INCLUDE ${abletonlink_SOURCE_DIR}/include ${abletonlink_SOURCE_DIR}/modules/asio-standalone/asio/include)
+endif()
+
 add_executable(aloop ${DSP_SOURCES})
 target_include_directories(aloop PRIVATE
   ${CMAKE_SOURCE_DIR}
+  ${CMAKE_BINARY_DIR}        # the generated Faust loop.cpp
   ${ALSA_INCLUDE_DIRS}
   ${LILV_INCLUDE_DIRS}
-  third_party/link/include   # vendored Ableton Link headers (a Linux library)
+  ${LINK_INCLUDE}            # Ableton Link (fetched), empty+guarded if absent
 )
 target_link_libraries(aloop PRIVATE ${ALSA_LIBRARIES} ${LILV_LIBRARIES} pthread dl)
 add_dependencies(aloop faust_loop)
-target_include_directories(aloop PRIVATE ${CMAKE_BINARY_DIR})   # for the generated loop.cpp
 
 # The effects are NOT a build dependency — they are the dubfx LV2 bundle deployed
 # to /effects/home at image-assembly time and dlopen'd at runtime. aloop the
