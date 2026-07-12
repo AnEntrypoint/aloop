@@ -8,6 +8,7 @@
 // home-FX core.
 
 #include "audio_thread.h"
+#include "../host/lv2_host.h"
 
 #include <pthread.h>
 #include <sched.h>
@@ -102,6 +103,14 @@ static void* worker(void*) {
     float* fouts[1] = { fout.data() };
 #endif
 
+    // The user's swappable effect(s): an in-process LV2 host loading any bundle
+    // from /effects/user, pinned to the free core (Core 3). Runs AFTER the home
+    // stack, in the same block (no graph — zero added latency, ADR-002). A bad
+    // user plugin is caught by the host's watchdog and bypassed.
+    Lv2Host userFx;
+    userFx.loadDir("/effects/user");
+    userFx.connect(N, ch);
+
 #ifdef ALOOP_HAVE_ALSA
     snd_pcm_t *cap = nullptr, *play = nullptr;
     // The f_uac2 gadget exposes an ALSA card; open capture (host→Pi) + playback.
@@ -124,12 +133,15 @@ static void* worker(void*) {
 #ifdef ALOOP_HAVE_FAUST_LOOP
             for (int i = 0; i < N; i++) fin[i] = buf[i] / 32768.0f;
             faustHome.compute(N, fins, fouts);
+            // the user LV2(s) process the home-stack output on the free core, in
+            // the same block — zero added latency, no graph (ADR-002). connect()
+            // wired the user plugins to the shared IO buffer.
+            userFx.runBlock(N);
             for (int i = 0; i < N; i++) {
                 float v = fout[i] * 32768.0f;
                 buf[i] = (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
             }
 #endif
-            //   host.runBlock(N);   // user-FX LV2 on the free core (in-process, no graph)
 
             snd_pcm_sframes_t w = snd_pcm_writei(play, buf.data(), N);
             if (w < 0) { g_telem.xruns++; snd_pcm_recover(play, (int)w, 1); }

@@ -9,3 +9,7 @@
   - external
   - no-Pi4-in-session — run the completed test/hardware/ suite on a Pi4
   status: pending
+- id: wire-user-lv2-runblock
+  subject: 'GAP found in confirming pass: audio_thread.cpp runs the Faust home stack but the USER LV2 on Core3 is only a COMMENTED call site (// host.runBlock). Actually instantiate the Lv2Host in the audio thread, load /effects/user, and call host.runBlock() per block after the home stack — so the user swappable effect genuinely runs on the free core. Goal #2 requires this to be live, not commented.'
+  notes: 'Real reachable gap: the user-FX path is designed+built but not invoked from the audio loop. Wire it + rebuild green.'
+  status: pending
