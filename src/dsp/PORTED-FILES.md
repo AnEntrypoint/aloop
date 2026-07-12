@@ -26,3 +26,21 @@ these files from `../looper` (or a pinned vendored snapshot) and compiles them
 against the Linux audio callback (`src/dsp/audio_thread.cpp`) instead of the
 Circle `AudioSystem`. No edits to the DSP files themselves — the whole point is
 that they are already portable.
+
+## Full loop-engine port (the 100%-clone requirement)
+
+Beyond the effects, the ENTIRE loop engine ports unchanged for the 100% clone
+(docs/CLONE-PARITY.md, docs/COMMAND-SURFACE.md):
+
+| looper file | role |
+|-------------|------|
+| `loopMachine.cpp` / `Looper.h` | the whole loop machine: record/play/overdub/quantize/crossfade/pause, tracks/layers/clips, masterPhase grid, varispeed Link sync, loop-fold/monitor, the final mix |
+| `patches/sampler.h` | the sampler voices |
+| `patches/paramSnapshot.h` | the lock-free control→audio snapshot |
+| `apcKey25*.cpp` | the full command + control mapping (input → ALSA rawmidi) |
+| `commonDefines.h`, `LooperVersion.h` | constants |
+
+Compiled with `-DALOOP_EFFECTS_VIA_LV2`: the four inline effect call sites in
+`loopMachine::update()` are UNCHANGED source but resolve to the `effects_bridge.h`
+shims, which forward to the home-FX LV2. Loop engine = looper's exact code;
+effects = the swappable Faust LV2. Result: byte-identical audio (dubfx A/B proof).

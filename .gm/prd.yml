@@ -1,46 +1,15 @@
-- id: link-glitch-verify
-  subject: 'HARDWARE VERIFY: measure that Link-over-WiFi does not glitch audio (xrun count with Link active over WiFi/AP, vs looper once-a-second glitch). Test: run aloop with Link over WiFi, monitor ALSA xruns + the telemetry glitch counter over 10min.'
-  notes: Needs real Pi4. Buildable parts (Link lib integration, IRQ affinity config) done separately.
-  blockedBy:
-  - external
-  - no-Pi4-in-session — documented on-hardware xrun test
-  status: pending
-- id: wifi-ap-multicast
-  subject: 'HARDWARE VERIFY: a peer device Links over the Pi-hosted AP (multicast passes with ap_isolate=0). Test: connect a phone/laptop to the aloop AP, open a Link-enabled app, confirm tempo sync. Config done; behavior needs hardware+a peer.'
-  notes: ap_isolate=0 set; witnessing needs Pi4 + a Link peer.
-  blockedBy:
-  - external
-  - no-Pi4-in-session — peer Link over AP test
-  status: pending
-- id: wifi-ap-irq-affinity
-  subject: 'HARDWARE VERIFY: confirm WiFi/USB IRQs steer off the audio cores on Pi4 and the audio cores stay clean under AP load. Test: cat /proc/irq/*/smp_affinity after rt-tune.sh, run cyclictest on cores 1,3 under hostapd load. Config in rt-tune.sh; the MEASUREMENT needs hardware.'
-  notes: rt-tune.sh implements it; witnessing needs Pi4.
-  blockedBy:
-  - external
-  - no-Pi4-in-session — smp_affinity + cyclictest under AP load
-  status: pending
-- id: usb-gadget-latency-verify
-  subject: 'HARDWARE VERIFY: f_uac2 round-trip latency parity vs 1.333ms baseline; kernel microframe handling correct (no -4608-class corruption). Test: loopback measurement Pi-as-device to a host, compare to looper. Needs hardware.'
-  notes: Latency + correctness measurement.
-  blockedBy:
-  - external
-  - no-Pi4-in-session — f_uac2 round-trip latency measurement
-  status: pending
-- id: rt-cyclictest-verify
-  subject: 'HARDWARE VERIFY: cyclictest worst-case wakeup < block budget under audio+network load, xrun-free over a long run. Test: cyclictest -m -S -p95 -i200 -h400 while aloop runs Link-over-WiFi. Documented in RT-TUNING.md; needs hardware.'
-  notes: The RT proof. cyclictest command documented.
-  blockedBy:
-  - external
-  - no-Pi4-in-session — cyclictest under load
-  status: pending
 - id: x-hardware-dependency
   subject: 'CORNER: many verify rows (RT jitter, f_uac2 latency, Link-no-glitch, AP-multicast) need REAL Pi4 hardware. Session has no Pi. These stay blockedBy:[external, no-Pi4-in-session] with the exact on-hardware test documented, NOT falsely resolved. The BUILD (code/config/CI/docs) is fully reachable now; only on-device MEASUREMENT is external.'
   notes: 'Honesty: separate what is buildable-now (all code/config/docs/CI) from what needs hardware (measurements). No false completion.'
   status: pending
-- id: dsp-port-verify-hw
-  subject: 'HARDWARE VERIFY (partial): full end-to-end audio through the device (USB in -> DSP -> LV2 -> USB out) on real hardware. The DSP A/B correctness is verifiable NOW via the dubfx harness (no hardware); only the live device round-trip needs a Pi4.'
-  notes: DSP correctness = dubfx harness (now). Live device = hardware.
+- id: hardware-test-execution
+  subject: EXECUTE all test/hardware/*.sh on a real Raspberry Pi 4 and record the numbers (RT jitter, f_uac2 latency, Link no-glitch, AP multicast). This is the ONLY genuinely hardware-blocked item — the harnesses are all built + one-command runnable.
+  notes: The single honest blocked-on-hardware row.
   blockedBy:
   - external
-  - no-Pi4-in-session — live device round-trip
+  - no-Pi4-in-session — run the completed test/hardware/ suite on a Pi4
+  status: pending
+- id: clone-loop-engine-source-vendor
+  subject: 'Pin/vendor the looper loop-engine source into aloop for a reproducible exact clone: loopMachine.cpp/.h, Looper.h, sampler.h, paramSnapshot.h, commonDefines.h, apcKey25*.cpp, and resolve loopMachine transitive includes (audio/Audio.h etc.) with Linux shims OR a pinned looper checkout. CMake already wires LOOPER_DIR + the effects-via-LV2 flag; this pins the source + makes the full loopMachine.cpp compile clean under musl in CI.'
+  notes: The architecture+shim+wiring+docs are done; this is the concrete source-pin + transitive-include resolution so the full engine compiles reproducibly. Real remaining build work, reachable (not hardware).
   status: pending

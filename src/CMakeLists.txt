@@ -15,6 +15,11 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 add_compile_options(-O2 -Wall)
 
+# 100%-clone: compile the vendored looper loop engine with the effects routed to
+# the in-process home-FX LV2 (docs/CLONE-PARITY.md). The four inline effect call
+# sites in loopMachine::update() resolve to src/dsp/effects_bridge.h shims.
+add_compile_definitions(ALOOP_EFFECTS_VIA_LV2)
+
 # Where the ported looper DSP lives. Default to the sibling checkout; CI can
 # override with -DLOOPER_DIR=<vendored snapshot> for a pinned, reproducible build.
 set(LOOPER_DIR "${CMAKE_SOURCE_DIR}/../../looper" CACHE PATH "path to the looper DSP source")
@@ -23,7 +28,8 @@ set(LOOPER_DIR "${CMAKE_SOURCE_DIR}/../../looper" CACHE PATH "path to the looper
 # Header-only effects (apcEffectsProcessor.h, microRepeat.h, soladSnacOctaver.h,
 # grainFormant.h, paramSnapshot.h) are pulled via include paths.
 set(DSP_SOURCES
-  # ${LOOPER_DIR}/loopMachine.cpp        # wired when the vendored snapshot is pinned
+  ${LOOPER_DIR}/loopMachine.cpp        # the FULL loop engine (100%-clone), effects via LV2 shim
+  dsp/effects_bridge.cpp
   dsp/audio_thread.cpp
   host/lv2_host.cpp
   link/link_bridge.cpp
