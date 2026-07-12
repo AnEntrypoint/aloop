@@ -9,10 +9,10 @@ home-FX LV2 bundle by CI (`.github/workflows/build-lv2.yml`).
 - `filters.dsp`, `delay.dsp`, `reverb.dsp`, `microrepeat.dsp`, `mixbus.dsp` — the stages.
 - `pitch.dsp` + `pitch_ffi.h` — the live pitch stage. It links the EXACT C++ pitch
   engine via a Faust `ffunction` (ADR-004), so the sound is identical to looper.
-- `engine/` — the vendored pitch engine headers (`soladSnacOctaver.h`,
+- `soladSnacOctaver.h`, `grainFormant.h` — the vendored pitch engine headers from `../looper/patches/` (the ffunction target, ADR-004), kept flat next to the dsp so faust2lv2 resolves the `#include`s.
   `grainFormant.h`) from `../looper/patches/`. These are the `ffunction` target;
   the LV2 build compiles them in.
 - `param_mapping.md` — the CC/note → normalized param mapping (from dubfx).
 
 To rebuild locally (needs Faust + LV2 dev headers):
-`faust2lv2 -I engine chain.dsp` → `chain.lv2/`.
+`faust2lv2 chain.dsp` → `chain.lv2/`.
