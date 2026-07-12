@@ -50,10 +50,16 @@ jobs:
           # dir to the C++ include path) finds both loop.dsp and the ffunction
           # pitch engine headers.
           mkdir -p /tmp/homestack
-          cp dsp/loop.dsp dsp/aloop.dsp /tmp/homestack/
+          # aloop.dsp components loop.dsp AND effects_runtime.dsp — stage BOTH (the
+          # missing effects_runtime.dsp was why faust2lv2 failed "unable to open
+          # file effects_runtime.dsp"). Plus the vendored effect stages + headers.
+          cp dsp/loop.dsp dsp/aloop.dsp dsp/effects_runtime.dsp /tmp/homestack/
           cp effects/home/faust/*.dsp effects/home/faust/*.h /tmp/homestack/
-          # aloop.dsp references ../effects/home/faust/chain.dsp; flatten that ref
-          # since everything is now in one dir.
+          # Everything is now flat in one dir, so rewrite the sub-directory prefixes
+          # the .dsp files use so every component() resolves in the staging dir:
+          #   effects_runtime.dsp → "effects/home/faust/<stage>.dsp"  (the real refs)
+          #   aloop.dsp (older)   → "../effects/home/faust/chain.dsp" (if present)
+          sed -i 's#effects/home/faust/##g' /tmp/homestack/effects_runtime.dsp
           sed -i 's#\.\./effects/home/faust/chain\.dsp#chain.dsp#' /tmp/homestack/aloop.dsp
           cd /tmp/homestack
           faust2lv2 aloop.dsp
