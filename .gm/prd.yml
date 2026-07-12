@@ -1,23 +1,3 @@
-- id: lv2-user-swap-dir
-  subject: 'Implement the user-swappable-effect mechanism: a flash dir (/effects/user/) scanned for LV2 bundles; drop-in load + reload without restart. Document the drop-a-file-and-it-works UX (the whole moddability goal).'
-  notes: The moddable-effects goal. dlopen from flash dir. Instructive user guide for adding effects.
-  status: pending
-- id: lv2-param-control
-  subject: Wire LV2 control ports from the MIDI CC layer (the APC knobs -> normalized -> LV2 control ports), preserving looper param mappings (dubfx param_mapping.md). Let users map CCs to their own plugin ports.
-  notes: Control-plane moddability. Reuse the dubfx param mapping.
-  status: pending
-- id: link-official-lib
-  subject: Integrate the official Ableton Link library (github.com/Ableton/link) over UDP multicast 224.76.78.75:20808, replacing looper hand-rolled raw-Ethernet clone. Map Link SessionState -> the looper LiveParams snapshot -> the audio thread.
-  notes: Delete linkWire/linkGhost/linkSession; use the maintained lib. RT-safe capture/commit.
-  status: pending
-- id: link-snapshot-handoff
-  subject: 'Port the lock-free snapshot handoff: Link thread (Core2) captures SessionState, publishes to a double-buffered atomic snapshot the audio thread reads (matching looper paramSnapshot pattern). NO locks in the audio path.'
-  notes: The RT-safe boundary that decouples Link jitter from audio (feasibility R1).
-  status: pending
-- id: link-phase-apply
-  subject: 'Reproduce the phase/tempo apply in loopMachine: recompute masterLoopBlocks from Link BPM, idle-only sub-beat phase align of masterPhase (looper loopMachine.cpp:628-696 logic). Cheap integer math in the callback.'
-  notes: How Link timing drives the loop grid. Ported from looper.
-  status: pending
 - id: link-glitch-verify
   subject: 'HARDWARE VERIFY: measure that Link-over-WiFi does not glitch audio (xrun count with Link active over WiFi/AP, vs looper once-a-second glitch). Test: run aloop with Link over WiFi, monitor ALSA xruns + the telemetry glitch counter over 10min.'
   notes: Needs real Pi4. Buildable parts (Link lib integration, IRQ affinity config) done separately.
