@@ -23,7 +23,8 @@ jobs:
       - name: Install Faust + LV2 dev headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y faust lv2-dev pkg-config build-essential
+          # libboost-dev: the Faust lv2.cpp architecture uses boost/circular_buffer.
+          sudo apt-get install -y faust lv2-dev pkg-config build-essential libboost-dev
 
       - name: Fetch the verified Faust chain from dubfx
         run: |
