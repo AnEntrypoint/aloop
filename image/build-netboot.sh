@@ -24,9 +24,11 @@
 # A build with no ALOOP_BIN/LV2_DIR still produces a valid, bootable netboot root
 # (for pipeline/layout validation); it just has no binary/effects yet.
 #
-# Serve it (on a Linux host on the same wired LAN as the Pi) — see docs/NETBOOT.md:
-#   dnsmasq --conf-file=src/net/config/netboot-dnsmasq.conf \
-#           --dhcp-range=... --tftp-root=$(pwd)/aloop-netboot
+# Serve it (on a Linux/WSL host on the same wired LAN as the Pi) — see docs/NETBOOT.md.
+# Build with NETBOOT_SERVER set to the serve host's IP so the cmdline HTTP URLs point
+# back at it, then run the serve script (DHCP + TFTP + HTTP root, all in one):
+#   NETBOOT_SERVER=192.168.137.1 OUT=/srv/tftp/aloop-netboot image/build-netboot.sh
+#   sudo image/serve-netboot.sh --iface eth0 --server 192.168.137.1
 
 set -eu
 
