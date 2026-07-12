@@ -116,5 +116,12 @@ mkdir -p "$OUT"
 # a for-loop (an unmatched `.[!.]*` would pass a literal pattern to cp).
 cp -a "$BOOT/." "$OUT/"
 
+# WITNESSED on the real Pi 4: the Alpine tarball ships boot/initramfs-rpi as mode
+# 600 (root-only), and cp -a PRESERVES that. A TFTP server runs unprivileged (dnsmasq
+# drops to `nobody`), so it gets "Permission denied" on the initramfs and the Pi
+# boots a kernel with NO initramfs -> panics "unable to mount root fs". Make the whole
+# served tree world-readable (dirs +rx, files +r) so any TFTP/HTTP server can read it.
+chmod -R a+rX "$OUT"
+
 echo "[netboot] wrote netboot root -> $OUT/ ($(du -sh "$OUT" | cut -f1))"
-echo "[netboot] serve it: see docs/NETBOOT.md (dnsmasq proxyDHCP + TFTP root=$OUT)"
+echo "[netboot] serve it: see docs/NETBOOT.md (image/serve-netboot.sh — DHCP+TFTP+HTTP)"

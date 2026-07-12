@@ -82,9 +82,14 @@ HTTP_PID=$!
 echo "[serve] HTTP root  http://$SERVER:8080/  (apks / modloop-rpi / apkovl)"
 
 # 1+2. dnsmasq DHCP + TFTP + Pi4 boot options.
+# --dhcp-authoritative: WITNESSED necessary — when another DHCP server shares the
+# link (e.g. Windows ICS on the same NIC), the Pi 4 would loop DISCOVER<->OFFER and
+# never REQUEST our address; authoritative mode makes dnsmasq answer decisively so
+# the handshake completes (DISCOVER->OFFER->REQUEST->ACK) and boot proceeds to TFTP.
 # shellcheck disable=SC2086
 dnsmasq --keep-in-foreground --log-dhcp \
   --interface="$IFACE" --bind-interfaces --except-interface=lo \
+  --dhcp-authoritative \
   $DHCP \
   --dhcp-vendorclass=set:rpi,PXEClient \
   --dhcp-option-force=tag:rpi,43,"Raspberry Pi Boot" \
@@ -94,6 +99,11 @@ DNS_PID=$!
 echo "[serve] TFTP root: $ROOT   (Pi requests under <serial>/ — auto-linked below)"
 echo "[serve] watching for the Pi's DHCP + TFTP + HTTP — Ctrl-C to stop"
 echo "[serve] ------------------------------------------------------------"
+
+# dnsmasq TFTP/HTTP run unprivileged — the Alpine initramfs ships mode-600, which
+# would fail to send. Ensure the served tree is world-readable (build-netboot.sh
+# also does this; belt-and-suspenders for a hand-placed root).
+chmod -R a+rX "$ROOT" 2>/dev/null || true
 
 # Auto-create the Pi's per-serial TFTP subdir the moment it appears in the TFTP log
 # (the Pi requests <serial>/start4.elf; symlink the serial dir to the root once).
