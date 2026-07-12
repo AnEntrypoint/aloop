@@ -42,9 +42,14 @@ jobs:
       - name: Build the home-FX LV2 with faust2lv2
         run: |
           cd effects/home/faust
-          # The pitch stage links the exact C++ engine via ffunction (ADR-004),
-          # so faust needs the engine/ include path. faust2lv2 emits a
-          # <name>.lv2 bundle (.so + manifest.ttl + <name>.ttl).
+          # The pitch stage links the exact C++ engine via ffunction (ADR-004).
+          # Two include paths are needed, for two different compilers:
+          #   -I engine        → Faust, so it resolves the ffunction header decl
+          #   CPPFLAGS=-Iengine → the C++ compiler faust2lv2 invokes, so the
+          #                       generated .cpp finds soladSnacOctaver.h / grainFormant.h
+          # (faust2lv2 passes $CPPFLAGS through to the g++ -shared step, and only
+          #  adds the .dsp's own dir to the C++ include path — not -I args.)
+          export CPPFLAGS="-I$(pwd)/engine"
           faust2lv2 -I engine chain.dsp
           ls -R *.lv2 || (echo "::error::no .lv2 bundle produced" && exit 1)
 
