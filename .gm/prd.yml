@@ -1,7 +1,3 @@
-- id: dsp-port-extract
-  subject: 'Extract the Circle-free DSP core from looper: loopMachine, effects (apcEffectsProcessor), pitch (soladSnacOctaver+grainFormant), sampler, microRepeat, the pure Link timeline math. Confirm each compiles with NO Circle include. Document which files ported clean.'
-  notes: The feasibility study says these are Circle-free + alloc-free. Verify by compiling standalone on Linux.
-  status: pending
 - id: dsp-audio-callback
   subject: Author the Linux RT audio callback that drives loopMachine::update per 64-sample block, replacing the Circle AudioSystem dispatch. Allocation-free, no syscalls in the callback. This is the audio heart on Linux.
   notes: The DSP entry point moves from Circle ISR-dispatch to a Linux RT thread callback.
@@ -17,18 +13,6 @@
 - id: lv2-user-swap-dir
   subject: 'Implement the user-swappable-effect mechanism: a flash dir (/effects/user/) scanned for LV2 bundles; drop-in load + reload without restart. Document the drop-a-file-and-it-works UX (the whole moddability goal).'
   notes: The moddable-effects goal. dlopen from flash dir. Instructive user guide for adding effects.
-  status: pending
-- id: lv2-core-affinity
-  subject: 'Pin the two LV2s to cores: home-FX on Core1, user-FX on Core3 (the free core), via pthread_setaffinity_np + SCHED_FIFO. Map to looper existing partition. Document why each core.'
-  notes: Core pinning per the architecture. Core3 was idle in looper, now hosts user-FX.
-  status: pending
-- id: lv2-inprocess-topology
-  subject: 'Implement the zero-latency topology rule: serial chain in-process (both FX one callback) OR fork-join across cores for PARALLEL effects. NEVER a graph. Encode the witnessed rule (0.9ms fits one core, fork-join 0.51ms wall) in the host design + docs.'
-  notes: The witnessed latency-topology decision from feasibility R3. Load-bearing for no-added-latency.
-  status: pending
-- id: lv2-user-crash-isolation
-  subject: 'Isolate a crashing/hanging user LV2: SIGSEGV/watchdog handler that disables a misbehaving plugin and continues (degraded not dead), preserving the home chain + audio. Document the in-process-vs-process-isolation tradeoff.'
-  notes: User plugins untrusted. In-process needs a watchdog (process isolation would add latency).
   status: pending
 - id: lv2-param-control
   subject: Wire LV2 control ports from the MIDI CC layer (the APC knobs -> normalized -> LV2 control ports), preserving looper param mappings (dubfx param_mapping.md). Let users map CCs to their own plugin ports.
@@ -67,10 +51,6 @@
   - external
   - no-Pi4-in-session — smp_affinity + cyclictest under AP load
   status: pending
-- id: usb-f_uac2-gadget
-  subject: Configure the Linux f_uac2 USB audio gadget via configfs on the dwc2 controller, replacing looper hand-rolled UAC2 (dwusbgadget.cpp). Pi presents as a UAC2 audio device. Mono 48k s16 to match. Document the configfs setup.
-  notes: The HARDEST port (feasibility). Deletes looper buggiest code (all buzz/crackle lessons). configfs g_audio/f_uac2.
-  status: pending
 - id: usb-gadget-alsa-bridge
   subject: 'Bridge the f_uac2 gadget ALSA endpoint to the DSP audio callback: the gadget presents an ALSA PCM the audio thread reads/writes. Wire capture (host->Pi) and playback (Pi->host) at the exact block/rate.'
   notes: How gadget audio reaches loopMachine. ALSA PCM mmap for low latency.
@@ -82,28 +62,12 @@
   - external
   - no-Pi4-in-session — f_uac2 round-trip latency measurement
   status: pending
-- id: usb-dwc2-dt-config
-  subject: Configure dwc2 in OTG/peripheral mode via device-tree overlay on the Pi4 (dtoverlay=dwc2), enable the UDC, load libcomposite. Document the boot config that puts the USB port in gadget mode.
-  notes: Boot-time USB gadget enablement. Pi4 USB-C or micro-USB OTG.
-  status: pending
-- id: alpine-diskless-image
-  subject: 'Build the Alpine diskless/RAM image for Pi4: minimal apk set (audio stack, hostapd, wpa_supplicant, the aloop binary), read-only root, OpenRC services. Document the image build + apkovl overlay for persistent config.'
-  notes: Alpine appliance mode = near-bare-metal determinism. Diskless/RAM boot.
-  status: pending
-- id: rt-kernel-build
-  subject: Build/obtain a PREEMPT_RT kernel for Pi4 on Alpine (RT-patched or RT-enabled config). This is the biggest single task. Document the kernel config (PREEMPT_RT, high HZ, threadirqs) + how it is built (CI cross-compile).
-  notes: The tall pole. RT kernel = tens-of-us jitter enabling 64-sample blocks without xruns.
-  status: pending
 - id: rt-cyclictest-verify
   subject: 'HARDWARE VERIFY: cyclictest worst-case wakeup < block budget under audio+network load, xrun-free over a long run. Test: cyclictest -m -S -p95 -i200 -h400 while aloop runs Link-over-WiFi. Documented in RT-TUNING.md; needs hardware.'
   notes: The RT proof. cyclictest command documented.
   blockedBy:
   - external
   - no-Pi4-in-session — cyclictest under load
-  status: pending
-- id: multicore-ipc-port
-  subject: 'Port the lock-free multicore IPC (looper SEV/WFE SPSC rings + double-buffered snapshot) to Linux: pthreads + affinity + SCHED_FIFO, futex/eventfd wakeups replacing SEV/WFE, atomic snapshot unchanged. Document the mapping.'
-  notes: medium-effort port. The lock-free discipline transfers; only the wakeup primitive changes.
   status: pending
 - id: control-plane-port
   subject: 'Port the control plane (looper Core2): MIDI (ALSA rawmidi replacing Circle USB-MIDI), telemetry UDP sockets (:4444/:4445/:4446 -> BSD sockets), the apcKey25 param logic, Link tick. Runs on the control core.'
@@ -120,10 +84,6 @@
 - id: x-hardware-dependency
   subject: 'CORNER: many verify rows (RT jitter, f_uac2 latency, Link-no-glitch, AP-multicast) need REAL Pi4 hardware. Session has no Pi. These stay blockedBy:[external, no-Pi4-in-session] with the exact on-hardware test documented, NOT falsely resolved. The BUILD (code/config/CI/docs) is fully reachable now; only on-device MEASUREMENT is external.'
   notes: 'Honesty: separate what is buildable-now (all code/config/docs/CI) from what needs hardware (measurements). No false completion.'
-  status: pending
-- id: x-observability
-  subject: 'CORNER: port looper telemetry (:4445 verbs, core busy%, xrun counters) to a Linux observability surface (UDP socket or a status file) so the running device is diagnosable — core load, xruns, Link sync, AP/STA state.'
-  notes: Diagnosability. looper had rich telemetry; keep it on Linux.
   status: pending
 - id: x-consolidate-commit
   subject: 'CONSOLIDATE: commit everything as lanmower (no Claude attribution), push to AnEntrypoint/aloop main, witness CI green. The terminal step of this planning+scaffold session.'

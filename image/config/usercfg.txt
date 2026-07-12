@@ -1,0 +1,7 @@
+# aloop Pi4 boot config additions (appended to config.txt / usercfg.txt).
+# Put the USB-C/OTG port into peripheral (gadget) mode so f_uac2 can present the
+# Pi as a USB audio device to a host.
+dtoverlay=dwc2,dr_mode=peripheral
+
+# Load the RT-tuned cmdline (isolcpus etc.) — see kernel/cmdline.txt.
+# The image build merges kernel/cmdline.txt into the boot cmdline.
