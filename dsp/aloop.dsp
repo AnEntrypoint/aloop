@@ -12,10 +12,13 @@
 
 import("stdfaust.lib");
 
-// The loop engine (this dir).
+// The loop engine (20 independent record/play loopers, no overdub).
 loop = component("loop.dsp");
-// The verified dubfx effect chain (vendored under effects/home/faust/).
-fx   = component("../effects/home/faust/chain.dsp");
+// The RUNTIME effects chain — the verified dubfx stages, but with the params as
+// live UI controls (dsp/effects_runtime.dsp) so the remappable control map can
+// set the knobs at runtime (the dubfx chain.dsp bakes them as constants; that
+// stays the A/B reference, this is the runtime variant).
+fx   = component("effects_runtime.dsp");
 
 // Home stack = loop then effects. Mono in/out.
 process = loop : fx;

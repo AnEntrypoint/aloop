@@ -35,7 +35,7 @@ jobs:
           # Generate into the same build dir CMake uses (cmake -S src -B build →
           # CMAKE_BINARY_DIR = build), so CMake sees it as already-present.
           mkdir -p build
-          faust -lang cpp -cn AloopLoopDsp dsp/loop.dsp -o build/loop.cpp
+          faust -lang cpp -cn AloopLoopDsp -I dsp -I effects/home/faust dsp/aloop.dsp -o build/loop.cpp
           echo "generated $(wc -l < build/loop.cpp) lines of loop C++"
 
       - name: Build in an Alpine aarch64 container

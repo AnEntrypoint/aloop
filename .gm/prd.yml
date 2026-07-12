@@ -9,15 +9,3 @@
   - external
   - no-Pi4-in-session — run the completed test/hardware/ suite on a Pi4
   status: pending
-- id: wire-user-lv2-runblock
-  subject: 'GAP found in confirming pass: audio_thread.cpp runs the Faust home stack but the USER LV2 on Core3 is only a COMMENTED call site (// host.runBlock). Actually instantiate the Lv2Host in the audio thread, load /effects/user, and call host.runBlock() per block after the home stack — so the user swappable effect genuinely runs on the free core. Goal #2 requires this to be live, not commented.'
-  notes: 'Real reachable gap: the user-FX path is designed+built but not invoked from the audio loop. Wire it + rebuild green.'
-  status: pending
-- id: wire-midi-thread
-  subject: 'GAP: main.cpp starts Link/telemetry/audio but never spawns the MIDI loop (runMidiLoop) — so the control surface (the APC knobs/commands) is not running. Spawn runMidiLoop on the control thread + a shared ParamStore, and wire the param values into the Faust home stack + the Link/loop params. Goal completeness: the device must respond to its controller.'
-  notes: 'Real reachable gap: MIDI input built (midi.cpp) but not spawned. Wire it in main.'
-  status: pending
-- id: wire-midi-to-faust-zones
-  subject: 'GAP: the Faust UI shim in audio_thread has EMPTY addButton/addCheckButton/addSlider (discards the zone float*), and the MIDI params are not pushed into the Faust home-stack control zones — so rec/play/overdub/loopLen/knobs never reach the Faust engine (the loop would never record). Make the UI shim capture named zones into a map; the audio thread sets them from the MIDI ParamStore + Link each block. This is what makes the controls actually work.'
-  notes: 'The final functional wiring: MIDI/Link -> Faust control zones. Without it the controls do nothing.'
-  status: pending

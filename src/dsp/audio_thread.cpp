@@ -40,20 +40,37 @@ struct FaustMeta { void declare(const char*, const char*) {} };
 #include <map>
 #include <string>
 struct FaustUI {
-    std::map<std::string, float*> zones;
-    void openTabBox(const char*){} void openHorizontalBox(const char*){}
-    void openVerticalBox(const char*){} void closeBox(){}
-    void addButton(const char* l, float* z){ zones[l]=z; }
-    void addCheckButton(const char* l, float* z){ zones[l]=z; }
-    void addVerticalSlider(const char* l, float* z, float, float, float, float){ zones[l]=z; }
-    void addHorizontalSlider(const char* l, float* z, float, float, float, float){ zones[l]=z; }
-    void addNumEntry(const char* l, float* z, float, float, float, float){ zones[l]=z; }
+    std::map<std::string, float*> zones;   // FULL path (group/…/label) → zone
+    std::vector<std::string> path;         // current open-box group stack
+    std::string full(const char* label) const {
+        std::string p;
+        for (auto& g : path) if (!g.empty()) { p += g; p += "/"; }
+        p += label;
+        return p;   // e.g. "looper03/rec"  (the vgroup name + the control label)
+    }
+    void openTabBox(const char* l){ path.push_back(l?l:""); }
+    void openHorizontalBox(const char* l){ path.push_back(l?l:""); }
+    void openVerticalBox(const char* l){ path.push_back(l?l:""); }
+    void closeBox(){ if(!path.empty()) path.pop_back(); }
+    void addButton(const char* l, float* z){ zones[full(l)]=z; }
+    void addCheckButton(const char* l, float* z){ zones[full(l)]=z; }
+    void addVerticalSlider(const char* l, float* z, float, float, float, float){ zones[full(l)]=z; }
+    void addHorizontalSlider(const char* l, float* z, float, float, float, float){ zones[full(l)]=z; }
+    void addNumEntry(const char* l, float* z, float, float, float, float){ zones[full(l)]=z; }
     void addHorizontalBargraph(const char*, float*, float, float){}
     void addVerticalBargraph(const char*, float*, float, float){}
     void addSoundfile(const char*, const char*, void**){}
     void declare(float*, const char*, const char*){}
-    // set a control by name (no-op if the dsp doesn't expose it).
-    void set(const char* name, float v){ auto it=zones.find(name); if(it!=zones.end()) *it->second = v; }
+    // Set a control by full path (no-op if the dsp doesn't expose it). Matches
+    // either the exact path or any zone whose path ENDS with the given suffix,
+    // so "HPCUT" finds ".../HPCUT" and "looper03/rec" matches exactly.
+    void set(const char* name, float v){
+        auto it=zones.find(name);
+        if(it!=zones.end()){ *it->second=v; return; }
+        std::string suf(name);
+        for(auto& kv:zones){ const std::string& k=kv.first;
+            if(k.size()>=suf.size() && k.compare(k.size()-suf.size(), suf.size(), suf)==0){ *kv.second=v; return; } }
+    }
 };
 #define Meta FaustMeta
 #define UI FaustUI
@@ -77,13 +94,15 @@ ParamStore* g_params = nullptr;   // shared control store (from MIDI); read each
 // the home stack exposes. Loopers use a 2-digit index (looper03/rec); effects use
 // the chain's slider labels. Returns "" if there is no matching zone.
 static std::string targetToZone(const std::string& target) {
-    // looperN/xxx  →  looperNN/xxx  (2-digit, matching the Faust vgroup label)
+    // looperN/xxx → "looper%2i/xxx" (Faust's width-2 right-justified index: a
+    // space for single digits — "looper 0/rec" … "looper19/rec"). The UI shim's
+    // set() also matches by suffix, so exact formatting is belt-and-suspenders.
     if (target.rfind("looper", 0) == 0) {
         auto slash = target.find('/');
         if (slash != std::string::npos) {
             int idx = atoi(target.c_str() + 6);
             char z[64];
-            snprintf(z, sizeof z, "looper%02d/%s", idx, target.c_str() + slash + 1);
+            snprintf(z, sizeof z, "looper%2d/%s", idx, target.c_str() + slash + 1);
             return z;
         }
     }

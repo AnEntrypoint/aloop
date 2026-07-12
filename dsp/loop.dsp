@@ -47,6 +47,9 @@ with {
 // (looper00/rec … looper19/rec). All loopers see the same live input; the input
 // is fanned to each looper and to the dry thru, then everything sums.
 //   in -> [ thru | looper0 | looper1 | … | looper19 ] -> sum
+// vgroup label "looper%2i" → Faust substitutes the par index, giving group names
+// "looper 0" … "looper19" (a space for single digits). The native shell's
+// targetToZone normalizes to this exact form so each looper is addressable.
 loopEngine = _ <: (_ , par(i, NLOOPERS, vgroup("looper%2i", oneLooper))) :> _ ;
 
 process(in) = loopEngine(in);

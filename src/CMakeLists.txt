@@ -41,9 +41,9 @@ if(NOT EXISTS ${CMAKE_BINARY_DIR}/loop.cpp)
   if(FAUST_BIN)
     add_custom_command(
       OUTPUT  ${CMAKE_BINARY_DIR}/loop.cpp
-      COMMAND ${FAUST_BIN} -lang cpp -cn AloopLoopDsp ${CMAKE_SOURCE_DIR}/../dsp/loop.dsp -o ${CMAKE_BINARY_DIR}/loop.cpp
-      DEPENDS ${CMAKE_SOURCE_DIR}/../dsp/loop.dsp
-      COMMENT "Compiling the Faust loop engine (dsp/loop.dsp) to C++")
+      COMMAND ${FAUST_BIN} -lang cpp -cn AloopLoopDsp -I ${CMAKE_SOURCE_DIR}/../dsp -I ${CMAKE_SOURCE_DIR}/../effects/home/faust ${CMAKE_SOURCE_DIR}/../dsp/aloop.dsp -o ${CMAKE_BINARY_DIR}/loop.cpp
+      DEPENDS ${CMAKE_SOURCE_DIR}/../dsp/aloop.dsp ${CMAKE_SOURCE_DIR}/../dsp/loop.dsp ${CMAKE_SOURCE_DIR}/../dsp/effects_runtime.dsp
+      COMMENT "Compiling the Faust home stack (dsp/aloop.dsp = loop + runtime effects) to C++")
     add_custom_target(faust_loop DEPENDS ${CMAKE_BINARY_DIR}/loop.cpp)
   else()
     message(FATAL_ERROR "loop.cpp not pre-generated and faust not found — pre-generate it or install faust")
