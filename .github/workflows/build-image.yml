@@ -1,0 +1,58 @@
+# Assemble the flashable Alpine SD image for the Pi 4.
+#
+# WHY in CI: the device image must be reproducible — a fresh checkout produces
+# the same image bit-for-bit. This job pulls the LV2 bundle + the aloop binary
+# artifacts from the other workflows and lays them into an Alpine apkovl overlay
+# with the RT tuning, the f_uac2 gadget setup, and the network configs.
+name: build-image
+
+on:
+  workflow_run:
+    workflows: ["build-binary"]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  alpine-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download built artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true   # early on, artifacts may not exist yet
+        with:
+          path: artifacts
+
+      - name: Assemble the apkovl overlay
+        run: |
+          set -e
+          # The overlay is what turns a stock Alpine RAM boot into an aloop device:
+          #   /etc/local.d/         -> rt-tune.sh + f_uac2 gadget bring-up at boot
+          #   /etc/hostapd/, wpa_supplicant, dnsmasq -> the network configs
+          #   /opt/aloop/aloop      -> the binary
+          #   /effects/home, /effects/user -> the LV2 bundles
+          #   /etc/aloop.conf       -> the single tunables file
+          mkdir -p overlay/etc/local.d overlay/opt/aloop overlay/effects/home overlay/effects/user
+          cp kernel/rt-tune.sh overlay/etc/local.d/10-rt-tune.start
+          cp -r src/net/config overlay/etc/aloop-net
+          cp src/net/autoap.sh overlay/opt/aloop/
+          [ -f config/aloop.conf ] && cp config/aloop.conf overlay/etc/ || true
+          # Pull artifacts in when present (from build-binary / build-lv2).
+          find artifacts -name 'aloop' -exec cp {} overlay/opt/aloop/ \; 2>/dev/null || true
+          find artifacts -name '*.lv2' -maxdepth 3 -exec cp -r {} overlay/effects/home/ \; 2>/dev/null || true
+          echo "overlay assembled:"; find overlay -maxdepth 3 -type f | sort
+
+      - name: Package overlay (image build stub)
+        run: |
+          # A full genimage/mkimg step lays this overlay onto an Alpine SD image.
+          # Until the base-image pipeline lands, we package the overlay itself as
+          # the artifact so the device layout is reproducible + reviewable.
+          tar czf aloop-apkovl.tar.gz -C overlay .
+          ls -la aloop-apkovl.tar.gz
+
+      - name: Upload image overlay
+        uses: actions/upload-artifact@v4
+        with:
+          name: aloop-apkovl
+          path: aloop-apkovl.tar.gz

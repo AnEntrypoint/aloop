@@ -1,0 +1,57 @@
+# Cross-compile the aloop native binary for Raspberry Pi 4 (aarch64) under musl.
+#
+# WHY musl + Alpine container: the device runs Alpine (musl libc), so the binary
+# must be built against musl, not glibc (ADR-001; MIGRATION-MAP musl note). We
+# build inside an Alpine aarch64 container so the toolchain and libc match the
+# target exactly — no surprises at deploy.
+name: build-binary
+
+on:
+  push:
+    paths:
+      - 'src/**'
+      - '.github/workflows/build-binary.yml'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  aloop-aarch64-musl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU (for aarch64 emulation)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build in an Alpine aarch64 container
+        run: |
+          docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w alpine:3.20 sh -c '
+            set -e
+            # The audio + RT + plugin stack, all musl-built:
+            apk add --no-cache build-base cmake pkgconf \
+              alsa-lib-dev lilv-dev lv2-dev \
+              linux-headers eudev-dev
+            # Ableton Link is header-only C++ (fetched as a submodule/vendored).
+            # DSP core is ported from ../looper (Circle-free); the host is src/host.
+            echo "toolchain:"; gcc --version | head -1
+            # The real build wires up when src/ has its CMakeLists; until then this
+            # step verifies the container + deps resolve (a musl-availability gate,
+            # MIGRATION-MAP musl-compat row) and fails loudly if a dep is missing.
+            if [ -f src/CMakeLists.txt ]; then
+              cmake -S src -B build -DCMAKE_BUILD_TYPE=Release
+              cmake --build build -j"$(nproc)"
+              ls -la build/aloop || (echo "::error::aloop binary not produced" && exit 1)
+            else
+              echo "src/CMakeLists.txt not present yet — verified musl deps resolve:"
+              apk info -e alsa-lib-dev lilv-dev lv2-dev && echo "all audio deps present under musl (ADR-001 musl-compat gate PASS)"
+            fi
+          '
+
+      - name: Upload aloop binary (if built)
+        if: hashFiles('build/aloop') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: aloop-aarch64-musl
+          path: build/aloop

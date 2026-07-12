@@ -1,0 +1,33 @@
+# RT tuning — why each knob exists
+
+The goal: worst-case scheduling jitter in the **tens of microseconds** so a
+64-sample (1.333 ms) audio block never misses its deadline. Every setting in
+`kernel/cmdline.txt` and `kernel/rt-tune.sh` maps to a specific latency source.
+
+| Knob | Where | Why |
+|------|-------|-----|
+| **PREEMPT_RT kernel** | kernel config | Bounds the *worst-case* time between an interrupt and the audio thread running. Without it, stock Linux can stall audio for milliseconds under load. This is the single biggest lever. |
+| `isolcpus=1,3` | `cmdline.txt` | Removes cores 1 and 3 (the audio cores) from the general scheduler, so only our pinned threads run there — nothing else steals a time slice. |
+| `nohz_full=1,3` | `cmdline.txt` | Stops the periodic scheduler tick on the audio cores; the tick is a recurring source of jitter. |
+| `rcu_nocbs=1,3` + `rcu_nocb_poll` | `cmdline.txt` | Moves RCU callback processing off the audio cores (another background jitter source). |
+| `threadirqs` | `cmdline.txt` | Runs IRQ handlers in threads so their priority can be set — lets audio threads out-prioritize non-audio interrupts. |
+| `governor=performance` | `rt-tune.sh` | Frequency scaling parks the CPU; waking it costs microseconds. Pin to max clock. |
+| deep C-states disabled | `rt-tune.sh` | Deep idle states take microseconds to exit — enough to blow a block. Disabled on the audio cores. |
+| **network/USB IRQ affinity → control core** | `rt-tune.sh` | **The mechanism that makes Link-over-WiFi not glitch audio.** WiFi/USB interrupts are steered onto Core 2, so the audio cores never service them. This is *the* condition behind feasibility Requirement 1. Works on Pi 4; Pi 5's RP1 blocks it (ADR-006). |
+| `SCHED_FIFO` + high rtprio | audio threads | The audio threads run under real-time scheduling above everything else, so they always get the CPU when a block is due. |
+| `mlockall` + unlimited memlock | audio process | Locks all memory into RAM so the audio thread never page-faults (a fault would blow the deadline). |
+| pinned thread affinity | audio threads | home-FX → Core 1, user-FX → Core 3, matching `isolcpus`. |
+
+## How we know it's tuned (the verification, needs hardware)
+
+The proof is a `cyclictest` run under simultaneous audio + WiFi/AP + MIDI load,
+confirming worst-case wakeup latency stays under the block budget with zero
+xruns over a long run. That measurement **requires a real Pi 4** and is parked as
+a hardware-dependent row (ADR-009) with the exact command documented:
+
+```
+cyclictest -m -S -p 95 -i 200 -d 0 -h 400   # while aloop runs with Link over WiFi
+```
+
+Until that runs on hardware, the tuning is *configured correctly by design* but
+the jitter number is not yet *measured* — and we say so rather than claiming it.

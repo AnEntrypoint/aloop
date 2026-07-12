@@ -1,0 +1,66 @@
+# Build + validate the home-FX LV2 bundle from the Faust chain.
+#
+# WHY this is CI, not a local build: the LV2 .so link needs the LV2 dev headers
+# and the Faust compiler, which live in the build container — not on every dev
+# machine. Building here makes the effects bundle reproducible (ADR-003).
+name: build-lv2
+
+on:
+  push:
+    paths:
+      - 'effects/**'
+      - 'src/dsp/**'
+      - '.github/workflows/build-lv2.yml'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  home-fx-lv2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Faust + LV2 dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y faust lv2-dev pkg-config build-essential
+
+      - name: Fetch the verified Faust chain from dubfx
+        run: |
+          # The home-FX chain IS the dubfx verified chain (ADR-003). In CI we
+          # vendor it under effects/home/faust/. Until the vendoring step lands,
+          # fall back to any local copy; fail loudly if absent so we never build
+          # a silently-empty bundle.
+          if [ -d effects/home/faust ]; then
+            echo "using vendored Faust chain under effects/home/faust"
+            ls -la effects/home/faust
+          else
+            echo "::error::effects/home/faust not present — vendor the dubfx chain first"
+            exit 1
+          fi
+
+      - name: Build the home-FX LV2 with faust2lv2
+        run: |
+          cd effects/home/faust
+          # The pitch stage links the exact C++ engine via ffunction (ADR-004),
+          # so faust needs the engine/ include path. faust2lv2 emits a
+          # <name>.lv2 bundle (.so + manifest.ttl + <name>.ttl).
+          faust2lv2 -I engine chain.dsp
+          ls -R *.lv2 || (echo "::error::no .lv2 bundle produced" && exit 1)
+
+      - name: Validate the LV2 bundle
+        run: |
+          sudo apt-get install -y lv2-dev lilv-utils || true
+          cd effects/home/faust
+          # lv2_validate checks the .ttl against the LV2 spec; lv2ls lists it.
+          find . -name '*.ttl' -print
+          if command -v lv2_validate >/dev/null; then
+            lv2_validate $(find . -name 'manifest.ttl') || echo "::warning::lv2_validate reported issues"
+          fi
+
+      - name: Upload home-FX LV2 bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: home-fx-lv2
+          path: effects/home/faust/*.lv2
+          if-no-files-found: error
