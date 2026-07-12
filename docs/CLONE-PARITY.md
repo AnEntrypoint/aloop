@@ -10,7 +10,7 @@ looper's inline effects.
 
 **1. The loop engine — a native Faust reimplementation (behaviorally equivalent).**
 The loop engine is `dsp/loop.dsp` — an aloop-native Faust program (record/play/
-overdub/loop-grid as a cycle-free feedback-delay looper), NOT looper source.
+record/play as a cycle-free feedback-delay looper — 20 independent loopers, NO overdub), NOT looper source.
 aloop contains no Circle/looper code; it reproduces the *behavior* natively. The
 loop grid is driven by Ableton Link phase (varispeed sync), same as the original.
 
@@ -46,7 +46,7 @@ deterministic**, delivered through the LV2 boundary.
 
 | Behavior | aloop vs looper | Basis |
 |----------|-----------------|-------|
-| Loop record/play/overdub/loop-grid | **behaviorally equivalent** | native Faust reimplementation (`dsp/loop.dsp`), same musical behavior |
+| Loop record/play, 20 independent loopers (no overdub) | **behaviorally equivalent** | native Faust reimplementation (`dsp/loop.dsp`), same musical behavior |
 | Link-synced grid, varispeed | **behaviorally equivalent** | Link phase drives the Faust loop length, same as the original |
 | Effects: pitch, microrepeat, filters, reverb(default), mix | **bit-identical** | the Faust effect chain == the original C++ (dubfx A/B), composed into the home stack |
 | Effect: tape delay feedback tail | **behaviorally equivalent** (corr ≥ 0.956) | float32 precision limit of the reference itself |

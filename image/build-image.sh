@@ -38,6 +38,7 @@ cp ../src/usb/f_uac2-gadget.sh    overlay/etc/local.d/20-usb-gadget.start
 cp ../src/net/autoap.sh           overlay/opt/aloop/autoap.sh
 cp -r ../src/net/config           overlay/etc/aloop-net
 cp ../config/aloop.conf           overlay/etc/aloop.conf
+cp ../config/controls.conf       overlay/etc/aloop-controls.conf
 chmod +x overlay/etc/local.d/*.start overlay/opt/aloop/*.sh
 
 cat > overlay/etc/local.d/30-aloop.start <<'START'

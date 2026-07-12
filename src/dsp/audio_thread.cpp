@@ -9,6 +9,7 @@
 
 #include "audio_thread.h"
 #include "../host/lv2_host.h"
+#include "../control/midi.h"
 
 #include <pthread.h>
 #include <sched.h>
@@ -32,17 +33,27 @@
 #if __has_include("loop.cpp")
 #define FAUSTFLOAT float
 struct FaustMeta { void declare(const char*, const char*) {} };
+// A real param-binding UI: it captures each control's name → its zone pointer so
+// the audio thread can SET the Faust engine's controls (rec/play/len/vol per looper (no overdub) 
+// the effect knobs) from the MIDI ParamStore + Link each block. Without this the
+// controls are inert (the loop would never record).
+#include <map>
+#include <string>
 struct FaustUI {
+    std::map<std::string, float*> zones;
     void openTabBox(const char*){} void openHorizontalBox(const char*){}
     void openVerticalBox(const char*){} void closeBox(){}
-    void addButton(const char*, float*){} void addCheckButton(const char*, float*){}
-    void addVerticalSlider(const char*, float*, float, float, float, float){}
-    void addHorizontalSlider(const char*, float*, float, float, float, float){}
-    void addNumEntry(const char*, float*, float, float, float, float){}
+    void addButton(const char* l, float* z){ zones[l]=z; }
+    void addCheckButton(const char* l, float* z){ zones[l]=z; }
+    void addVerticalSlider(const char* l, float* z, float, float, float, float){ zones[l]=z; }
+    void addHorizontalSlider(const char* l, float* z, float, float, float, float){ zones[l]=z; }
+    void addNumEntry(const char* l, float* z, float, float, float, float){ zones[l]=z; }
     void addHorizontalBargraph(const char*, float*, float, float){}
     void addVerticalBargraph(const char*, float*, float, float){}
     void addSoundfile(const char*, const char*, void**){}
     void declare(float*, const char*, const char*){}
+    // set a control by name (no-op if the dsp doesn't expose it).
+    void set(const char* name, float v){ auto it=zones.find(name); if(it!=zones.end()) *it->second = v; }
 };
 #define Meta FaustMeta
 #define UI FaustUI
@@ -60,6 +71,33 @@ std::atomic<bool> g_running{false};
 pthread_t g_worker;
 AudioThread::Telemetry g_telem{};
 AudioConfig g_cfg;
+ParamStore* g_params = nullptr;   // shared control store (from MIDI); read each block
+
+// Map a control-map TARGET name ("looper3/rec", "fx/hp") to the Faust zone label
+// the home stack exposes. Loopers use a 2-digit index (looper03/rec); effects use
+// the chain's slider labels. Returns "" if there is no matching zone.
+static std::string targetToZone(const std::string& target) {
+    // looperN/xxx  →  looperNN/xxx  (2-digit, matching the Faust vgroup label)
+    if (target.rfind("looper", 0) == 0) {
+        auto slash = target.find('/');
+        if (slash != std::string::npos) {
+            int idx = atoi(target.c_str() + 6);
+            char z[64];
+            snprintf(z, sizeof z, "looper%02d/%s", idx, target.c_str() + slash + 1);
+            return z;
+        }
+    }
+    // fx/hp etc → the effect chain's control labels (from param_mapping.md).
+    if (target == "fx/hp")      return "HPCUT";
+    if (target == "fx/lp")      return "LPCUT";
+    if (target == "fx/lpres")   return "LPRES";
+    if (target == "fx/reverb")  return "REVAMT";
+    if (target == "fx/delay")   return "DELAYAMT";
+    if (target == "fx/time")    return "TIME";
+    if (target == "fx/formant") return "FORMANT";
+    if (target == "fx/pitch")   return "SEMIS";
+    return "";   // commands (cmd/*) are handled separately, not a Faust zone
+}
 
 // Pin the CURRENT thread to `core` and set SCHED_FIFO at `prio`. This is the
 // Linux equivalent of the bare-metal per-core assignment (MIGRATION-MAP).
@@ -131,6 +169,16 @@ static void* worker(void*) {
             // record/play loop + the effects in one pass. The user-FX LV2 (Core 3)
             // runs after via the in-process host (host.runBlock), joined this block.
 #ifdef ALOOP_HAVE_FAUST_LOOP
+            // Apply the remappable controls: for each bound target the MIDI map
+            // set, push its current value into the matching Faust zone. Done once
+            // per block from the atomic store — no locks, no alloc (the name→zone
+            // strings resolve cheaply; a production build caches name→float* once).
+            if (g_params) {
+                g_params->forEach([&](const std::string& target, int){
+                    std::string zone = targetToZone(target);
+                    if (!zone.empty()) fui.set(zone.c_str(), g_params->get(target));
+                });
+            }
             for (int i = 0; i < N; i++) fin[i] = buf[i] / 32768.0f;
             faustHome.compute(N, fins, fouts);
             // the user LV2(s) process the home-stack OUTPUT (fout) on the free
@@ -155,8 +203,8 @@ static void* worker(void*) {
     return nullptr;
 }
 
-bool AudioThread::start(const AudioConfig& cfg) {
-    cfg_ = cfg; g_cfg = cfg;
+bool AudioThread::start(const AudioConfig& cfg, ParamStore* params) {
+    cfg_ = cfg; g_cfg = cfg; g_params = params;
     g_running.store(true);
     if (pthread_create(&g_worker, nullptr, worker, nullptr) != 0) {
         fprintf(stderr, "[audio] fatal: could not create audio thread\n");

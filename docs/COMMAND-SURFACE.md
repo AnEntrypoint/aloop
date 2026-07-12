@@ -5,7 +5,7 @@ reproduces looper's full command surface (the ported apcKey25*.cpp logic + loop
 commands), with the input source moved to ALSA rawmidi (src/control/midi.cpp).
 
 ## Loop commands (ported from looper loopMachine command dispatch)
-record · play · stop · overdub · undo/redo · clear · halve length · double length
+record · play · stop · clear/erase (per track) · halve/double speed (varispeed) · loop-immediate · set/clear loop-start — for each of the 20 independent loopers. NO overdub.
 · set/clear mark point · pause (mute-with-advancing-head) · quantize-to-grid.
 
 ## APC Key25 controls (the exact mapping — src/control/midi.cpp, param_mapping.md)

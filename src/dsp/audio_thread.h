@@ -10,6 +10,8 @@
 
 namespace aloop {
 
+struct ParamStore;   // control values from MIDI (control/midi.h)
+
 struct AudioConfig {
     int sampleRate = 48000;
     int blockSize  = 64;      // 1.333 ms budget — do not raise
@@ -31,7 +33,10 @@ struct AudioConfig {
 // read/write (which is the intended blocking point).
 class AudioThread {
 public:
-    bool start(const AudioConfig& cfg);
+    // Start the RT audio pipeline. `params` is the shared control store the MIDI
+    // thread writes; the audio thread reads it each block and sets the matching
+    // Faust control zones (the remappable-control path).
+    bool start(const AudioConfig& cfg, struct ParamStore* params = nullptr);
     void stop();
 
     // Telemetry the control thread reads (never written from audio hot path

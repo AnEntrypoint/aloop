@@ -17,3 +17,7 @@
   subject: 'GAP: main.cpp starts Link/telemetry/audio but never spawns the MIDI loop (runMidiLoop) — so the control surface (the APC knobs/commands) is not running. Spawn runMidiLoop on the control thread + a shared ParamStore, and wire the param values into the Faust home stack + the Link/loop params. Goal completeness: the device must respond to its controller.'
   notes: 'Real reachable gap: MIDI input built (midi.cpp) but not spawned. Wire it in main.'
   status: pending
+- id: wire-midi-to-faust-zones
+  subject: 'GAP: the Faust UI shim in audio_thread has EMPTY addButton/addCheckButton/addSlider (discards the zone float*), and the MIDI params are not pushed into the Faust home-stack control zones — so rec/play/overdub/loopLen/knobs never reach the Faust engine (the loop would never record). Make the UI shim capture named zones into a map; the audio thread sets them from the MIDI ParamStore + Link each block. This is what makes the controls actually work.'
+  notes: 'The final functional wiring: MIDI/Link -> Faust control zones. Without it the controls do nothing.'
+  status: pending

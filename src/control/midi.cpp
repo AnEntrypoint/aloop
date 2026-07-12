@@ -1,73 +1,96 @@
-// aloop MIDI input — ALSA rawmidi replacing Circle USB-MIDI (MIGRATION-MAP).
+// aloop MIDI control — ALSA rawmidi input, driven by a REMAPPABLE control map
+// (config/controls.conf). No hardcoded CC→control table: every binding comes
+// from the config file, so the whole surface is re-mappable without recompiling.
 //
-// The APC Key25 (or any controller) sends CC/note messages; the mapping logic
-// (which CC → which normalized param) is ported unchanged from looper's
-// apcKey25*.cpp and dubfx's param_mapping.md. Only the INPUT SOURCE changes:
-// Circle USB-MIDI → ALSA rawmidi. Runs on the control thread; writes the param
-// snapshot the audio thread reads (never the audio hot path).
+// Flow: load the map (midi → target name) → read ALSA rawmidi → look up the
+// incoming CC/note in the map → write the target's value into the ParamStore,
+// keyed by TARGET NAME. The audio thread reads the store by name and sets the
+// matching Faust control zone (looperN/rec, fx/hp, …).
+
+#include "midi.h"
 
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
-#include <atomic>
+#include <cstdlib>
+#include <string>
+#include <unordered_map>
 
 #if __has_include(<alsa/asoundlib.h>)
 #include <alsa/asoundlib.h>
 #define ALOOP_HAVE_ALSA 1
 #endif
 
-#include "midi.h"
-
 namespace aloop {
 
-// ParamStore is declared in midi.h (shared with main.cpp, which spawns this loop).
-
-// Reproduce looper's CC→normalized mapping (param_mapping.md). The exact table:
-//   CC51→HP, CC54→LPres, CC55→LP, CC48→reverb, CC49→delay, CC50→time (all /127);
-//   CC53→formant (deadzone+range); CC52→pitch semis; notes 82-86→microrepeat div.
-// Kept here so the audio path stays free of MIDI parsing.
-static void applyCC(ParamStore& ps, uint8_t cc, uint8_t data2) {
-    const float norm = data2 / 127.0f;
-    switch (cc) {
-        case 51: ps.value[0].store(norm); break;  // HP cutoff
-        case 54: ps.value[1].store(norm); break;  // LP resonance
-        case 55: ps.value[2].store(norm); break;  // LP cutoff
-        case 48: ps.value[3].store(norm); break;  // reverb amount
-        case 49: ps.value[4].store(norm); break;  // delay amount
-        case 50: ps.value[5].store(norm); break;  // time
-        case 53: {                                // formant: deadzone + range
-            bool dead = (data2 >= 60 && data2 <= 68);
-            ps.value[6].store(dead ? 0.0f : (((int)data2 - 64) / 63.0f));
-        } break;
-        case 52: ps.value[7].store((norm * 24.0f) - 12.0f); break; // pitch semis ±12
-        default: break;
-    }
+// Parse "cc51" / "note20" / "cc51.2" into (isNote, number, channel or -1).
+static bool parseMidiKey(const std::string& s, bool& isNote, int& num, int& ch) {
+    ch = -1;
+    std::string body = s;
+    auto dot = s.find('.');
+    if (dot != std::string::npos) { ch = atoi(s.c_str() + dot + 1); body = s.substr(0, dot); }
+    if (body.rfind("cc", 0) == 0)      { isNote = false; num = atoi(body.c_str() + 2); return true; }
+    if (body.rfind("note", 0) == 0)    { isNote = true;  num = atoi(body.c_str() + 4); return true; }
+    return false;
 }
 
-// Control-thread loop: open the ALSA rawmidi device, read messages, apply the
-// mapping into the param store. Blocking read is fine — this is NOT the audio
-// thread. Hotplug: on device loss, params hold their last value (DEGRADED-MODES).
+// The loaded map: a MIDI event key → the target control name (e.g. "looper3/rec").
+// Key packs (isNote<<16 | num<<1 | anychannel) — simple + fast.
+static uint32_t midiKey(bool isNote, int num) { return ((uint32_t)isNote << 8) | (uint32_t)(num & 0xFF); }
+
 void runMidiLoop(ParamStore& ps, const char* device) {
+    // --- load the remappable control map ---
+    std::unordered_map<uint32_t, std::string> map;
+    const char* mapPath = "/etc/aloop-controls.conf";
+    FILE* mf = fopen(mapPath, "r");
+    if (!mf) mf = fopen("config/controls.conf", "r");   // dev fallback
+    if (mf) {
+        char line[256];
+        while (fgets(line, sizeof line, mf)) {
+            char midi[64], target[128];
+            if (line[0] == '#' || line[0] == '\n') continue;
+            if (sscanf(line, " %63s %127s", midi, target) == 2) {
+                bool isNote; int num, ch;
+                if (parseMidiKey(midi, isNote, num, ch))
+                    map[midiKey(isNote, num)] = target;
+            }
+        }
+        fclose(mf);
+        fprintf(stderr, "[midi] loaded %zu control bindings from %s\n", map.size(), mapPath);
+    } else {
+        fprintf(stderr, "[midi] no control map — controls unbound until %s exists\n", mapPath);
+    }
+
+    // Publish each binding's target into the store's name index so the audio
+    // thread knows which Faust zones to set. (ParamStore holds a name→value map.)
+    for (auto& kv : map) ps.bind(kv.second);
+
 #ifdef ALOOP_HAVE_ALSA
     snd_rawmidi_t* in = nullptr;
     const char* dev = (device && strcmp(device, "auto")) ? device : "hw:1,0,0";
     if (snd_rawmidi_open(&in, nullptr, dev, SND_RAWMIDI_SYNC) < 0) {
-        fprintf(stderr, "[midi] no controller at %s — params hold defaults\n", dev);
+        fprintf(stderr, "[midi] no controller at %s — params hold\n", dev);
         return;
     }
-    fprintf(stderr, "[midi] reading %s (APC-style CC mapping)\n", dev);
+    fprintf(stderr, "[midi] reading %s (remappable control map)\n", dev);
     uint8_t st = 0, d1 = 0, d2 = 0; int phase = 0; uint8_t b;
     while (snd_rawmidi_read(in, &b, 1) == 1) {
-        if (b & 0x80) { st = b; phase = 1; continue; }      // status byte
-        if (phase == 1) { d1 = b; phase = 2; }
-        else if (phase == 2) { d2 = b; phase = 1;
-            if ((st & 0xF0) == 0xB0) applyCC(ps, d1, d2);   // control change
-            // (note-on 0x90 for microrepeat divisors handled similarly)
-        }
+        if (b & 0x80) { st = b; phase = 1; continue; }
+        if (phase == 1) { d1 = b; phase = 2; continue; }
+        // phase 2: full message
+        d2 = b; phase = 1;
+        uint8_t type = st & 0xF0;
+        uint32_t key = 0; float val = 0;
+        if (type == 0xB0) { key = midiKey(false, d1); val = d2 / 127.0f; }         // CC
+        else if (type == 0x90 && d2 > 0) { key = midiKey(true, d1); val = 1.0f; }  // note-on
+        else if (type == 0x80 || (type == 0x90 && d2 == 0)) { key = midiKey(true, d1); val = 0.0f; } // note-off
+        else continue;
+        auto it = map.find(key);
+        if (it != map.end()) ps.setByName(it->second, val);   // apply per the MAP
     }
     snd_rawmidi_close(in);
 #else
-    (void)ps; (void)device;
+    (void)ps;
 #endif
 }
 

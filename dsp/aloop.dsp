@@ -3,7 +3,7 @@
 // stack that runs on Core 1; the user's swappable effect is a separate LV2 on
 // Core 3 (loaded by the in-process host). See docs/ARCHITECTURE.md.
 //
-// Signal: input -> loop.dsp (record/play/overdub loop engine) -> the dubfx
+// Signal: input -> loop.dsp (20 independent record/play loopers, no overdub) -> the dubfx
 // effect chain (pitch/delay/reverb/microrepeat/filters) -> output.
 //
 // Composing this way means the ENTIRE home audio path is one Faust compile — the
