@@ -27,17 +27,30 @@ NLOOPERS = 20;            // 20 independent loopers (the hardware setup)
 // One looper. The control labels use Faust's "[N]" group-index substitution so
 // each of the 20 instances gets its own rec/play/len/vol control ("looper0/rec"
 // … "looper19/rec"). Record replaces the loop; else it holds — NO overdub.
+// Global controls (shared across all loopers): clear wipes every loop; speedMul
+// scales the effective loop length for the momentary half/double-speed commands.
+clearAll = button("clear");
+speedMul = hslider("speed", 1.0, 0.25, 4.0, 0.001);   // 0.5 = half, 2.0 = double
+
 oneLooper(in) = loopSig * playN * volN
 with {
     recN  = button("rec");
     playN = checkbox("play");
     lenN  = hslider("len", 48000, 64, MAXLEN, 1);
     volN  = hslider("vol", 1.0, 0.0, 1.0, 0.001);
+    eraseN = button("erase");   // per-looper wipe (hardware ERASE_TRACK 0x60)
+    // effective length obeys the global speed multiplier (varispeed half/double).
+    // halfspeed (0.5) LENGTHENS the delay (slower/lower); doublespeed (2.0) shortens
+    // it. Clamp to [1, MAXLEN] so the fdelay stays in range even at 0.5× (2×len).
+    effLen = min(MAXLEN, max(1.0, lenN / speedMul));
+    // wipe this loop when EITHER the global clear or this looper's erase is held.
+    wipe   = max(clearAll, eraseN);
     step(loop) = record + hold
     with {
-        delayed = de.fdelay(MAXLEN, max(1.0, lenN), loop);
-        record  = in * recN;                 // record: capture the live input
-        hold    = delayed * (1.0 - recN);    // else: hold/recirculate (no overdub)
+        delayed = de.fdelay(MAXLEN, effLen, loop);
+        record  = in * recN;                              // record: capture input
+        // else hold/recirculate — UNLESS wiped, which zeroes the loop.
+        hold    = delayed * (1.0 - recN) * (1.0 - wipe);
     };
     loopSig = step ~ _;
 };

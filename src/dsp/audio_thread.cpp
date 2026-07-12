@@ -199,6 +199,29 @@ static void* worker(void*) {
                     std::string zone = targetToZone(target);
                     if (!zone.empty()) fui.set(zone.c_str(), g_params->get(target));
                 });
+                // Global commands (cmd/*) are NOT per-looper Faust zones — they drive
+                // the engine-wide `clear` button and `speed` multiplier directly (the
+                // hardware's CLEARALL + momentary HALFSPEED/DOUBLESPEED). Held (value
+                // 1) = active; released = neutral. Double wins if both are somehow
+                // held. These labels are engine-global in loop.dsp (not under a
+                // looper group), so set() resolves them by their plain name.
+                fui.set("clear", g_params->get("cmd/clearall") > 0.5f ? 1.0f : 0.0f);
+                float speed = 1.0f;
+                if (g_params->get("cmd/halfspeed")   > 0.5f) speed = 0.5f;
+                if (g_params->get("cmd/doublespeed") > 0.5f) speed = 2.0f;
+                fui.set("speed", speed);
+                // Global STOP-ALL (hardware LOOP_COMMAND_STOP 0x03): clear every
+                // looper's play checkbox so all playback stops. Per-looper stop is
+                // already covered by binding a control to looper<i>/play (=0 stops
+                // that one); this is the single all-tracks command. Edge-triggered
+                // on the held value so it doesn't fight a user re-arming a looper.
+                if (g_params->get("cmd/stopall") > 0.5f) {
+                    char z[32];
+                    for (int lp = 0; lp < 20; lp++) {
+                        snprintf(z, sizeof z, "looper%2d/play", lp);
+                        fui.set(z, 0.0f);
+                    }
+                }
             }
             // Varispeed Link sync: when synced, set every looper's loop length from
             // the Link tempo (a musical phrase = a whole number of beats). A tempo
