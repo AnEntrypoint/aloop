@@ -56,28 +56,35 @@ with {
     L    = max(1.0, lenN);            // active loop length in samples (>=1)
     wipe = max(clearAll, eraseN);     // clear this loop's stored audio when held
 
-    // WRITE pointer: an integer sample counter that advances only while recording,
-    // wrapping at L. Feedback is a plain +1 accumulator through `_` (no table).
-    wp = (+(recN) : %(L)) ~ _ : int;
+    // WRITE pointer: a sample counter that advances only while recording, wrapping
+    // at L. Feedback is a plain accumulator through `_` (the table is never in its
+    // path). ma.modulo wraps the float length cleanly; int() gives the sample index.
+    wpStep(prev) = ma.modulo(prev + recN, L);
+    wp = wpStep ~ _ : int;
     // what to store: the live input while recording, else 0 into the wiped slot so
     // a held wipe overwrites the loop with silence as the write head passes (and,
     // on record, replaces — NO overdub). When neither recording nor wiping, we
     // still write the existing sample back (read-through) so the loop is preserved.
     wdata = in * recN;
 
-    // READ pointer: a resettable phase accumulator. Each sample it advances by
-    // speedMul (the varispeed read rate) and wraps at L via fmod; on `reset` it
-    // jumps to the mark point. This is the witnessed cycle-free form (a plain 1-into
-    // -1 recursion through `_`, the table is never in the pointer's feedback path).
-    //   reset = loopNow (LOOP_IMMEDIATE) OR markset (jumping to a just-set mark).
-    // ba.if(cond, then, else) selects without branching.
-    reset = max(loopNow, marksetN);
-    rp = ( \(prev). ba.if(reset, mark, ma.frac((prev + speedMul) / L) * L) ) ~ _ ;
+    // READ pointer: a resettable phase accumulator. In Faust a recursive signal is
+    // written `y = f ~ _`, where f is a ONE-input circuit fed the previous output.
+    // Here f advances the phase by speedMul (varispeed read rate) and wraps at L;
+    // on `reset` it snaps to the mark point instead. The table is NEVER in this
+    // pointer's feedback path, so there is no read-modify-write cycle.
+    //   reset = loopNow (LOOP_IMMEDIATE) OR markset (jump to a just-set mark).
+    // select2(c, a, b) = a when c==0, b when c==1 — branchless; ma.modulo wraps.
+    reset = max(loopNow, marksetN) > 0.5;
+    rpStep(prev) = select2(reset, ma.modulo(prev + speedMul, L), mark);
+    rp = rpStep ~ _ ;
 
-    // MARK point (restart origin): a sample-and-hold state. markset latches the
-    // current read position; markclear latches 0; else it holds. Fed by rp with a
-    // 1-sample delay (rp' ) to avoid a same-sample cycle with the reset above.
-    mark = ( \(prev). ba.if(marksetN, rp', ba.if(markclearN, 0.0, prev)) ) ~ _ ;
+    // MARK point (restart origin): a one-sample sample-and-hold. markset latches the
+    // current read position (rp'), markclear latches 0, else it holds. rp' (rp
+    // delayed one sample) breaks the same-sample cycle with reset above.
+    markStep(prev) = select2(marksetN > 0.5,
+                             select2(markclearN > 0.5, prev, 0.0),
+                             rp');
+    mark = markStep ~ _ ;
 
     // The buffer: write wdata at wp while recording, read at rp. On wipe, force the
     // output to 0 so a held clear/erase silences immediately. rwtable(size,init,
