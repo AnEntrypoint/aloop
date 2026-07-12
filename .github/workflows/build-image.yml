@@ -26,8 +26,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Tools (mtools, dosfstools, fdisk — unprivileged FAT assembly)
-        run: sudo apt-get update && sudo apt-get install -y mtools dosfstools fdisk curl gzip
+      - name: Tools (mtools, dosfstools, fdisk, file — unprivileged FAT assembly)
+        run: sudo apt-get update && sudo apt-get install -y mtools dosfstools fdisk curl gzip file
 
       # Pull the aloop binary + LV2 bundle produced by build-binary / build-lv2.
       # They live in DIFFERENT workflows' runs, so fetch each from the latest

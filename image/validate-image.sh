@@ -70,15 +70,21 @@ if [ -f "$OVLTMP/o.tar.gz" ]; then
   # payload (binary + effects) — WARN not FAIL if absent (a layout-only build).
   if echo "$INV" | grep -q 'opt/aloop/aloop$'; then
     ok "apkovl: aloop binary present"
-    # Verify it is an aarch64 ELF (the Pi 4 target) — extract just that file + file(1).
+    # Verify it is an aarch64 ELF (the Pi 4 target). Extract the whole overlay
+    # (tar member paths may be ./opt/... or opt/...) and file(1) the binary.
     ARCHTMP="$(mktemp -d)"
-    tar -xzf "$OVLTMP/o.tar.gz" -C "$ARCHTMP" opt/aloop/aloop 2>/dev/null || true
-    if [ -f "$ARCHTMP/opt/aloop/aloop" ] && command -v file >/dev/null; then
-      ARCH_DESC=$(file -b "$ARCHTMP/opt/aloop/aloop")
+    tar -xzf "$OVLTMP/o.tar.gz" -C "$ARCHTMP" 2>/dev/null || true
+    BINPATH=$(find "$ARCHTMP" -path '*opt/aloop/aloop' -type f 2>/dev/null | head -n1)
+    if [ -n "$BINPATH" ] && command -v file >/dev/null; then
+      ARCH_DESC=$(file -b "$BINPATH")
       case "$ARCH_DESC" in
-        *aarch64*|*ARM\ aarch64*|*"ARM aarch64"*) ok "aloop binary is aarch64 ELF ($ARCH_DESC)";;
+        *aarch64*|*"ARM aarch64"*) ok "aloop binary is aarch64 ELF ($ARCH_DESC)";;
         *) bad "aloop binary is NOT aarch64: $ARCH_DESC";;
       esac
+    elif [ -z "$BINPATH" ]; then
+      note "  (arch check skipped: binary not extractable for file(1))"
+    else
+      note "  (arch check skipped: file(1) unavailable)"
     fi
     rm -rf "$ARCHTMP"
   else
