@@ -39,9 +39,15 @@ xruns. By pinning all network work to Core 2 and using `isolcpus` +
 audio cores meet their deadline regardless of network activity. (This is
 achievable on Pi 4; see the Pi-5 caveat in `FEASIBILITY.md`.)
 
-## The audio path: lock-free, allocation-free, ported unchanged
+## The audio path: Faust, lock-free, allocation-free
 
-The DSP core — `loopMachine`, the effects, the pitch engine, the sampler — has
+The audio DSP — the loop engine (`dsp/loop.dsp`) and the effects (the dubfx Faust
+chain) — is **Faust**, composed into one home-FX program (`dsp/aloop.dsp`) that
+Faust compiles to allocation-free C++. It contains no Circle/looper source; it
+reproduces the looper's behavior natively. (The paragraph below describes the
+lock-free control→audio handoff that the Faust program's param inputs use.)
+
+The former note about a ported C++ DSP core no longer applies —
 **no dependency on Circle** and does **no allocation, locking, or syscalls in the
 audio callback**. That's why it ports to Linux unchanged: it drops onto a Linux
 `SCHED_FIFO` audio thread exactly as it sat on a bare-metal core. The dubfx

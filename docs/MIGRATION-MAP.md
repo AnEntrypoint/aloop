@@ -10,7 +10,7 @@ Classification: **delete** (kernel/userspace replaces it entirely) · **trivial*
 
 | Bare-metal (Circle) | aloop (Linux) | Class | Effort | Notes |
 |---------------------|---------------|-------|--------|-------|
-| DSP core: `loopMachine`, effects, pitch (`soladSnacOctaver`), sampler, `microRepeat` | ported unchanged onto an RT audio thread | **port** | low | Circle-free + allocation-free already; the dubfx A/B harness is the regression oracle |
+| Loop engine + effects (the whole audio DSP) | **reimplemented in Faust** (`dsp/loop.dsp` + the dubfx effect chain, composed into `dsp/aloop.dsp`) | **new (native)** | low–med | No Circle source; the effects are the dubfx A/B-verified chain, the loop engine is a native Faust looper (witnessed) |
 | `CMultiCoreSupport` + SEV/WFE rings + `paramSnapshot` | pthreads + `sched_setaffinity` + `SCHED_FIFO`; `futex`/`eventfd` wakeups; the atomic snapshot unchanged | **port** | medium | Lock-free discipline transfers; only the wakeup primitive changes |
 | Ableton Link raw-Ethernet clone (`abletonLink.cpp`, `linkWire/linkGhost/linkSession.h`, 938+ lines) | official Ableton Link library over UDP multicast | **delete** | low–med | Existed only for the missing IP stack; the lib is RT-safe and interoperable |
 | WiFi: `CBcm4343Device` + `JoinOpenNet`/`CreateOpenNet` + `wlanDHCP`/`wlanDHCPServer` + hand-rolled ARP/IGMP | `brcmfmac` (mainline) + `wpa_supplicant` (STA) + `hostapd` (AP) + `dnsmasq` (DHCP) + autoAP switch | **delete** | low–med | The whole raw stack collapses into standard userspace |

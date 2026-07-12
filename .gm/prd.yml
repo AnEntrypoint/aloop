@@ -9,7 +9,3 @@
   - external
   - no-Pi4-in-session — run the completed test/hardware/ suite on a Pi4
   status: pending
-- id: aloop-end-to-end-build
-  subject: 'aloop 100%: the full binary builds green in CI (the Faust loop engine compiled/hosted + the in-process LV2 host + Link + control + audio), producing a runnable aarch64/musl artifact + the flashable image. CI green is the witness.'
-  notes: The 100%-buildable end state. CI must actually compile the whole thing.
-  status: pending
