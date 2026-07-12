@@ -1,0 +1,192 @@
+- id: dsp-port-extract
+  subject: 'Extract the Circle-free DSP core from looper: loopMachine, effects (apcEffectsProcessor), pitch (soladSnacOctaver+grainFormant), sampler, microRepeat, the pure Link timeline math. Confirm each compiles with NO Circle include. Document which files ported clean.'
+  notes: The feasibility study says these are Circle-free + alloc-free. Verify by compiling standalone on Linux.
+  status: pending
+- id: dsp-audio-callback
+  subject: Author the Linux RT audio callback that drives loopMachine::update per 64-sample block, replacing the Circle AudioSystem dispatch. Allocation-free, no syscalls in the callback. This is the audio heart on Linux.
+  notes: The DSP entry point moves from Circle ISR-dispatch to a Linux RT thread callback.
+  status: pending
+- id: dsp-block-format-parity
+  subject: 'Preserve the exact audio format: mono, 48000, 64-sample block, s16<->float /32768 at boundaries. Verify parity with looper (the dubfx harness already A/B-proved the DSP; reuse it as the regression oracle).'
+  notes: Format drift breaks everything downstream; the dubfx A/B harness is the guard.
+  status: pending
+- id: dsp-alloc-free-audit
+  subject: 'Audit the ported audio path for RT-safety: zero malloc/free, zero locks, zero syscalls, zero file I/O in the callback. mlockall + pre-fault all buffers. Witness with a no-alloc check under load.'
+  notes: RT correctness — the callback must never fault or block.
+  status: pending
+- id: lv2-host-inprocess
+  subject: 'Build the in-process LV2 host: dlopen an LV2 .so bundle, read its .ttl (lilv or a minimal parser), instantiate/connect_port/run it inside the audio callback. NO JACK/PipeWire graph (WHY: graph adds +1 period, violates zero-latency). This is the moddability engine.'
+  notes: THE crux of R2+R3. In-process = zero graph latency. Document the no-graph decision loudly.
+  status: pending
+- id: lv2-home-fx-bundle
+  subject: Package the dubfx Faust chain as the home-FX LV2 bundle via faust2lv2 (chain.dsp + pitch_ffi.h -> .so + .ttl). This is the fixed home effects stack. Verify it loads in the host and produces the verified output.
+  notes: Reuses the dubfx verified chain. faust2lv2 witnessed working in dubfx. The home FX bundle.
+  status: pending
+- id: lv2-user-swap-dir
+  subject: 'Implement the user-swappable-effect mechanism: a flash dir (/effects/user/) scanned for LV2 bundles; drop-in load + reload without restart. Document the drop-a-file-and-it-works UX (the whole moddability goal).'
+  notes: The moddable-effects goal. dlopen from flash dir. Instructive user guide for adding effects.
+  status: pending
+- id: lv2-core-affinity
+  subject: 'Pin the two LV2s to cores: home-FX on Core1, user-FX on Core3 (the free core), via pthread_setaffinity_np + SCHED_FIFO. Map to looper existing partition. Document why each core.'
+  notes: Core pinning per the architecture. Core3 was idle in looper, now hosts user-FX.
+  status: pending
+- id: lv2-inprocess-topology
+  subject: 'Implement the zero-latency topology rule: serial chain in-process (both FX one callback) OR fork-join across cores for PARALLEL effects. NEVER a graph. Encode the witnessed rule (0.9ms fits one core, fork-join 0.51ms wall) in the host design + docs.'
+  notes: The witnessed latency-topology decision from feasibility R3. Load-bearing for no-added-latency.
+  status: pending
+- id: lv2-user-crash-isolation
+  subject: 'Isolate a crashing/hanging user LV2: SIGSEGV/watchdog handler that disables a misbehaving plugin and continues (degraded not dead), preserving the home chain + audio. Document the in-process-vs-process-isolation tradeoff.'
+  notes: User plugins untrusted. In-process needs a watchdog (process isolation would add latency).
+  status: pending
+- id: lv2-param-control
+  subject: Wire LV2 control ports from the MIDI CC layer (the APC knobs -> normalized -> LV2 control ports), preserving looper param mappings (dubfx param_mapping.md). Let users map CCs to their own plugin ports.
+  notes: Control-plane moddability. Reuse the dubfx param mapping.
+  status: pending
+- id: link-official-lib
+  subject: Integrate the official Ableton Link library (github.com/Ableton/link) over UDP multicast 224.76.78.75:20808, replacing looper hand-rolled raw-Ethernet clone. Map Link SessionState -> the looper LiveParams snapshot -> the audio thread.
+  notes: Delete linkWire/linkGhost/linkSession; use the maintained lib. RT-safe capture/commit.
+  status: pending
+- id: link-snapshot-handoff
+  subject: 'Port the lock-free snapshot handoff: Link thread (Core2) captures SessionState, publishes to a double-buffered atomic snapshot the audio thread reads (matching looper paramSnapshot pattern). NO locks in the audio path.'
+  notes: The RT-safe boundary that decouples Link jitter from audio (feasibility R1).
+  status: pending
+- id: link-phase-apply
+  subject: 'Reproduce the phase/tempo apply in loopMachine: recompute masterLoopBlocks from Link BPM, idle-only sub-beat phase align of masterPhase (looper loopMachine.cpp:628-696 logic). Cheap integer math in the callback.'
+  notes: How Link timing drives the loop grid. Ported from looper.
+  status: pending
+- id: link-glitch-verify
+  subject: 'Verify Link-over-WiFi does NOT glitch audio: witness that WiFi TX (now kernel-managed, threaded IRQ on isolated core) does not cause the once-a-second glitch looper had. Measure audio xruns with Link active over WiFi.'
+  notes: The R1 improvement claim — must be witnessed on real hardware, else blockedBy:external hardware.
+  status: pending
+- id: wifi-wpa-hostapd
+  subject: Set up wpa_supplicant (STA) + hostapd + dnsmasq (AP) on Alpine, replacing looper hand-rolled DHCP/ARP/IGMP. Standard userspace network. Document the config files + their looper-equivalent.
+  notes: Delete wlanDHCP/wlanDHCPServer; use the tested stack.
+  status: pending
+- id: wifi-autoap-switch
+  subject: 'Implement autoAP mode-switching: try STA (join known net); on failure host AP; switch back when a known net returns; hysteresis to avoid flapping. OpenRC service + switch script. Matches looper join-first-fallback-to-AP logic.'
+  notes: 'R4: AP when external unavailable. autoAP pattern. State machine documented.'
+  status: pending
+- id: wifi-ap-multicast
+  subject: 'Ensure Link multicast passes over the Pi-hosted AP: hostapd ap_isolate=0 + multicast handling so AP-client peers see each other and the Pi for Link. Verify a peer can Link over the Pi AP.'
+  notes: 'R4 gotcha: AP must not block multicast between clients. ap_isolate=0.'
+  status: pending
+- id: wifi-ap-irq-affinity
+  subject: 'Steer WiFi/network IRQs off the audio core: isolcpus for the audio core, /proc/irq/*/smp_affinity pinning brcmfmac + net IRQs to the control core. Verify (Pi4) the audio core stays clean under AP load.'
+  notes: R1/R4 no-glitch mechanism. Pi4-specific (Pi5 RP1 caveat documented). Witness on hardware.
+  status: pending
+- id: wifi-simultaneous-note
+  subject: 'Document (not build) the simultaneous-AP+STA path for if scope ever changes: single-radio nl80211 concurrency is flaky, clean path = USB WiFi dongle 2nd radio. Not needed for the switching requirement. Capture in DECISIONS.md.'
+  notes: The one deferred sub-case, documented not silently dropped.
+  status: pending
+- id: usb-f_uac2-gadget
+  subject: Configure the Linux f_uac2 USB audio gadget via configfs on the dwc2 controller, replacing looper hand-rolled UAC2 (dwusbgadget.cpp). Pi presents as a UAC2 audio device. Mono 48k s16 to match. Document the configfs setup.
+  notes: The HARDEST port (feasibility). Deletes looper buggiest code (all buzz/crackle lessons). configfs g_audio/f_uac2.
+  status: pending
+- id: usb-gadget-alsa-bridge
+  subject: 'Bridge the f_uac2 gadget ALSA endpoint to the DSP audio callback: the gadget presents an ALSA PCM the audio thread reads/writes. Wire capture (host->Pi) and playback (Pi->host) at the exact block/rate.'
+  notes: How gadget audio reaches loopMachine. ALSA PCM mmap for low latency.
+  status: pending
+- id: usb-gadget-latency-verify
+  subject: 'Verify f_uac2 latency parity: measure round-trip latency of the gadget path vs looper 1.333ms baseline; confirm the kernel per-microframe URB handling matches (deletes the -4608 microframe bug looper had to fix by hand).'
+  notes: Latency + correctness. The kernel does microframe layout right by construction. Witness on hardware.
+  status: pending
+- id: usb-dwc2-dt-config
+  subject: Configure dwc2 in OTG/peripheral mode via device-tree overlay on the Pi4 (dtoverlay=dwc2), enable the UDC, load libcomposite. Document the boot config that puts the USB port in gadget mode.
+  notes: Boot-time USB gadget enablement. Pi4 USB-C or micro-USB OTG.
+  status: pending
+- id: alpine-diskless-image
+  subject: 'Build the Alpine diskless/RAM image for Pi4: minimal apk set (audio stack, hostapd, wpa_supplicant, the aloop binary), read-only root, OpenRC services. Document the image build + apkovl overlay for persistent config.'
+  notes: Alpine appliance mode = near-bare-metal determinism. Diskless/RAM boot.
+  status: pending
+- id: rt-kernel-build
+  subject: Build/obtain a PREEMPT_RT kernel for Pi4 on Alpine (RT-patched or RT-enabled config). This is the biggest single task. Document the kernel config (PREEMPT_RT, high HZ, threadirqs) + how it is built (CI cross-compile).
+  notes: The tall pole. RT kernel = tens-of-us jitter enabling 64-sample blocks without xruns.
+  status: pending
+- id: rt-tuning-cmdline
+  subject: 'RT tuning: isolcpus + nohz_full + rcu_nocbs for the audio core, performance governor pinned, C-states off, IRQ affinity, SCHED_FIFO priorities, mlockall. Encode in cmdline.txt + a tuning service. Document each knob + why.'
+  notes: The tuning that turns RT-capable into RT-actual. Each knob documented (instructiveness).
+  status: pending
+- id: rt-cyclictest-verify
+  subject: 'Verify RT jitter with cyclictest under audio+network load: confirm worst-case wakeup < the block budget (tens of us target). Witness the xrun-free claim. On real hardware -> blockedBy:external if no Pi available in session.'
+  notes: The RT proof. cyclictest is the standard. Honest blockedBy:external if no hardware.
+  status: pending
+- id: musl-compat-verify
+  subject: 'Verify the whole stack builds+runs under musl (Alpine): Ableton Link lib, lilv, ALSA, Faust runtime, the ported DSP, RubberBand/signalsmith if used. mlockall+explicit pthread stack for RT under musl. Document any musl fix.'
+  notes: Alpine=musl. Verify no glibc-only dep. Feasibility flagged this as verification-heavy.
+  status: pending
+- id: multicore-ipc-port
+  subject: 'Port the lock-free multicore IPC (looper SEV/WFE SPSC rings + double-buffered snapshot) to Linux: pthreads + affinity + SCHED_FIFO, futex/eventfd wakeups replacing SEV/WFE, atomic snapshot unchanged. Document the mapping.'
+  notes: medium-effort port. The lock-free discipline transfers; only the wakeup primitive changes.
+  status: pending
+- id: control-plane-port
+  subject: 'Port the control plane (looper Core2): MIDI (ALSA rawmidi replacing Circle USB-MIDI), telemetry UDP sockets (:4444/:4445/:4446 -> BSD sockets), the apcKey25 param logic, Link tick. Runs on the control core.'
+  notes: Core2 control plane on Linux. APC MIDI + telemetry + Link.
+  status: pending
+- id: midi-apc-port
+  subject: 'Port APC Key25 USB-MIDI: Circle USB-MIDI -> Linux ALSA rawmidi/snd-usb-audio. The CC/note handling (apcKey25*.cpp) is portable logic; only the input source changes. Verify knobs/notes reach the param snapshot.'
+  notes: MIDI control input. Mature Linux driver; the mapping logic ports unchanged.
+  status: pending
+- id: ci-github-actions
+  subject: 'Set up GitHub Actions: workflows to (a) build the LV2 bundles (faust2lv2 + g++), (b) cross-compile the aloop binary for aarch64/armhf, (c) assemble the Alpine image, (d) optionally build the RT kernel. Document each workflow.'
+  notes: User asked for GH Actions for build steps. CI is the reproducible build surface.
+  status: pending
+- id: ci-lv2-build
+  subject: 'CI workflow: build+validate the home-FX LV2 (faust2lv2 chain.dsp) and lint any user LV2 template, producing a downloadable bundle artifact. This is the effects build the CI actually runs.'
+  notes: The concrete first CI step — builds the LV2. faust2lv2 in a container.
+  status: pending
+- id: ci-cross-compile
+  subject: 'CI workflow: cross-compile the aloop native binary (DSP+LV2 host+Link+control) for Pi4 aarch64 under musl (Alpine container). Produces the runnable binary artifact.'
+  notes: The main binary build. Alpine/musl cross-compile in Actions.
+  status: pending
+- id: ci-image-assembly
+  subject: 'CI workflow: assemble the Alpine SD image (apkovl overlay + binary + configs + gadget/RT setup) as a flashable artifact. The reproducible device image.'
+  notes: The deliverable image, built in CI so it is reproducible.
+  status: pending
+- id: ci-green-witness
+  subject: 'Ensure the CI pipeline goes green and is witnessed (CONSOLIDATE requirement): the workflows must actually pass on push. Fix any red before COMPLETE.'
+  notes: CI must be green — the gm CONSOLIDATE phase witnesses this.
+  status: pending
+- id: publish-anentrypoint
+  subject: Publish aloop to AnEntrypoint/aloop (gh repo create, push main). Committed as lanmower, no Claude attribution. Private repo. This is the explicit publish step in the user process.
+  notes: The publish step. gh repo create AnEntrypoint/aloop --push.
+  status: pending
+- id: gitignore-managed
+  subject: 'Managed .gitignore: build artifacts, cross-compile output, .gm/exec-spool + transients, node_modules, kernel build tree, image output. Keep git clean for the push gate.'
+  notes: Hygiene for the push gate.
+  status: pending
+- id: license-contributing
+  subject: Add LICENSE + CONTRIBUTING.md (how to add a user LV2 effect, how to build, the decision-log discipline). Reinforces the moddable + instructive goals.
+  notes: Community/moddability docs. How others extend it.
+  status: pending
+- id: x-hardware-dependency
+  subject: 'CORNER: many verify rows (RT jitter, f_uac2 latency, Link-no-glitch, AP-multicast) need REAL Pi4 hardware. Session has no Pi. These stay blockedBy:[external, no-Pi4-in-session] with the exact on-hardware test documented, NOT falsely resolved. The BUILD (code/config/CI/docs) is fully reachable now; only on-device MEASUREMENT is external.'
+  notes: 'Honesty: separate what is buildable-now (all code/config/docs/CI) from what needs hardware (measurements). No false completion.'
+  status: pending
+- id: x-dubfx-reuse
+  subject: 'CORNER: reuse dubfx artifacts directly — the verified Faust chain (dsp/*.dsp, pitch_ffi.h), the A/B harness (ref/refharness.cpp, test/) as the aloop regression oracle, and FEASIBILITY doc as design source. Vendor or submodule them; do not re-derive. Document the provenance.'
+  notes: Do not redo dubfx work. Pull the verified chain + harness in as the effects + regression base.
+  status: pending
+- id: x-degraded-modes
+  subject: 'CORNER: define graceful degradation: no user LV2 present (home-FX only), user LV2 crash (watchdog disables it), no external AP (fall to hosting AP), no Link peers (free-run tempo), USB host disconnect (silence, keep loops). Each an explicit fail-path, not a crash.'
+  notes: Every failure path explicit (engineering invariant). Documented degraded modes.
+  status: pending
+- id: x-config-schema
+  subject: 'CORNER: a single documented config file (aloop.conf on flash) for the tunables: core assignments, RT priorities, AP SSID/pass, effect dirs, Link enable, MIDI device. Users configure without recompiling.'
+  notes: Configurability + moddability. One documented config surface.
+  status: pending
+- id: x-boot-sequence-doc
+  subject: 'CORNER: document the full boot sequence (docs/BOOT.md): power-on -> Alpine RAM boot -> RT tuning applied -> f_uac2 gadget up -> audio thread pinned+RT -> LV2s loaded -> Link+wifi/AP up -> ready. So the whole runtime is legible.'
+  notes: 'Instructive: the exact startup order + what each stage does.'
+  status: pending
+- id: x-observability
+  subject: 'CORNER: port looper telemetry (:4445 verbs, core busy%, xrun counters) to a Linux observability surface (UDP socket or a status file) so the running device is diagnosable — core load, xruns, Link sync, AP/STA state.'
+  notes: Diagnosability. looper had rich telemetry; keep it on Linux.
+  status: pending
+- id: x-signalsmith-rubberband
+  subject: 'CORNER: confirm whether the live-pitch path uses signalsmith/RubberBand in looper (the dubfx pitch is soladSnacOctaver via ffunction). Ensure the aloop pitch matches what looper actually ships, and those libs build under musl.'
+  notes: Pitch-engine provenance check — the feasibility used soladSnac; confirm looper live path + musl build.
+  status: pending
+- id: x-consolidate-commit
+  subject: 'CONSOLIDATE: commit everything as lanmower (no Claude attribution), push to AnEntrypoint/aloop main, witness CI green. The terminal step of this planning+scaffold session.'
+  notes: The commit/push/CI-green close per gm CONSOLIDATE.
+  status: pending

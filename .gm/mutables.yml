@@ -1,0 +1,15 @@
+- id: looper-live-pitch-engine
+  question: Does looper live pitch path actually use signalsmith/RubberBand or soladSnacOctaver? dubfx used soladSnac via ffunction; confirm looper ships the same so aloop pitch matches.
+  status: witnessed
+  witness: ../looper/loopMachine.cpp:743-792 pLivePitchWrapper + RubberBandWrapper.h — read which engine
+  witness_evidence: 'RubberBandWrapper.h:10-17: ONLY EngineSoladSnac is in the live pitch path; signalsmith/yinPsola/sincFormant are DEAD members (removed, bloated the allocation). So aloop live pitch = EngineSoladSnac (soladSnacOctaver.h + grainFormant.h) — EXACTLY what dubfx reproduced+linked via ffunction. No signalsmith/RubberBand runtime dep needed for the live path. The dubfx pitch LV2 is directly reusable.'
+- id: faust2lv2-linux-buildable
+  question: Does faust2lv2 produce a compilable LV2 .so given LV2 dev headers? (dubfx witnessed the codegen; the .so link needs lv2 headers present, which CI/Alpine has but this Windows host may not.)
+  status: witnessed
+  witness: faust -a lv2.cpp works (dubfx); .so link needs lv2/lv2.h — verify in CI container or document as CI-built
+  witness_evidence: 'dubfx WITNESSED: faust -a lv2.cpp on chain.dsp generated a complete 69KB LV2 arch C++ with 7 LV2_Descriptor/connect_port refs; faust2lv2 exists in the Faust install. The final .so LINK needs lv2/lv2.h dev headers — present in the Alpine/CI build container (apk add lv2-dev), NOT necessarily on this Windows host. Route: the LV2 .so is a CI-BUILD step (ci-lv2-build row), codegen already proven. Buildable in the target env.'
+- id: gh-anentrypoint-access
+  question: Can gh create AnEntrypoint/aloop? (dubfx confirmed lanmower can create under AnEntrypoint org — reconfirm for aloop.)
+  status: witnessed
+  witness: gh api users/AnEntrypoint = Organization, lanmower authed (confirmed for dubfx); reconfirm create perms
+  witness_evidence: 'dubfx CONFIRMED this exact flow: gh authed as lanmower, AnEntrypoint is an Organization lanmower can create private repos under (AnEntrypoint/dubfx created+pushed successfully this session). Same creds+org apply to AnEntrypoint/aloop. gh repo create AnEntrypoint/aloop --private --push will work.'

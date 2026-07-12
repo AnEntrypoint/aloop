@@ -1,0 +1,32 @@
+# gm plugkit runtime
+.gm/pw-sock-*/
+.gm/exec-spool/
+.gm/witness/
+.gm/*.db
+.gm/*.db-*
+.gm/last-dispatch-ts
+.gm/last-instruction-ts
+.gm/next-step.md
+.gm/turn-state.json
+.gm/residual-check-fired
+.gm/.gm-continue-count
+.gm/last-prompt.txt
+.gm/instructions/
+.gm/memories/*.tmp-*
+.gm/disciplines/codeinsight-manifest/
+.gm/disciplines/codeinsight-vec/
+.gm/_prompt.json
+
+# build artifacts
+build/
+*.o
+*.so
+*.exe
+*.lv2/*.so
+image/*.img
+kernel/*-build/
+node_modules/
+
+# cross-compile output
+out/
+dist/
