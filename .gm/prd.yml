@@ -9,3 +9,7 @@
   - external
   - no-Pi4-in-session — run the completed test/hardware/ suite on a Pi4
   status: pending
+- id: parity-loop-start-assessment
+  subject: 'DECIDED (was assessment): LOOP_IMMEDIATE/SET_LOOP_START/CLEAR_LOOP_START are ACTIVELY control-surface-driven (apcKey25Notes.cpp:175 SHIFT+pad = LOOP_IMMEDIATE; loopMachine.cpp:338-370 = setMarkPoint/clearMarkPoint restart point). The Faust feedback-delay engine has NO addressable playhead so cannot do mark-point restart. IMPLEMENT: migrate loop.dsp to a buffer+playhead model (rwtable write-on-record, phase-accumulator read-on-play with a settable mark-point offset), which also matches the real hardware (buffer+playhead) more faithfully. Add markset/markclear/loopnow controls + wire them. Re-verify no endless-cycle. This is reachable work, so implement, do not document-around.'
+  notes: Loop-start IS used (SHIFT+pad). Delay-line has no playhead. Migrate to buffer+playhead rwtable engine to gain SET/CLEAR_LOOP_START + LOOP_IMMEDIATE. Implement.
+  status: pending

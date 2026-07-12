@@ -50,6 +50,13 @@ public:
         bool     linkSynced = false;
         double   bpm = 0.0;
         bool     apMode = false;    // hosting AP vs joined STA
+        // Per-looper state — the Linux-native equivalent of the hardware's
+        // GET_STATE 0x30 dump (which of the 20 loopers are recording/playing and
+        // their levels). Read from the Faust zones each block; served on udp/4445.
+        static constexpr int kLoopers = 20;
+        bool     looperRec[kLoopers]  = {};   // 1 = recording (rec button held)
+        bool     looperPlay[kLoopers] = {};   // 1 = playing (play checkbox on)
+        float    looperVol[kLoopers]  = {};   // 0..1 output level
     };
     Telemetry snapshotTelemetry() const;
 

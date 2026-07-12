@@ -72,11 +72,10 @@ int main(int argc, char** argv) {
     host.loadDir("/effects/user");
     host.connect(cfg.blockSize, cfg.channels);
 
-    // Ableton Link + telemetry on the control thread (never the audio cores).
+    // Ableton Link on the control thread (never the audio cores). Telemetry is
+    // started AFTER the audio thread below so it can read the live snapshot.
     aloop::LinkBridge link;
     link.start((double)cfg.sampleRate, /*enabled=*/true);
-    aloop::Telemetry telem;
-    telem.start(/*udpPort=*/4445);
 
     // MIDI control on its own thread (the control surface — the APC knobs/commands).
     // It writes the shared param store; the audio thread reads it. Runs on the
@@ -92,6 +91,12 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[aloop] fatal: could not start audio pipeline\n");
         return 1;
     }
+
+    // Telemetry now that audio is running — it serves the audio thread's live
+    // atomic snapshot (core load, xruns, Link sync/bpm) on udp/4445 + status file.
+    aloop::Telemetry telem;
+    telem.start(/*udpPort=*/4445, &audio);
+
     printf("[aloop] ready.\n");
 
     // Control loop: pump Link + telemetry ~ a few Hz. The audio runs independently

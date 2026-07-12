@@ -3,6 +3,7 @@
 // never touches the audio hot path (it reads the audio thread's atomic snapshot).
 
 #include "telemetry.h"
+#include "../dsp/audio_thread.h"   // AudioThread::Telemetry (the live snapshot)
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -11,6 +12,7 @@
 #include <fcntl.h>
 #include <cstdio>
 #include <cstring>
+#include <cstdint>
 
 namespace aloop {
 
@@ -19,8 +21,9 @@ int g_sock = -1;
 int g_port = 4445;
 }
 
-void Telemetry::start(int udpPort) {
+void Telemetry::start(int udpPort, const AudioThread* audio) {
     g_port = udpPort;
+    audio_ = audio;   // the live snapshot source (may be null before audio starts)
     g_sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (g_sock < 0) { fprintf(stderr, "[telem] socket failed\n"); return; }
     int fl = fcntl(g_sock, F_GETFL, 0);
@@ -44,14 +47,33 @@ void Telemetry::stop() { if (g_sock >= 0) { close(g_sock); g_sock = -1; } }
 void Telemetry::publish() {
     if (g_sock < 0) return;
 
-    // Build the status snapshot. (In the composed process, main passes the live
-    // AudioThread::Telemetry + host + wifi state; here we emit the schema so the
-    // surface is exercisable and stable.)
-    char json[512];
+    // Build the status snapshot from the LIVE audio-thread telemetry (atomic
+    // snapshot — no lock, never touches the hot path). Before audio starts, or if
+    // no source was wired, report the not-yet-running defaults.
+    AudioThread::Telemetry t{};
+    if (audio_) t = audio_->snapshotTelemetry();
+
+    // Per-looper state (GET_STATE 0x30 equivalent): compact rec/play bitmaps over
+    // the 20 loopers + the vols array, so a controller can reflect looper state.
+    uint32_t recBits = 0, playBits = 0;
+    char vols[20 * 5 + 2]; int vp = 0; vols[vp++] = '[';
+    for (int i = 0; i < AudioThread::Telemetry::kLoopers; i++) {
+        if (t.looperRec[i])  recBits  |= (1u << i);
+        if (t.looperPlay[i]) playBits |= (1u << i);
+        vp += snprintf(vols + vp, sizeof vols - vp, i ? ",%.2f" : "%.2f", t.looperVol[i]);
+    }
+    vols[vp++] = ']'; vols[vp] = 0;
+
+    char json[768];
     int n = snprintf(json, sizeof json,
         "{\"core_busy\":[%.0f,%.0f,%.0f,%.0f],\"xruns\":%llu,"
-        "\"link\":{\"synced\":%s,\"bpm\":%.1f},\"wifi\":\"%s\"}",
-        0.0, 0.0, 0.0, 0.0, 0ULL, "false", 0.0, "auto");
+        "\"link\":{\"synced\":%s,\"bpm\":%.1f},\"wifi\":\"%s\","
+        "\"loopers\":{\"rec\":%u,\"play\":%u,\"vol\":%s}}",
+        t.coreBusyPct[0], t.coreBusyPct[1], t.coreBusyPct[2], t.coreBusyPct[3],
+        (unsigned long long)t.xruns,
+        t.linkSynced ? "true" : "false", t.bpm,
+        t.apMode ? "ap" : "sta",
+        recBits, playBits, vols);
 
     // Write the status file for shell/curl inspection.
     FILE* f = fopen("/run/aloop/status.json", "w");

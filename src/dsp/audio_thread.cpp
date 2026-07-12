@@ -72,6 +72,16 @@ struct FaustUI {
         for(auto& kv:zones){ const std::string& k=kv.first;
             if(k.size()>=suf.size() && k.compare(k.size()-suf.size(), suf.size(), suf)==0){ *kv.second=v; return; } }
     }
+    // Read a control back by full-or-suffix path (for state telemetry). Returns
+    // `def` if no such zone. Same matching rule as set().
+    float get(const char* name, float def=0.0f) const {
+        auto it=zones.find(name);
+        if(it!=zones.end()) return *it->second;
+        std::string suf(name);
+        for(auto& kv:zones){ const std::string& k=kv.first;
+            if(k.size()>=suf.size() && k.compare(k.size()-suf.size(), suf.size(), suf)==0) return *kv.second; }
+        return def;
+    }
 };
 #define Meta FaustMeta
 #define UI FaustUI
@@ -223,12 +233,28 @@ static void* worker(void*) {
                     }
                 }
             }
+            // Per-looper STATE telemetry (the GET_STATE 0x30 equivalent): read each
+            // looper's rec/play/vol back from the Faust zones into the atomic
+            // snapshot the control thread serves on udp/4445. Cheap (60 map lookups
+            // once/block); a production build would cache the float* on first block.
+            {
+                char z[32];
+                for (int lp = 0; lp < AudioThread::Telemetry::kLoopers; lp++) {
+                    snprintf(z, sizeof z, "looper%2d/rec",  lp); g_telem.looperRec[lp]  = fui.get(z) > 0.5f;
+                    snprintf(z, sizeof z, "looper%2d/play", lp); g_telem.looperPlay[lp] = fui.get(z) > 0.5f;
+                    snprintf(z, sizeof z, "looper%2d/vol",  lp); g_telem.looperVol[lp]  = fui.get(z, 1.0f);
+                }
+            }
             // Varispeed Link sync: when synced, set every looper's loop length from
             // the Link tempo (a musical phrase = a whole number of beats). A tempo
             // change resizes the loops so they stay locked to the session — the
             // same behavior as the original looper's masterLoopBlocks recompute.
             if (g_link) {
                 LinkSnapshot ls = g_link->audioRead();
+                // publish the live Link state into the telemetry snapshot (atomic
+                // plain-old-data; the control thread reads it for udp/4445).
+                g_telem.linkSynced = ls.synced;
+                g_telem.bpm = ls.bpm;
                 if (ls.synced && ls.bpm > 1.0) {
                     // one bar (4 beats) as the phrase, rounded to whole blocks.
                     double beatsPerBar = 4.0;
@@ -242,11 +268,25 @@ static void* worker(void*) {
                 }
             }
             for (int i = 0; i < N; i++) fin[i] = buf[i] / 32768.0f;
+            // Time the DSP work vs the block budget → home-core busy % telemetry.
+            timespec t0, t1;
+            clock_gettime(CLOCK_MONOTONIC, &t0);
             faustHome.compute(N, fins, fouts);
             // the user LV2(s) process the home-stack OUTPUT (fout) on the free
             // core, in the same block — zero added latency, no graph (ADR-002).
             // process() runs the plugin chain in place; passthrough if none loaded.
             userFx.process(fout.data(), N);
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            // busy fraction = work / block-period. Smoothed (EWMA) so the readout is
+            // stable. Stored on the home-FX core index; a spike toward 100% warns of
+            // an impending xrun (RT-TUNING). Plain float store — read by control thd.
+            {
+                double workNs = (t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec);
+                double periodNs = (double)N / g_cfg.sampleRate * 1e9;
+                double pct = periodNs > 0 ? (workNs / periodNs) * 100.0 : 0.0;
+                float& slot = g_telem.coreBusyPct[g_cfg.homeFxCore & 3];
+                slot = slot * 0.9f + (float)pct * 0.1f;   // EWMA
+            }
             for (int i = 0; i < N; i++) {
                 float v = fout[i] * 32768.0f;
                 buf[i] = (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
