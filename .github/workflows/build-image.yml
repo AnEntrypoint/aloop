@@ -76,9 +76,32 @@ jobs:
           chmod +x image/validate-image.sh
           image/validate-image.sh aloop-pi4.img
 
+      # The netboot root is the SAME diskless tree (shared image/lib-boot-tree.sh),
+      # laid into a plain TFTP directory instead of a FAT image — the pre-SD dry-run
+      # path (docs/NETBOOT.md). Build + structurally validate it in CI so it can
+      # never drift from the SD image or silently rot.
+      - name: Build + validate the TFTP netboot root
+        env:
+          ALOOP_BIN: ${{ steps.payload.outputs.bin }}
+          LV2_DIR: ${{ steps.payload.outputs.lv2dir }}
+          OUT: aloop-netboot
+        run: |
+          chmod +x image/build-netboot.sh image/validate-netboot.sh
+          image/build-netboot.sh
+          image/validate-netboot.sh aloop-netboot
+          tar -czf aloop-netboot.tar.gz aloop-netboot
+          ls -la aloop-netboot.tar.gz
+
       - name: Upload flashable image
         uses: actions/upload-artifact@v4
         with:
           name: aloop-pi4-image
           path: aloop-pi4.img.gz
+          if-no-files-found: error
+
+      - name: Upload netboot root
+        uses: actions/upload-artifact@v4
+        with:
+          name: aloop-netboot-root
+          path: aloop-netboot.tar.gz
           if-no-files-found: error

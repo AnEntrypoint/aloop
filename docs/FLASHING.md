@@ -1,5 +1,9 @@
 # Flashing aloop to an SD card and testing from it
 
+> **Testing before you commit to a card?** You can boot the *same* aloop tree over
+> the network (TFTP/DHCP) with zero reflashing — see **[docs/NETBOOT.md](NETBOOT.md)**.
+> That's the fastest way to shake out boot issues; come back here to burn a card.
+
 This is the card-test procedure. The CI `build-image` workflow produces
 `aloop-pi4.img.gz` (a real, bootable Alpine diskless image for the Pi 4); flash it,
 boot it, and the Pi comes up as the aloop appliance.

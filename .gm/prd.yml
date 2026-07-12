@@ -1,1 +1,23 @@
-[]
+- id: netboot-firmware-chain-present
+  subject: Verify the Alpine RPi tarball provides the Pi4 TFTP-boot firmware chain (start4.elf, fixup4.dat, bcm2711-rpi-4-b.dtb) needed for network boot; if any are missing from the tarball, source them so the netboot root is complete.
+  witness: 'WITNESSED by fetching+listing the Alpine RPi tarball AND by validate-netboot.sh on the built root: start4.elf, fixup4.dat, bootcode.bin, bcm2711-rpi-4-b.dtb ALL present. No external firmware sourcing needed — the stock tarball is complete for Pi4 TFTP boot.'
+  status: completed
+- id: netboot-witness-execution
+  subject: 'WITNESS: actually run build-netboot.sh (layout-only, no binary needed) and validate-netboot.sh via exec_js/Bash, reading real output confirming the netboot root is assembled and structurally serviceable. This is the pre-SD dry run the user asked for.'
+  witness: 'WITNESSED THIS SESSION (the pre-SD dry run the user asked for): build-netboot.sh assembled the root exit 0, validate-netboot.sh printed NETBOOT ROOT VALID exit 0 with every structural check OK. The netboot path is proven serviceable before any SD card is touched.'
+  status: completed
+- id: netboot-onpi-tftp-boot-blocked
+  subject: On-Pi TFTP boot verification (real Pi4 fetches boot tree over DHCP/TFTP, boots diskless into RAM, aloop service comes up) — documented exact steps, marked blockedBy external (no Pi4 in session), never resolved from a dev host.
+  witness: 'ADR-009: hardware-dependent verification is honestly marked. The actual netboot on silicon cannot be witnessed without a Pi4; document the test and park it honestly.'
+  blockedBy:
+  - external
+  - no-Pi4-in-session
+  status: pending
+- id: netboot-serial-console-parity
+  subject: Ensure the netboot root keeps enable_uart=1 + serial console (from usercfg.txt) so a TFTP-booted Pi is debuggable over serial exactly like the SD path — the whole point of dry-running before SD is watching boot.
+  witness: 'WITNESSED: validate-netboot.sh checks and PASSED usercfg.txt keeps enable_uart=1 in the built netboot root — serial debug parity with the SD path; NETBOOT.md §4 documents the same UART wiring.'
+  status: completed
+- id: netboot-dwc2-gadget-parity
+  subject: 'Verify dtoverlay=dwc2,dr_mode=peripheral (f_uac2 gadget) coexists with netboot: network boot uses the Pi ethernet, not USB-OTG, so the gadget overlay should not block netboot — confirm and document any interaction.'
+  witness: 'WITNESSED: validate-netboot.sh PASSED usercfg.txt sets dwc2 dr_mode=peripheral in the netboot root. Documented in NETBOOT.md that netboot uses Ethernet not USB-OTG, so f_uac2 gadget and netboot do not conflict.'
+  status: completed
