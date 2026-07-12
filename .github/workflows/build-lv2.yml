@@ -9,6 +9,7 @@ on:
   push:
     paths:
       - 'effects/**'
+      - 'dsp/**'          # the composed Faust program the LV2 bundle builds from
       - 'src/dsp/**'
       - '.github/workflows/build-lv2.yml'
   pull_request:

@@ -10,6 +10,8 @@ on:
   push:
     paths:
       - 'src/**'
+      - 'dsp/**'          # the Faust loop+effects program (pre-generated to loop.cpp)
+      - 'effects/**'       # vendored Faust chain + engine headers the build includes
       - '.github/workflows/build-binary.yml'
   pull_request:
   workflow_dispatch:
