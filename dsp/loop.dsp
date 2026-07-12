@@ -74,13 +74,16 @@ with {
     // pointer's feedback path, so there is no read-modify-write cycle.
     //   reset = loopNow (LOOP_IMMEDIATE) OR markset (jump to a just-set mark).
     // select2(c, a, b) = a when c==0, b when c==1 — branchless; ma.modulo wraps.
+    // IMPORTANT: rp reads mark' (mark DELAYED one sample), and mark reads rp'
+    // (rp delayed). Delaying BOTH cross-references breaks the instantaneous
+    // rp<->mark cycle (Faust "stack overflow in eval" otherwise). The 1-sample
+    // latency on a re-trigger target is inaudible and correct.
     reset = max(loopNow, marksetN) > 0.5;
-    rpStep(prev) = select2(reset, ma.modulo(prev + speedMul, L), mark);
+    rpStep(prev) = select2(reset, ma.modulo(prev + speedMul, L), mark');
     rp = rpStep ~ _ ;
 
     // MARK point (restart origin): a one-sample sample-and-hold. markset latches the
-    // current read position (rp'), markclear latches 0, else it holds. rp' (rp
-    // delayed one sample) breaks the same-sample cycle with reset above.
+    // current read position (rp'), markclear latches 0, else it holds.
     markStep(prev) = select2(marksetN > 0.5,
                              select2(markclearN > 0.5, prev, 0.0),
                              rp');
