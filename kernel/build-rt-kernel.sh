@@ -1,9 +1,19 @@
 #!/bin/sh
-# aloop PREEMPT_RT kernel build (docs/RT-TUNING.md; the biggest single task).
+# aloop PREEMPT_RT kernel build — an OPTIONAL on-hardware optimization, NOT a
+# prerequisite for flashing/testing (ADR-011).
 #
-# WHY: PREEMPT_RT bounds worst-case scheduling latency to tens of microseconds,
-# which is what lets 64-sample (1.333 ms) audio blocks survive without xruns.
-# Stock Alpine ships a non-RT kernel, so we build an RT one for the Pi 4.
+# WHY optional-not-blocking: the flashable image ships with Alpine's STOCK
+# linux-rpi kernel plus the full userspace tuning (isolcpus/nohz_full/rcu_nocbs/
+# threadirqs in cmdline.txt + SCHED_FIFO + pinned affinity + mlockall in the audio
+# thread). That boots and is testable from a card TODAY, and running it is how we
+# MEASURE whether the stock kernel already meets the 64-sample (1.333 ms) no-xrun
+# target. PREEMPT_RT bounds worst-case scheduling latency to tens of microseconds;
+# build it (this script's fragment) ONLY if the on-hardware measurement shows the
+# stock kernel misses the target. This is the honest order: ship + measure first,
+# then optimize — see docs/RT-TUNING.md and docs/HARDWARE-TESTS.md.
+#
+# This script emits the RT config fragment + documents the cross-build; when the
+# measurement calls for it, the CI kernel job (heavy: full cross-compile) runs it.
 
 set -eu
 KVER="${KVER:-6.12}"     # a kernel version with a mainline/near-mainline RT option

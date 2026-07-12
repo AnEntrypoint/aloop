@@ -3,5 +3,10 @@
 # Pi as a USB audio device to a host.
 dtoverlay=dwc2,dr_mode=peripheral
 
+# Serial console on the GPIO UART (GPIO14 TX / GPIO15 RX, 115200 8N1) so first
+# boot + bring-up is debuggable from a card WITHOUT an HDMI display — essential
+# for testing. See docs/FLASHING.md for the pinout.
+enable_uart=1
+
 # Load the RT-tuned cmdline (isolcpus etc.) — see kernel/cmdline.txt.
 # The image build merges kernel/cmdline.txt into the boot cmdline.

@@ -27,12 +27,11 @@ jobs:
           # libboost-dev: the Faust lv2.cpp architecture uses boost/circular_buffer.
           sudo apt-get install -y faust lv2-dev pkg-config build-essential libboost-dev
 
-      - name: Fetch the verified Faust chain from dubfx
+      - name: Verify the vendored Faust chain from dubfx
         run: |
-          # The home-FX chain IS the dubfx verified chain (ADR-003). In CI we
-          # vendor it under effects/home/faust/. Until the vendoring step lands,
-          # fall back to any local copy; fail loudly if absent so we never build
-          # a silently-empty bundle.
+          # The home-FX chain IS the dubfx verified chain (ADR-003), vendored under
+          # effects/home/faust/. Fail loudly if absent so we never build a
+          # silently-empty bundle.
           if [ -d effects/home/faust ]; then
             echo "using vendored Faust chain under effects/home/faust"
             ls -la effects/home/faust

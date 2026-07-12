@@ -1,15 +1,23 @@
 # Assemble the flashable Alpine SD image for the Pi 4.
 #
-# WHY in CI: the device image must be reproducible — a fresh checkout produces
-# the same image bit-for-bit. This job pulls the LV2 bundle + the aloop binary
-# artifacts from the other workflows and lays them into an Alpine apkovl overlay
-# with the RT tuning, the f_uac2 gadget setup, and the network configs.
+# WHY in CI: the device image must be reproducible — a fresh checkout produces the
+# same image. This job pulls the aloop binary + the home-FX LV2 bundle from the
+# other workflows and runs image/build-image.sh (the SINGLE source of the device
+# layout) to emit a real, bootable aloop-pi4.img, then validates it without a Pi.
 name: build-image
 
 on:
   workflow_run:
     workflows: ["build-binary"]
     types: [completed]
+  push:
+    paths:
+      - 'image/**'
+      - 'kernel/**'
+      - 'src/**'
+      - 'dsp/**'
+      - 'config/**'
+      - '.github/workflows/build-image.yml'
   workflow_dispatch:
 
 jobs:
@@ -18,41 +26,59 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download built artifacts
-        uses: actions/download-artifact@v4
-        continue-on-error: true   # early on, artifacts may not exist yet
-        with:
-          path: artifacts
+      - name: Tools (mtools, dosfstools, fdisk — unprivileged FAT assembly)
+        run: sudo apt-get update && sudo apt-get install -y mtools dosfstools fdisk curl gzip
 
-      - name: Assemble the apkovl overlay
+      # Pull the aloop binary + LV2 bundle produced by build-binary / build-lv2.
+      # They live in DIFFERENT workflows' runs, so fetch each from the latest
+      # SUCCESSFUL run of its workflow via gh (a workflow_run trigger only carries
+      # its own run's artifacts). Missing artifacts don't fail the image build — it
+      # still produces a valid bootable layout — but the validate step WARNS, and a
+      # release build requires them.
+      - name: Download aloop binary + LV2 bundle from their latest green runs
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
-          # The overlay is what turns a stock Alpine RAM boot into an aloop device:
-          #   /etc/local.d/         -> rt-tune.sh + f_uac2 gadget bring-up at boot
-          #   /etc/hostapd/, wpa_supplicant, dnsmasq -> the network configs
-          #   /opt/aloop/aloop      -> the binary
-          #   /effects/home, /effects/user -> the LV2 bundles
-          #   /etc/aloop.conf       -> the single tunables file
-          mkdir -p overlay/etc/local.d overlay/opt/aloop overlay/effects/home overlay/effects/user
-          cp kernel/rt-tune.sh overlay/etc/local.d/10-rt-tune.start
-          cp -r src/net/config overlay/etc/aloop-net
-          cp src/net/autoap.sh overlay/opt/aloop/
-          [ -f config/aloop.conf ] && cp config/aloop.conf overlay/etc/ || true
-          # Pull artifacts in when present (from build-binary / build-lv2).
-          find artifacts -name 'aloop' -exec cp {} overlay/opt/aloop/ \; 2>/dev/null || true
-          find artifacts -name '*.lv2' -maxdepth 3 -exec cp -r {} overlay/effects/home/ \; 2>/dev/null || true
-          echo "overlay assembled:"; find overlay -maxdepth 3 -type f | sort
+          mkdir -p dl/bin dl/lv2
+          BIN_RUN=$(gh run list --workflow build-binary.yml --status success \
+                    --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          LV2_RUN=$(gh run list --workflow build-lv2.yml --status success \
+                    --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          echo "binary run: ${BIN_RUN:-none}   lv2 run: ${LV2_RUN:-none}"
+          [ -n "$BIN_RUN" ] && gh run download "$BIN_RUN" -n aloop-aarch64-musl -D dl/bin || echo "no binary artifact yet"
+          [ -n "$LV2_RUN" ] && gh run download "$LV2_RUN" -n home-fx-lv2 -D dl/lv2 || echo "no lv2 artifact yet"
+          find dl -type f | head -20
 
-      - name: Package overlay (image build stub)
+      - name: Locate payload
+        id: payload
         run: |
-          # A full genimage/mkimg step lays this overlay onto an Alpine SD image.
-          # Until the base-image pipeline lands, we package the overlay itself as
-          # the artifact so the device layout is reproducible + reviewable.
-          tar czf aloop-apkovl.tar.gz -C overlay .
-          ls -la aloop-apkovl.tar.gz
+          BIN=$(find dl/bin -type f -name aloop 2>/dev/null | head -n1 || true)
+          LV2=$(find dl/lv2 -maxdepth 3 -name '*.lv2' -type d 2>/dev/null | head -n1 || true)
+          LV2DIR=""; [ -n "$LV2" ] && LV2DIR=$(dirname "$LV2")
+          echo "bin=$BIN"   >> "$GITHUB_OUTPUT"
+          echo "lv2dir=$LV2DIR" >> "$GITHUB_OUTPUT"
+          echo "found binary: '${BIN:-<none>}'  lv2 dir: '${LV2DIR:-<none>}'"
 
-      - name: Upload image overlay
+      - name: Build the flashable image (image/build-image.sh)
+        env:
+          ALOOP_BIN: ${{ steps.payload.outputs.bin }}
+          LV2_DIR: ${{ steps.payload.outputs.lv2dir }}
+          OUT: aloop-pi4.img
+        run: |
+          chmod +x image/build-image.sh
+          image/build-image.sh
+          gzip -9 -k aloop-pi4.img
+          ls -la aloop-pi4.img aloop-pi4.img.gz
+
+      - name: Validate the image without a Pi (partition + boot files + overlay)
+        run: |
+          chmod +x image/validate-image.sh
+          image/validate-image.sh aloop-pi4.img
+
+      - name: Upload flashable image
         uses: actions/upload-artifact@v4
         with:
-          name: aloop-apkovl
-          path: aloop-apkovl.tar.gz
+          name: aloop-pi4-image
+          path: aloop-pi4.img.gz
+          if-no-files-found: error
