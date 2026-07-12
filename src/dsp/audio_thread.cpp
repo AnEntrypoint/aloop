@@ -157,10 +157,18 @@ bool setRealtimeSelf(int core, int prio) {
 static void* worker(void*) {
     setRealtimeSelf(g_cfg.homeFxCore, g_cfg.rtPriority);
     const int N = g_cfg.blockSize;
-    const int ch = g_cfg.channels;
+    const int ch = g_cfg.channels;   // DSP channel count (mono = 1), the Faust I/O.
 
-    std::vector<int16_t> buf((size_t)N * ch, 0);   // pre-allocated, pre-faulted
-    std::vector<float> fin((size_t)N, 0.0f), fout((size_t)N, 0.0f);
+    // The f_uac2 USB gadget presents a STEREO wire (c_chmask/p_chmask = 0x3), the
+    // same as the looper's UAC2 (stereo wire, mono internally). So the ALSA PCM is
+    // opened with `wireCh` channels and we deinterleave capture -> mono for Faust,
+    // then duplicate mono -> both wire channels on playback. If the device is truly
+    // mono (channels config == the wire), wireCh collapses to ch and this is a
+    // straight copy. See ADR-008 / f_uac2-gadget.sh.
+    const int wireCh = (ch < 2) ? 2 : ch;   // USB wire is stereo; DSP is mono
+
+    std::vector<int16_t> buf((size_t)N * wireCh, 0);  // pre-allocated, pre-faulted (wire frames)
+    std::vector<float> fin((size_t)N, 0.0f), fout((size_t)N, 0.0f);  // mono DSP buffers
 
     // Instantiate the Faust home stack (loop engine + effects). Its compute()
     // runs the whole home DSP per block — the loop record/play + the effects.
@@ -187,10 +195,11 @@ static void* worker(void*) {
         snd_pcm_open(&play, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0) {
         fprintf(stderr, "[audio] ALSA open failed — is the f_uac2 gadget up?\n");
     } else {
+        // Open the PCM with the WIRE channel count (stereo, matching the gadget).
         snd_pcm_set_params(cap,  SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
-                           ch, g_cfg.sampleRate, 1, 20000);
+                           wireCh, g_cfg.sampleRate, 1, 20000);
         snd_pcm_set_params(play, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
-                           ch, g_cfg.sampleRate, 1, 20000);
+                           wireCh, g_cfg.sampleRate, 1, 20000);
         while (g_running.load()) {
             snd_pcm_sframes_t r = snd_pcm_readi(cap, buf.data(), N);
             if (r < 0) { g_telem.xruns++; snd_pcm_recover(cap, (int)r, 1); continue; }
@@ -272,7 +281,15 @@ static void* worker(void*) {
                     }
                 }
             }
-            for (int i = 0; i < N; i++) fin[i] = buf[i] / 32768.0f;
+            // Deinterleave the stereo wire -> mono DSP input: average the wire
+            // channels (mono content is identical L/R; a stereo source is summed to
+            // mono, matching the looper's mono internal path). wireCh==1 degenerates
+            // to a straight copy.
+            for (int i = 0; i < N; i++) {
+                float acc = 0.0f;
+                for (int c = 0; c < wireCh; c++) acc += buf[(size_t)i * wireCh + c];
+                fin[i] = (acc / wireCh) / 32768.0f;
+            }
             // Time the DSP work vs the block budget → home-core busy % telemetry.
             timespec t0, t1;
             clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -292,9 +309,13 @@ static void* worker(void*) {
                 float& slot = g_telem.coreBusyPct[g_cfg.homeFxCore & 3];
                 slot = slot * 0.9f + (float)pct * 0.1f;   // EWMA
             }
+            // Interleave the mono DSP output onto every wire channel (mono
+            // duplicated to L and R so a stereo host hears it centered). wireCh==1
+            // degenerates to a straight copy.
             for (int i = 0; i < N; i++) {
                 float v = fout[i] * 32768.0f;
-                buf[i] = (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
+                int16_t s = (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
+                for (int c = 0; c < wireCh; c++) buf[(size_t)i * wireCh + c] = s;
             }
 #endif
 

@@ -30,8 +30,13 @@ echo "0001"         > strings/0x409/serialnumber
 mkdir -p functions/uac2.0
 echo 48000 > functions/uac2.0/c_srate    # capture (host -> Pi) sample rate
 echo 48000 > functions/uac2.0/p_srate    # playback (Pi -> host) sample rate
-echo 0x3   > functions/uac2.0/c_chmask   # capture channel mask (mono uses 0x1; 0x3 = stereo wire, summed internally like looper)
-echo 0x3   > functions/uac2.0/p_chmask   # playback channel mask
+# Stereo WIRE (0x3 = L+R), the same as the looper's UAC2. aloop's audio thread
+# opens ALSA with this stereo wire, averages capture L/R -> mono for the Faust DSP,
+# and duplicates the mono result onto both channels on playback (audio_thread.cpp
+# wireCh handling). So the host sees a normal stereo soundcard; internally it is
+# mono, matching the looper exactly.
+echo 0x3   > functions/uac2.0/c_chmask   # capture channel mask (stereo wire)
+echo 0x3   > functions/uac2.0/p_chmask   # playback channel mask (stereo wire)
 echo 2     > functions/uac2.0/c_ssize    # sample size bytes (s16 = 2)
 echo 2     > functions/uac2.0/p_ssize
 
