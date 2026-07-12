@@ -1,7 +1,3 @@
-- id: x-hardware-dependency
-  subject: 'CORNER: many verify rows (RT jitter, f_uac2 latency, Link-no-glitch, AP-multicast) need REAL Pi4 hardware. Session has no Pi. These stay blockedBy:[external, no-Pi4-in-session] with the exact on-hardware test documented, NOT falsely resolved. The BUILD (code/config/CI/docs) is fully reachable now; only on-device MEASUREMENT is external.'
-  notes: 'Honesty: separate what is buildable-now (all code/config/docs/CI) from what needs hardware (measurements). No false completion.'
-  status: pending
 - id: hardware-test-execution
   subject: EXECUTE all test/hardware/*.sh on a real Raspberry Pi 4 and record the numbers (RT jitter, f_uac2 latency, Link no-glitch, AP multicast). This is the ONLY genuinely hardware-blocked item — the harnesses are all built + one-command runnable.
   notes: The single honest blocked-on-hardware row.
