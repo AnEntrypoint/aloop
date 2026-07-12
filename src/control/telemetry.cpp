@@ -6,10 +6,12 @@
 #include "../dsp/audio_thread.h"   // AudioThread::Telemetry (the live snapshot)
 
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
@@ -24,6 +26,12 @@ int g_port = 4445;
 void Telemetry::start(int udpPort, const AudioThread* audio) {
     g_port = udpPort;
     audio_ = audio;   // the live snapshot source (may be null before audio starts)
+    // Ensure the status-file directory exists BEFORE publish() writes it. /run is a
+    // tmpfs that exists, but the /run/aloop subdir does not — without this mkdir the
+    // fopen("/run/aloop/status.json","w") in publish() silently returns NULL and the
+    // status file (docs/FLASHING.md step 5) never appears. Idempotent: EEXIST is fine.
+    if (mkdir("/run/aloop", 0755) != 0 && errno != EEXIST)
+        fprintf(stderr, "[telem] warning: could not create /run/aloop (%s)\n", strerror(errno));
     g_sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (g_sock < 0) { fprintf(stderr, "[telem] socket failed\n"); return; }
     int fl = fcntl(g_sock, F_GETFL, 0);

@@ -98,6 +98,10 @@ if [ -f "$OVLTMP/o.tar.gz" ]; then
   # --- BOOT-LINT: every runtime path a shipped script/service references MUST
   # exist in the apkovl. This catches the recurring "path doesn't resolve on the
   # device" class (autoap CONF_DIR, LV2 dir, config locations) before a card-test.
+  # NOTE: runtime-CREATED paths under tmpfs (e.g. /run/aloop, made by
+  # Telemetry::start() via mkdir) are intentionally NOT checked here — they are not
+  # shipped in the apkovl; the code that writes them is responsible for creating
+  # them. Only paths the runtime EXPECTS to already exist are linted.
   echo "[validate] boot-lint: runtime path references -> apkovl contents"
   LINT="$(mktemp -d)"; tar -xzf "$OVLTMP/o.tar.gz" -C "$LINT" 2>/dev/null || true
   has() { [ -e "$LINT/$1" ] || [ -e "$LINT/./$1" ]; }
