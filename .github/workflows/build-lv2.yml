@@ -40,21 +40,32 @@ jobs:
             exit 1
           fi
 
-      - name: Build the home-FX LV2 with faust2lv2
+      - name: Build the full home stack (loop engine + effects) as the LV2
         run: |
-          cd effects/home/faust
-          # The pitch stage links the exact C++ engine via ffunction (ADR-004).
-          # The engine headers (soladSnacOctaver.h, grainFormant.h) sit directly
-          # in this dir, which faust2lv2 adds to the C++ compiler's include path
-          # (its g++ step uses -I on the .dsp's own directory), so the generated
-          # .cpp resolves the ffunction #includes with no extra flags.
-          faust2lv2 chain.dsp
+          # The home-FX bundle is the WHOLE home stack: the Faust loop engine
+          # (dsp/loop.dsp) composed with the dubfx effect chain (effects/home/
+          # faust/chain.dsp) — one Faust program (dsp/aloop.dsp). We stage all the
+          # pieces in one dir so faust2lv2's include resolution (it adds the .dsp
+          # dir to the C++ include path) finds both loop.dsp and the ffunction
+          # pitch engine headers.
+          mkdir -p /tmp/homestack
+          cp dsp/loop.dsp dsp/aloop.dsp /tmp/homestack/
+          cp effects/home/faust/*.dsp effects/home/faust/*.h /tmp/homestack/
+          # aloop.dsp references ../effects/home/faust/chain.dsp; flatten that ref
+          # since everything is now in one dir.
+          sed -i 's#\.\./effects/home/faust/chain\.dsp#chain.dsp#' /tmp/homestack/aloop.dsp
+          cd /tmp/homestack
+          faust2lv2 aloop.dsp
           ls -R *.lv2 || (echo "::error::no .lv2 bundle produced" && exit 1)
+          # place the bundle where the image build expects it
+          mkdir -p "$GITHUB_WORKSPACE/effects/home"
+          cp -r *.lv2 "$GITHUB_WORKSPACE/effects/home/"
+          cd "$GITHUB_WORKSPACE/effects/home/faust"
 
       - name: Validate the LV2 bundle
         run: |
           sudo apt-get install -y lv2-dev lilv-utils || true
-          cd effects/home/faust
+          cd effects/home
           # lv2_validate checks the .ttl against the LV2 spec; lv2ls lists it.
           find . -name '*.ttl' -print
           if command -v lv2_validate >/dev/null; then
@@ -65,5 +76,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: home-fx-lv2
-          path: effects/home/faust/*.lv2
+          path: effects/home/*.lv2
           if-no-files-found: error

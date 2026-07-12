@@ -9,30 +9,6 @@
   - external
   - no-Pi4-in-session — run the completed test/hardware/ suite on a Pi4
   status: pending
-- id: aloop-full-faust-chain
-  subject: 'COMPOSE the full aloop signal as Faust where possible: input -> loop.dsp (loop engine) -> the dubfx effect chain (as the home-FX LV2 or composed dsp) -> output. Ideally ONE Faust program (loop+effects) is the home stack; the user-FX is a separate swappable LV2 on the free core. Decide: one combined dsp vs loop.dsp + effects LV2 hosted.'
-  notes: 'The elegant end state: aloop = Faust (loop+home-effects) + a swappable user LV2, thin Linux shell around it.'
-  status: pending
-- id: loop-engine-linux-shim
-  subject: 'The thin Linux RT shell hosts the Faust loop engine + effects: audio_thread drives the Faust loop dsp + the effect LV2 per block; the parts Faust cannot do (command edge-detection, file I/O for saving loops, MIDI) stay in the tiny native control layer. Wire it.'
-  notes: The native shell = audio thread + Link + wifi + MIDI + command dispatch; the DSP is Faust. Minimal native surface.
-  status: pending
-- id: confirm-link-no-glitch
-  subject: 'CONFIRM for aloop: Link over WiFi wont glitch audio — Link on the control core (official lib -> lock-free snapshot, link_bridge), audio-core isolated from WiFi IRQ (rt-tune.sh + isolcpus). The design is in place; document the confirmation + the on-hardware test (test-link-glitch harness). Feasibility R1 verdict applies to the aloop implementation.'
-  notes: Re-confirm R1 for aloop specifically. Design witnessed; hardware = the harness.
-  status: pending
-- id: confirm-two-lv2-two-cores
-  subject: 'CONFIRM for aloop: home-FX LV2 on Core1 + user-FX LV2 on Core3 (free core), in-process host (lv2_host, no graph). The design is in place; document + witness the host can pin two plugins to two cores. Feasibility R2 verdict applies.'
-  notes: Re-confirm R2 for aloop. lv2_host + core pinning already built.
-  status: pending
-- id: confirm-no-added-latency
-  subject: 'CONFIRM for aloop: no added latency — in-process hosting (never a graph), the zero-latency topology rule, and now with the Faust loop engine the whole home stack is one in-process pass. Document the latency budget for loop-engine-Faust + effects + user-FX all in-process. Feasibility R3 applies + strengthens (one Faust pass).'
-  notes: Re-confirm R3 for aloop, accounting for the Faust loop engine in the budget.
-  status: pending
-- id: confirm-ap-fallback
-  subject: 'CONFIRM for aloop: Pi as AP fallback for Link — autoAP mode-switch (autoap.sh + hostapd/dnsmasq/wpa_supplicant), Link multicast over the AP (ap_isolate=0). Design in place; document + the on-hardware test (test-ap-multicast). Feasibility R4 applies.'
-  notes: Re-confirm R4 for aloop. autoAP already built.
-  status: pending
 - id: aloop-end-to-end-build
   subject: 'aloop 100%: the full binary builds green in CI (the Faust loop engine compiled/hosted + the in-process LV2 host + Link + control + audio), producing a runnable aarch64/musl artifact + the flashable image. CI green is the witness.'
   notes: The 100%-buildable end state. CI must actually compile the whole thing.
@@ -40,8 +16,4 @@
 - id: aloop-parity-witness
   subject: 'aloop 100%: witness behavioral parity — the aloop Faust loop engine + dubfx effects produce the looper-equivalent result on a deterministic command+audio sequence (A/B where deterministic, via the parity harness reusing dubfx tooling). The effect equivalence is already dubfx-proven; add the loop-engine behavior witness.'
   notes: The behavioral-clone witness for the Faust loop engine (effects already proven).
-  status: pending
-- id: aloop-docs-final
-  subject: 'aloop 100%: docs reflect the FINAL architecture — pure Linux, Faust loop engine + dubfx LV2 effects + swappable user LV2, thin native shell, no looper source. README/ARCHITECTURE/CLONE-PARITY/MIGRATION-MAP all consistent with the loop-engine-in-Faust reality.'
-  notes: Docs must match the corrected+final architecture, no stale looper-source claims.
   status: pending

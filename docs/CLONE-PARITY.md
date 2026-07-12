@@ -8,28 +8,20 @@ looper's inline effects.
 
 ## The two halves of the clone
 
-**1. The loop engine — ported unchanged (bit-identical behavior).**
-`loopMachine` and its clip/track hierarchy, the record/play/overdub/quantize/
-crossfade/pause logic, `masterPhase`/`masterLoopBlocks` grid, varispeed Link
-sync, the sampler, and the loop-fold/monitor routing are the *actual looper
-source*, vendored and compiled unchanged (they are Circle-free and
-allocation-free). Same code → same behavior. See `src/dsp/PORTED-FILES.md` and
-`clone-loop-engine-source-vendor`.
+**1. The loop engine — a native Faust reimplementation (behaviorally equivalent).**
+The loop engine is `dsp/loop.dsp` — an aloop-native Faust program (record/play/
+overdub/loop-grid as a cycle-free feedback-delay looper), NOT looper source.
+aloop contains no Circle/looper code; it reproduces the *behavior* natively. The
+loop grid is driven by Ableton Link phase (varispeed sync), same as the original.
 
-**2. The effects — the same math, delivered via LV2 (sample-identical).**
-In looper, `loopMachine::update()` calls the effects inline at four points:
-
-| looper inline call | `loopMachine.cpp` | aloop replacement |
-|--------------------|-------------------|-------------------|
-| `pLivePitchWrapper->feedAudio/retrieveAudio` (pitch) | :758–779 | home-FX LV2, pitch stage |
-| `pEffectsProcessor->processSends` (delay+reverb) | :801 | home-FX LV2, delay+reverb |
-| `pMicroRepeat->process` (beat-repeat) | :831 | home-FX LV2, microrepeat |
-| `pEffectsProcessor->processFilters` (HP/LP) | :847 | home-FX LV2, filters |
-
-The home-FX LV2 (`effects/home/faust/chain.dsp`) runs **exactly these stages in
-exactly this order** (pitch → sends → microrepeat → filters → mix). aloop
-replaces the four inline calls with a single in-process LV2 host `runBlock()` at
-the same point in the block.
+**2. The effects — the exact same DSP, as Faust.**
+The original ran its effects as inline C++ in this order: pitch → delay+reverb
+sends → beat-repeat (microrepeat) → HP/LP filters → mix. aloop's effect chain
+(`effects/home/faust/chain.dsp`, from dubfx) runs **exactly these stages in
+exactly this order**, and the dubfx project A/B-verified it sample-for-sample
+against the original C++. In aloop the effects are composed straight into the
+home Faust program (`dsp/aloop.dsp = loop.dsp : chain.dsp`) — so the effects are
+the same math, now Faust, and swappable at the LV2 boundary.
 
 ### Why this is sample-identical, not approximate
 
@@ -54,28 +46,30 @@ deterministic**, delivered through the LV2 boundary.
 
 | Behavior | aloop vs looper | Basis |
 |----------|-----------------|-------|
-| Loop record/play/overdub/quantize/crossfade | **bit-identical** | same source, ported unchanged |
-| masterPhase grid, varispeed Link sync | **bit-identical** | same source |
-| Sampler, loop-fold/monitor | **bit-identical** | same source |
-| Effects: pitch, microrepeat, filters, reverb(default), mix | **bit-identical** | Faust chain == C++ (dubfx A/B), via LV2 |
-| Effect: tape delay feedback tail | **behaviorally equivalent** (corr ≥ 0.956) | float32 precision limit of the reference |
-| Control/command surface (loop cmds, APC grid/CC/notes) | **bit-identical mapping** | ported command logic + the exact CC map |
+| Loop record/play/overdub/loop-grid | **behaviorally equivalent** | native Faust reimplementation (`dsp/loop.dsp`), same musical behavior |
+| Link-synced grid, varispeed | **behaviorally equivalent** | Link phase drives the Faust loop length, same as the original |
+| Effects: pitch, microrepeat, filters, reverb(default), mix | **bit-identical** | the Faust effect chain == the original C++ (dubfx A/B), composed into the home stack |
+| Effect: tape delay feedback tail | **behaviorally equivalent** (corr ≥ 0.956) | float32 precision limit of the reference itself |
+| Control/command surface (loop cmds, APC grid/CC/notes) | **equivalent mapping** | native control layer + the exact CC map (dubfx `param_mapping.md`) |
 | USB-audio / WiFi / Link transport | **behaviorally equivalent, improved** | kernel stack replaces hand-rolled (fixes the once-a-second glitch) |
 
-## How the effect substitution is wired
+## How the whole home stack is one Faust program
 
-aloop compiles the vendored `loopMachine.cpp` with `-DALOOP_EFFECTS_VIA_LV2`. The
-`src/dsp/effects_bridge.h` shim provides the `pEffectsProcessor` /
-`pLivePitchWrapper` / `pMicroRepeat` symbols as thin adapters that forward to the
-in-process LV2 host running the home-FX bundle — so the four inline call sites in
-`loopMachine::update()` are *unchanged source* but now drive the LV2. The audio
-result is identical (proven above); the effects are now a swappable plugin.
+`dsp/aloop.dsp` composes the loop engine and the effects into a single Faust
+program: `component("loop.dsp") : component(".../chain.dsp")` — input → loop
+engine → the dubfx effect chain → output. It compiles (`faust -lang cpp`) to one
+C++ file containing both the loop feedback and the effect stages (incl. the exact
+pitch engine via `ffunction`). So the entire home audio path is one Faust compile
+— change a stage or a mapping in Faust, rebuild, done. No hand-written C++ DSP.
+The user's own effect is a separate swappable LV2 on the free core.
 
 ## Verifying the clone
 
-`clone-parity-harness` extends the dubfx A/B discipline to the whole loop engine:
-feed the same command + audio sequence to looper (via its loopDump/WAV capture)
-and to aloop, and compare the loop-engine output. The effect equivalence is
-already proven (dubfx); the harness adds the loop-engine behaviors. The live
-end-to-end device round-trip is the one part that needs a Pi 4
-(`hardware-test-execution`).
+- **Effects**: already proven — the Faust effect chain is A/B-verified
+  sample-for-sample against the original C++ (dubfx, 10/10 presets). aloop uses
+  that exact chain.
+- **Loop engine**: the Faust loop engine is verified by its own deterministic A/B
+  (record a known signal, confirm the loop-back is sample-exact) — a dev-host
+  test, no hardware.
+- **Live device round-trip** (real USB audio in/out on the Pi): the one part that
+  needs a Pi 4 (`hardware-test-execution`, `test/hardware/`).

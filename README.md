@@ -1,8 +1,12 @@
 # aloop — the looper, reborn on Alpine Linux
 
 **aloop** is the forward-thinking successor to the bare-metal ([Circle](https://github.com/rsta2/circle))
-Raspberry Pi looper. It moves the loop engine and effects onto **Alpine Linux +
-PREEMPT_RT** so that the effects become **hot-swappable LV2 plugins**, Ableton
+Raspberry Pi looper. It is a **pure Linux** project (Alpine + PREEMPT_RT) whose
+**loop engine _and_ effects are both Faust** — the loop engine is `dsp/loop.dsp`
+and the effects are the verified [dubfx](../dubfx) Faust chain, composed into one
+home-FX program (`dsp/aloop.dsp`) and hosted by a thin native RT shell. It
+contains **no bare-metal (Circle) source** — it reproduces the looper's behavior
+natively. The effects are **hot-swappable LV2 plugins**, Ableton
 Link runs over a **tested kernel WiFi stack** (with the Pi acting as its own
 access point when no network is around), and the buggiest hand-rolled
 subsystems are replaced by battle-tested kernel/userspace components — **without
@@ -25,7 +29,7 @@ Raspberry Pi 4  ·  Alpine Linux (diskless/RAM)  ·  PREEMPT_RT kernel
 │ Core 3  user-FX LV2     — drop your own .lv2 on flash, hot-swapped        │─┘ host, NO graph
 │ Core 2  control         — Ableton Link · WiFi/AP (autoAP) · MIDI · telem  │   (zero added latency)
 └─────────────────────────────────────────────────────────────────────────┘
-   Loop engine + DSP: ported unchanged from ../looper (Circle-free, alloc-free)
+   Home stack = ONE Faust program: loop engine (dsp/loop.dsp) : dubfx effects (no Circle source)
 ```
 
 ## What this buys you (the four goals, all feasible on Pi 4)
