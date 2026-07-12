@@ -82,6 +82,7 @@ add_executable(aloop ${DSP_SOURCES})
 target_include_directories(aloop PRIVATE
   ${CMAKE_SOURCE_DIR}
   ${CMAKE_BINARY_DIR}        # the generated Faust loop.cpp
+  ${CMAKE_SOURCE_DIR}/../effects/home/faust   # pitch ffunction engine headers
   ${ALSA_INCLUDE_DIRS}
   ${LILV_INCLUDE_DIRS}
   ${LINK_INCLUDE}            # Ableton Link + its bundled asio (fetched)
