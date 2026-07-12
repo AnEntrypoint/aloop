@@ -28,6 +28,7 @@ set(DSP_SOURCES
   host/lv2_host.cpp
   link/link_bridge.cpp
   control/telemetry.cpp
+  control/midi.cpp
   main.cpp
 )
 

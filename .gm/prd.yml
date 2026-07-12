@@ -19,10 +19,6 @@
   - external
   - no-Pi4-in-session — smp_affinity + cyclictest under AP load
   status: pending
-- id: usb-gadget-alsa-bridge
-  subject: 'Bridge the f_uac2 gadget ALSA endpoint to the DSP audio callback: the gadget presents an ALSA PCM the audio thread reads/writes. Wire capture (host->Pi) and playback (Pi->host) at the exact block/rate.'
-  notes: How gadget audio reaches loopMachine. ALSA PCM mmap for low latency.
-  status: pending
 - id: usb-gadget-latency-verify
   subject: 'HARDWARE VERIFY: f_uac2 round-trip latency parity vs 1.333ms baseline; kernel microframe handling correct (no -4608-class corruption). Test: loopback measurement Pi-as-device to a host, compare to looper. Needs hardware.'
   notes: Latency + correctness measurement.
@@ -36,14 +32,6 @@
   blockedBy:
   - external
   - no-Pi4-in-session — cyclictest under load
-  status: pending
-- id: control-plane-port
-  subject: 'Port the control plane (looper Core2): MIDI (ALSA rawmidi replacing Circle USB-MIDI), telemetry UDP sockets (:4444/:4445/:4446 -> BSD sockets), the apcKey25 param logic, Link tick. Runs on the control core.'
-  notes: Core2 control plane on Linux. APC MIDI + telemetry + Link.
-  status: pending
-- id: midi-apc-port
-  subject: 'Port APC Key25 USB-MIDI: Circle USB-MIDI -> Linux ALSA rawmidi/snd-usb-audio. The CC/note handling (apcKey25*.cpp) is portable logic; only the input source changes. Verify knobs/notes reach the param snapshot.'
-  notes: MIDI control input. Mature Linux driver; the mapping logic ports unchanged.
   status: pending
 - id: ci-green-witness
   subject: 'Ensure the CI pipeline goes green and is witnessed (CONSOLIDATE requirement): the workflows must actually pass on push. Fix any red before COMPLETE.'
