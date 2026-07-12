@@ -54,46 +54,44 @@ with {
     markclearN= button("markclear");  // CLEAR_LOOP_START (clearMarkPoint)
 
     L    = max(1.0, lenN);            // active loop length in samples (>=1)
-    wipe = max(clearAll, eraseN);     // clear this loop's stored audio when held
+    wipe = max(clearAll, eraseN) > 0.5;   // clear this loop's stored audio when held
 
-    // WRITE pointer: a sample counter that advances only while recording, wrapping
-    // at L. Feedback is a plain accumulator through `_` (the table is never in its
-    // path). ma.modulo wraps the float length cleanly; int() gives the sample index.
-    wpStep(prev) = ma.modulo(prev + recN, L);
-    wp = wpStep ~ _ : int;
-    // what to store: the live input while recording, else 0 into the wiped slot so
-    // a held wipe overwrites the loop with silence as the write head passes (and,
-    // on record, replaces — NO overdub). When neither recording nor wiping, we
-    // still write the existing sample back (read-through) so the loop is preserved.
-    wdata = in * recN;
+    // WRITE head: a free-running phase advancing 1 sample/sample, wrapping at L — a
+    // plain phasor, NO mark and NO table in its feedback path. Record writes here.
+    whStep(prev) = ma.modulo(prev + 1.0, L);
+    wh = whStep ~ _ : int;
 
-    // READ pointer: a resettable phase accumulator. In Faust a recursive signal is
-    // written `y = f ~ _`, where f is a ONE-input circuit fed the previous output.
-    // Here f advances the phase by speedMul (varispeed read rate) and wraps at L;
-    // on `reset` it snaps to the mark point instead. The table is NEVER in this
-    // pointer's feedback path, so there is no read-modify-write cycle.
-    //   reset = loopNow (LOOP_IMMEDIATE) OR markset (jump to a just-set mark).
-    // select2(c, a, b) = a when c==0, b when c==1 — branchless; ma.modulo wraps.
-    // IMPORTANT: rp reads mark' (mark DELAYED one sample), and mark reads rp'
-    // (rp delayed). Delaying BOTH cross-references breaks the instantaneous
-    // rp<->mark cycle (Faust "stack overflow in eval" otherwise). The 1-sample
-    // latency on a re-trigger target is inaudible and correct.
-    reset = max(loopNow, marksetN) > 0.5;
-    rpStep(prev) = select2(reset, ma.modulo(prev + speedMul, L), mark');
-    rp = rpStep ~ _ ;
+    // READ phase: an INDEPENDENT free-running phase advancing by speedMul (varispeed
+    // read rate — half/double speed) each sample, wrapping at L. Separate from the
+    // write head, so playback can read faster/slower than the write. Also a plain
+    // phasor (no mark, no table in its feedback) → no cycle.
+    rphStep(prev) = ma.modulo(prev + speedMul, L);
+    rph = rphStep ~ _ ;
 
-    // MARK point (restart origin): a one-sample sample-and-hold. markset latches the
-    // current read position (rp'), markclear latches 0, else it holds.
+    // MARK point (restart origin): a one-sample sample-and-hold driven ONLY by the
+    // read phase (never by the table output), so there is no mutual recursion.
+    // markset latches the current read phase; markclear latches 0; else hold. mark
+    // is an additive read OFFSET — re-trigger is a read-position shift, not a head
+    // mutation, so nothing feeds back and there is no eval cycle.
     markStep(prev) = select2(marksetN > 0.5,
                              select2(markclearN > 0.5, prev, 0.0),
-                             rp');
+                             rph');
     mark = markStep ~ _ ;
 
-    // The buffer: write wdata at wp while recording, read at rp. On wipe, force the
-    // output to 0 so a held clear/erase silences immediately. rwtable(size,init,
-    // writeIdx, writeSig, readIdx). Read index truncated to an int sample position.
-    stored = rwtable(MAXLEN, 0.0, wp, wdata, int(rp));
-    loopOut = stored * (1.0 - wipe);
+    // LOOP_IMMEDIATE re-trigger: while loopNow is held, read from the mark point
+    // (ignore the running read phase) — a synchronized snap to the loop start/mark.
+    // Otherwise read at (read-phase + mark) so a set mark shifts the loop origin.
+    ridx = int(ma.modulo(select2(loopNow > 0.5, rph + mark, mark), L));
+
+    // WRITE-BACK is the key to record-vs-hold WITHOUT a table cycle. While recording
+    // write the live input (replaces — NO overdub); else write back the stored value
+    // so the loop is preserved; on wipe write 0 (silence). We feed back `stored'`
+    // (stored DELAYED one sample) so there is provably no instantaneous table cycle
+    // — the write head has moved on by the time the value is re-stored, and the
+    // 1-sample skew is inaudible for a hold/preserve write.
+    wdata = select2(wipe, select2(recN > 0.5, stored', in), 0.0);
+    stored = rwtable(MAXLEN, 0.0, wh, wdata, ridx);
+    loopOut = stored;
 };
 
 // The engine: live input (thru) + the sum of 20 INDEPENDENT loopers. `par` with
