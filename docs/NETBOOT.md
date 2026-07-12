@@ -139,6 +139,19 @@ These are the actual problems a live netboot surfaced (Pi 4, board serial
 - **No DHCP address in proxy mode** — with Windows ICS on the link *not* actually
   leasing to the Pi, proxy DHCP gave the Pi no address at all. **Fix:** standalone
   DHCP is the serve-script default (`--proxy` only when a real DHCP server leases).
+- **DHCP loops DISCOVER↔OFFER, never REQUEST** — when a *second* DHCP server shares
+  the link (Windows ICS runs one on the same NIC and can't easily be stopped without
+  admin), the Pi 4 saw two offers and never accepted ours, looping forever without
+  reaching TFTP. **Fix:** `serve-netboot.sh` runs dnsmasq `--dhcp-authoritative` so it
+  answers decisively and the handshake completes (DISCOVER→OFFER→REQUEST→ACK).
+- **Kernel panic with NO initramfs (TFTP `Permission denied`)** — the Alpine tarball
+  ships `boot/initramfs-rpi` as mode `600` (root-only) and `cp -a` preserves it; the
+  TFTP server drops privileges to `nobody`, so it got *Permission denied* and sent the
+  kernel with **no initramfs** → panic "unable to mount root fs". (Distinct from the
+  `unknown-block(0,0)` panic above — here the initramfs never loads at all.) **Fix:**
+  `build-netboot.sh` (and `serve-netboot.sh`) `chmod -R a+rX` the served tree so any
+  unprivileged TFTP/HTTP server can read every file. Watch the dnsmasq log for
+  `sent .../boot/initramfs-rpi` — a `Permission denied` there is this bug.
 - **Per-serial TFTP path** — the Pi 4 requests `<board-serial>/start4.elf`, not the
   MAC. **Fix:** `serve-netboot.sh` auto-creates `<root>/<serial>/` as symlinks to
   the root when it first sees the serial in the TFTP log.
