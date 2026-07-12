@@ -62,10 +62,12 @@ pkg_check_modules(LILV lilv-0)
 # (CI has network); link_bridge.cpp is guarded with __has_include, so if Link is
 # absent the binary still builds (Link inactive) — but CI fetches it so it is real.
 include(FetchContent)
+# Link bundles asio as a submodule (its platform code needs it), so fetch
+# submodules. Not shallow — submodule fetch is more reliable with full history.
 FetchContent_Declare(abletonlink
   GIT_REPOSITORY https://github.com/Ableton/link.git
   GIT_TAG        Link-3.1.3
-  GIT_SHALLOW    TRUE)
+  GIT_SUBMODULES_RECURSE TRUE)
 set(LINK_INCLUDE "")
 FetchContent_GetProperties(abletonlink)
 if(NOT abletonlink_POPULATED)
@@ -82,8 +84,18 @@ target_include_directories(aloop PRIVATE
   ${CMAKE_BINARY_DIR}        # the generated Faust loop.cpp
   ${ALSA_INCLUDE_DIRS}
   ${LILV_INCLUDE_DIRS}
-  ${LINK_INCLUDE}            # Ableton Link (fetched), empty+guarded if absent
+  ${LINK_INCLUDE}            # Ableton Link + its bundled asio (fetched)
 )
+# Ableton Link needs its platform selected (Linux) and asio in standalone,
+# header-only mode. These are the standard Link-on-Linux build defines.
+if(LINK_INCLUDE)
+  target_compile_definitions(aloop PRIVATE
+    LINK_PLATFORM_LINUX=1
+    ASIO_STANDALONE=1)
+  # Force-include the musl compat shim (provides htonll/ntohll, which musl lacks)
+  # before anything else, so Link's byte-stream serializer compiles under musl.
+  target_compile_options(aloop PRIVATE -include ${CMAKE_SOURCE_DIR}/compat/musl_compat.h)
+endif()
 target_link_libraries(aloop PRIVATE ${ALSA_LIBRARIES} ${LILV_LIBRARIES} pthread dl)
 add_dependencies(aloop faust_loop)
 
