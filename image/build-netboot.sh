@@ -74,10 +74,11 @@ fi
 # runtime concern of the TFTP server config, documented in docs/NETBOOT.md.)
 rm -rf "$OUT"
 mkdir -p "$OUT"
-( cd "$BOOT" && for f in * .[!.]*; do
-    [ -e "$f" ] || continue
-    cp -r "$f" "$OUT/"
-  done )
+# Copy the whole boot tree (including dotfiles like .alpine-release) into the
+# netboot root. `cp -a "$BOOT/." "$OUT/"` copies the DIRECTORY CONTENTS (the
+# trailing /. ), preserving perms, without the glob/dotfile-expansion pitfalls of
+# a for-loop (an unmatched `.[!.]*` would pass a literal pattern to cp).
+cp -a "$BOOT/." "$OUT/"
 
 echo "[netboot] wrote netboot root -> $OUT/ ($(du -sh "$OUT" | cut -f1))"
 echo "[netboot] serve it: see docs/NETBOOT.md (dnsmasq proxyDHCP + TFTP root=$OUT)"
