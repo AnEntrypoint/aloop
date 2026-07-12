@@ -33,17 +33,9 @@
   - external
   - no-Pi4-in-session — cyclictest under load
   status: pending
-- id: ci-green-witness
-  subject: 'Ensure the CI pipeline goes green and is witnessed (CONSOLIDATE requirement): the workflows must actually pass on push. Fix any red before COMPLETE.'
-  notes: CI must be green — the gm CONSOLIDATE phase witnesses this.
-  status: pending
 - id: x-hardware-dependency
   subject: 'CORNER: many verify rows (RT jitter, f_uac2 latency, Link-no-glitch, AP-multicast) need REAL Pi4 hardware. Session has no Pi. These stay blockedBy:[external, no-Pi4-in-session] with the exact on-hardware test documented, NOT falsely resolved. The BUILD (code/config/CI/docs) is fully reachable now; only on-device MEASUREMENT is external.'
   notes: 'Honesty: separate what is buildable-now (all code/config/docs/CI) from what needs hardware (measurements). No false completion.'
-  status: pending
-- id: x-consolidate-commit
-  subject: 'CONSOLIDATE: commit everything as lanmower (no Claude attribution), push to AnEntrypoint/aloop main, witness CI green. The terminal step of this planning+scaffold session.'
-  notes: The commit/push/CI-green close per gm CONSOLIDATE.
   status: pending
 - id: dsp-port-verify-hw
   subject: 'HARDWARE VERIFY (partial): full end-to-end audio through the device (USB in -> DSP -> LV2 -> USB out) on real hardware. The DSP A/B correctness is verifiable NOW via the dubfx harness (no hardware); only the live device round-trip needs a Pi4.'
