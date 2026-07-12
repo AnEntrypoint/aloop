@@ -1,4 +1,1 @@
-- id: home-lv2-bundle-name-mismatch
-  subject: 'RE-SCOPED after discovery: main.cpp host (loadBundle/loadDir home+user) is DEAD CODE — it is never passed to audio.start; the audio worker runs its OWN faustHome (the Faust home stack = loop+effects_runtime, baked into the binary) + its OWN userFx.loadDir for user LV2. So (a) the home effects come from Faust-in-binary, NOT the aloop.lv2 bundle (that bundle is the alternative hot-swap packaging from build-lv2, not what the binary runs); the chain.lv2 name was harmless dead code but MISLEADING. Fix: REMOVE the orphaned host from main.cpp (dead), and make the worker userFx.loadDir honor cfg.userDir + cfg.userFxCore (currently hardcoded /effects/user + core 3). Pass the effect dirs into the audio thread. Document that home=Faust, user=LV2 in ARCHITECTURE. Keep build-binary+build-image green.'
-  notes: main host is orphaned dead code; home fx = Faust in binary; only user LV2 loads dynamically in the worker. Remove dead host, wire userDir/userFxCore into worker.
-  status: pending
+[]
