@@ -62,18 +62,30 @@ tearing, no priority inversion. On Linux the cross-core wakeup primitive changes
 from bare-metal `SEV`/`WFE` to a `futex`/`eventfd`, but the lock-free discipline
 is identical.
 
-## Effects: two LV2 plugins, hosted *in-process*
+## Effects topology: Faust home stack in-binary + dynamic user LV2s in-process
 
 This is the load-bearing decision, and it exists to satisfy two goals at once —
 **hot-swappable effects** *and* **zero added latency**.
 
-### Why LV2
+### Home effects = the Faust home stack, compiled INTO the binary
 
-LV2 gives us a standard plugin ABI (`instantiate` / `connect_port` / `run`) and a
-metadata format (`.ttl`). That means:
-- The home effects are a `.lv2` bundle built once with `faust2lv2`.
-- A user drops their own `.lv2` bundle on flash and it loads — no recompile, no
-  firmware flash. This is the moddability the whole project is for.
+The home-FX chain is the Faust program `dsp/aloop.dsp` (`loop : effects_runtime` —
+the loop engine composed with the dubfx effect chain). It is compiled to C++ and
+linked into the `aloop` binary; the audio thread runs it directly as `faustHome`
+each block (Core 1). It is **not** dynamically loaded — there is no home LV2 to
+find at boot, so there is nothing to name-mismatch.
+- `faust2lv2` also packages that *same* home stack as an `aloop.lv2` bundle
+  (`build-lv2`) — that bundle is the alternative, drop-into-another-host packaging
+  and the A/B artifact, **not** what the aloop binary loads.
+
+### User effects = dynamic LV2, hosted in-process
+
+A user drops their own `.lv2` bundle into `user_dir` (`/effects/user`) on flash and
+the audio thread's in-process host loads it **by directory** (any `*.lv2` present)
+onto the free core (Core 3) — no recompile, no firmware flash. This is the
+moddability the whole project is for. LV2 gives the standard plugin ABI
+(`instantiate` / `connect_port` / `run`) + `.ttl` metadata. The effect dirs come
+from `aloop.conf [effects]` (`home_dir` / `user_dir`), never hardcoded.
 
 ### Why *in-process*, and never a JACK/PipeWire graph
 

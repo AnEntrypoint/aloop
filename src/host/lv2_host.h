@@ -51,12 +51,15 @@ struct Lv2Plugin {
 // The host: owns the loaded plugins and drives them in-process, per block.
 class Lv2Host {
 public:
-    // Discover + load all LV2 bundles under `dir` (e.g. /effects/user). Returns
-    // the number loaded. Malformed/unloadable bundles are logged and skipped,
-    // never fatal — a bad user plugin must not stop the device from booting.
-    int loadDir(const std::string& dir);
+    // Discover + load all LV2 bundles under `dir` (e.g. /effects/home,
+    // /effects/user), each pinned to `coreAffinity`. Returns the number loaded.
+    // Loading BY DIRECTORY (any *.lv2 present) is deliberate: the faust2lv2 home
+    // bundle is named after its .dsp (aloop.lv2), not a fixed "chain.lv2", so a
+    // hardcoded filename would silently load nothing. Malformed/unloadable bundles
+    // are logged and skipped, never fatal — a bad plugin must not stop the boot.
+    int loadDir(const std::string& dir, int coreAffinity = 3);
 
-    // Load a single bundle by path (used for the fixed home-FX bundle).
+    // Load a single bundle by explicit path (rarely needed; loadDir is preferred).
     bool loadBundle(const std::string& bundlePath, int coreAffinity);
 
     // Wire every plugin's ports to the shared block buffers + control store.

@@ -51,21 +51,20 @@ void installWatchdog() {
 }
 } // namespace
 
-int Lv2Host::loadDir(const std::string& dir) {
+int Lv2Host::loadDir(const std::string& dir, int coreAffinity) {
     installWatchdog();
     int n = 0;
     DIR* d = opendir(dir.c_str());
-    if (!d) { fprintf(stderr, "[host] no effects dir %s (ok — home-FX only)\n", dir.c_str()); return 0; }
+    if (!d) { fprintf(stderr, "[host] no effects dir %s (ok — skipped)\n", dir.c_str()); return 0; }
     struct dirent* e;
     while ((e = readdir(d))) {
         std::string name = e->d_name;
         if (name.size() > 4 && name.substr(name.size() - 4) == ".lv2") {
-            // user effects land on the free core (userFxCore); the caller sets it.
-            if (loadBundle(dir + "/" + name, /*coreAffinity=*/3)) n++;
+            if (loadBundle(dir + "/" + name, coreAffinity)) n++;
         }
     }
     closedir(d);
-    fprintf(stderr, "[host] loaded %d user effect(s) from %s\n", n, dir.c_str());
+    fprintf(stderr, "[host] loaded %d effect(s) from %s (core %d)\n", n, dir.c_str(), coreAffinity);
     return n;
 }
 

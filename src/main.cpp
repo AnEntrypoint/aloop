@@ -9,7 +9,6 @@
 // telemetry.cpp). Keeping main.cpp a thin wiring layer keeps the spine flat.
 
 #include "dsp/audio_thread.h"
-#include "host/lv2_host.h"
 #include "link/link_bridge.h"
 #include "control/telemetry.h"
 #include "control/midi.h"
@@ -35,13 +34,17 @@ aloop::AudioConfig loadConfig(const char* path) {
     if (!f) { fprintf(stderr, "[aloop] no config at %s — using defaults\n", path); return cfg; }
     char line[256];
     while (fgets(line, sizeof line, f)) {
-        int v;
+        int v; char s[200];
         if (sscanf(line, " home_fx = %d", &v) == 1) cfg.homeFxCore = v;
         else if (sscanf(line, " user_fx = %d", &v) == 1) cfg.userFxCore = v;
         else if (sscanf(line, " audio_priority = %d", &v) == 1) cfg.rtPriority = v;
         else if (sscanf(line, " block_size = %d", &v) == 1) cfg.blockSize = v;
         else if (sscanf(line, " sample_rate = %d", &v) == 1) cfg.sampleRate = v;
         else if (sscanf(line, " channels = %d", &v) == 1) cfg.channels = v;
+        // effect bundle dirs ([effects] home_dir / user_dir). Strip a trailing
+        // inline comment / whitespace so the path is clean.
+        else if (sscanf(line, " home_dir = %199s", s) == 1) cfg.homeDir = s;
+        else if (sscanf(line, " user_dir = %199s", s) == 1) cfg.userDir = s;
     }
     fclose(f);
     return cfg;
@@ -64,13 +67,16 @@ int main(int argc, char** argv) {
     if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0)
         fprintf(stderr, "[aloop] warning: mlockall failed (need CAP_IPC_LOCK / rtprio limits)\n");
 
-    // Load the effects: the fixed home-FX bundle on the home core, then any user
-    // bundles from the flash dir on the free core. A bad user bundle is skipped,
-    // never fatal (DEGRADED-MODES).
-    aloop::Lv2Host host;
-    host.loadBundle("/effects/home/chain.lv2", cfg.homeFxCore);
-    host.loadDir("/effects/user");
-    host.connect(cfg.blockSize, cfg.channels);
+    // NOTE on the effects topology (see docs/ARCHITECTURE.md):
+    //   · HOME effects are NOT a separately-loaded LV2 here — they are the Faust
+    //     home stack (dsp/aloop.dsp = loop engine : effects_runtime), compiled INTO
+    //     the aloop binary and run by the audio thread's `faustHome`. (The
+    //     build-lv2 `aloop.lv2` bundle is the alternative hot-swap packaging of that
+    //     same stack; the binary runs the compiled-in version directly.)
+    //   · USER effects ARE dynamic LV2s: the audio thread loads them from userDir on
+    //     the free core via its own in-process host (audio_thread.cpp).
+    // So there is no top-level Lv2Host here — the audio thread owns the only host,
+    // and we hand it the user-effects dir + core through the config.
 
     // Ableton Link on the control thread (never the audio cores). Telemetry is
     // started AFTER the audio thread below so it can read the live snapshot.

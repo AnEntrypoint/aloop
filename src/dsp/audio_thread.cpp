@@ -185,7 +185,7 @@ static void* worker(void*) {
     // stack, in the same block (no graph — zero added latency, ADR-002). A bad
     // user plugin is caught by the host's watchdog and bypassed.
     Lv2Host userFx;
-    userFx.loadDir("/effects/user");
+    userFx.loadDir(g_cfg.userDir, g_cfg.userFxCore);   // honor aloop.conf [effects] user_dir + core
     userFx.connect(N, ch);
 
 #ifdef ALOOP_HAVE_ALSA

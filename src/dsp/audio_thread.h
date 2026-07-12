@@ -7,6 +7,7 @@
 #define ALOOP_AUDIO_THREAD_H
 
 #include <cstdint>
+#include <string>
 
 namespace aloop {
 
@@ -20,6 +21,12 @@ struct AudioConfig {
     int homeFxCore = 1;       // pinned cores (match isolcpus in kernel/cmdline.txt)
     int userFxCore = 3;
     int rtPriority = 95;      // SCHED_FIFO
+    // Effect bundle directories (aloop.conf [effects]). The home dir holds the fixed
+    // home-FX LV2; the user dir holds swappable bundles. Loaded by DIRECTORY (any
+    // *.lv2 present), never a hardcoded bundle name — the faust2lv2 bundle is named
+    // after the .dsp (aloop.lv2), not "chain.lv2".
+    std::string homeDir = "/effects/home";
+    std::string userDir = "/effects/user";
 };
 
 // Starts the RT audio pipeline:
