@@ -94,6 +94,29 @@ if [ -f "$OVLTMP/o.tar.gz" ]; then
     || echo "  WARN apkovl has NO home-FX LV2 (layout-only build — set LV2_DIR)"
   echo "$INV" | grep -q 'effects/user' && ok "apkovl: /effects/user dir present" \
     || bad "apkovl missing /effects/user (user LV2 drop dir)"
+
+  # --- BOOT-LINT: every runtime path a shipped script/service references MUST
+  # exist in the apkovl. This catches the recurring "path doesn't resolve on the
+  # device" class (autoap CONF_DIR, LV2 dir, config locations) before a card-test.
+  echo "[validate] boot-lint: runtime path references -> apkovl contents"
+  LINT="$(mktemp -d)"; tar -xzf "$OVLTMP/o.tar.gz" -C "$LINT" 2>/dev/null || true
+  has() { [ -e "$LINT/$1" ] || [ -e "$LINT/./$1" ]; }
+  # The canonical device paths the runtime depends on (service commands + the
+  # scripts' own defaults). Each MUST be present in the overlay.
+  for p in etc/aloop.conf etc/aloop-controls.conf \
+           etc/aloop-net/hostapd.conf etc/aloop-net/wpa_supplicant.conf etc/aloop-net/dnsmasq.conf \
+           opt/aloop/autoap.sh effects/user effects/home; do
+    if has "$p"; then ok "boot-lint: /$p referenced and present"
+    else bad "boot-lint: /$p is referenced by the runtime but MISSING from the apkovl"; fi
+  done
+  # autoap's CONF_DIR default must point at a dir the image actually ships.
+  ACONF=$(grep -oE 'CONF_DIR:-[^}]*' "$LINT/opt/aloop/autoap.sh" 2>/dev/null | sed 's/CONF_DIR:-//' || true)
+  if [ -n "$ACONF" ]; then
+    REL="${ACONF#/}"
+    if has "$REL"; then ok "boot-lint: autoap CONF_DIR default ($ACONF) exists in the apkovl"
+    else bad "boot-lint: autoap CONF_DIR default ($ACONF) does NOT exist in the apkovl"; fi
+  fi
+  rm -rf "$LINT"
 else
   bad "could not extract aloop.apkovl.tar.gz from the image"
 fi

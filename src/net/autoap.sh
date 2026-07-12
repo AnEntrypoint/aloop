@@ -22,7 +22,10 @@
 
 set -eu
 IFACE="${IFACE:-wlan0}"
-CONF_DIR="$(dirname "$0")/config"
+# The net configs (hostapd/wpa_supplicant/dnsmasq) are installed by the image at
+# /etc/aloop-net (image/build-image.sh: src/net/config -> /etc/aloop-net). Default
+# there; env-overridable for a dev checkout (CONF_DIR=src/net/config ./autoap.sh).
+CONF_DIR="${CONF_DIR:-/etc/aloop-net}"
 AP_IP="192.168.4.1/24"
 SCAN_INTERVAL="${SCAN_INTERVAL:-15}"     # seconds between state checks
 STA_FAIL_LIMIT="${STA_FAIL_LIMIT:-3}"    # consecutive STA fails before AP (hysteresis)

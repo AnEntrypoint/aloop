@@ -27,6 +27,9 @@ struct AudioConfig {
     // after the .dsp (aloop.lv2), not "chain.lv2".
     std::string homeDir = "/effects/home";
     std::string userDir = "/effects/user";
+    // MIDI input device: "auto" scans hw:0..7 for the first rawmidi input; an
+    // explicit "hw:N,0,0" pins it (aloop.conf midi_device).
+    std::string midiDevice = "auto";
 };
 
 // Starts the RT audio pipeline:

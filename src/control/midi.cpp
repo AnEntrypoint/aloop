@@ -67,12 +67,29 @@ void runMidiLoop(ParamStore& ps, const char* device) {
 
 #ifdef ALOOP_HAVE_ALSA
     snd_rawmidi_t* in = nullptr;
-    const char* dev = (device && strcmp(device, "auto")) ? device : "hw:1,0,0";
-    if (snd_rawmidi_open(&in, nullptr, dev, SND_RAWMIDI_SYNC) < 0) {
-        fprintf(stderr, "[midi] no controller at %s — params hold\n", dev);
-        return;
+    char devbuf[16] = {0};
+    if (device && strcmp(device, "auto")) {
+        // explicit device given (config/arg) — use it verbatim.
+        snprintf(devbuf, sizeof devbuf, "%s", device);
+        if (snd_rawmidi_open(&in, nullptr, devbuf, SND_RAWMIDI_SYNC) < 0) {
+            fprintf(stderr, "[midi] no controller at %s — params hold\n", devbuf);
+            return;
+        }
+    } else {
+        // auto: SCAN for the first rawmidi input. The USB MIDI controller's ALSA
+        // card number is NOT guaranteed (the f_uac2 gadget + USB audio also take
+        // cards), so we probe hw:0..7,0,0 rather than assume card 1.
+        for (int card = 0; card < 8 && !in; card++) {
+            snprintf(devbuf, sizeof devbuf, "hw:%d,0,0", card);
+            if (snd_rawmidi_open(&in, nullptr, devbuf, SND_RAWMIDI_SYNC) == 0) break;
+            in = nullptr;
+        }
+        if (!in) {
+            fprintf(stderr, "[midi] no MIDI input found (probed hw:0..7) — params hold\n");
+            return;
+        }
     }
-    fprintf(stderr, "[midi] reading %s (remappable control map)\n", dev);
+    fprintf(stderr, "[midi] reading %s (remappable control map)\n", devbuf);
     uint8_t st = 0, d1 = 0, d2 = 0; int phase = 0; uint8_t b;
     while (snd_rawmidi_read(in, &b, 1) == 1) {
         if (b & 0x80) { st = b; phase = 1; continue; }

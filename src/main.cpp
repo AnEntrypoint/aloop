@@ -45,6 +45,8 @@ aloop::AudioConfig loadConfig(const char* path) {
         // inline comment / whitespace so the path is clean.
         else if (sscanf(line, " home_dir = %199s", s) == 1) cfg.homeDir = s;
         else if (sscanf(line, " user_dir = %199s", s) == 1) cfg.userDir = s;
+        // optional explicit MIDI device (else "auto" scans hw:0..7).
+        else if (sscanf(line, " midi_device = %199s", s) == 1) cfg.midiDevice = s;
     }
     fclose(f);
     return cfg;
@@ -87,7 +89,7 @@ int main(int argc, char** argv) {
     // It writes the shared param store; the audio thread reads it. Runs on the
     // control core alongside Link. A missing controller is fine (params hold).
     aloop::ParamStore params;
-    std::thread midiThread([&]{ aloop::runMidiLoop(params, "auto"); });
+    std::thread midiThread([&, dev = cfg.midiDevice]{ aloop::runMidiLoop(params, dev.c_str()); });
     midiThread.detach();
 
     // Start the RT audio pipeline (opens the ALSA/f_uac2 PCM, spawns the pinned
