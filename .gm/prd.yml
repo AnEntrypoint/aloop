@@ -1,15 +1,3 @@
-- id: dsp-audio-callback
-  subject: Author the Linux RT audio callback that drives loopMachine::update per 64-sample block, replacing the Circle AudioSystem dispatch. Allocation-free, no syscalls in the callback. This is the audio heart on Linux.
-  notes: The DSP entry point moves from Circle ISR-dispatch to a Linux RT thread callback.
-  status: pending
-- id: dsp-block-format-parity
-  subject: 'Preserve the exact audio format: mono, 48000, 64-sample block, s16<->float /32768 at boundaries. Verify parity with looper (the dubfx harness already A/B-proved the DSP; reuse it as the regression oracle).'
-  notes: Format drift breaks everything downstream; the dubfx A/B harness is the guard.
-  status: pending
-- id: dsp-alloc-free-audit
-  subject: 'Audit the ported audio path for RT-safety: zero malloc/free, zero locks, zero syscalls, zero file I/O in the callback. mlockall + pre-fault all buffers. Witness with a no-alloc check under load.'
-  notes: RT correctness — the callback must never fault or block.
-  status: pending
 - id: lv2-user-swap-dir
   subject: 'Implement the user-swappable-effect mechanism: a flash dir (/effects/user/) scanned for LV2 bundles; drop-in load + reload without restart. Document the drop-a-file-and-it-works UX (the whole moddability goal).'
   notes: The moddable-effects goal. dlopen from flash dir. Instructive user guide for adding effects.
