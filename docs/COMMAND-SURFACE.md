@@ -21,9 +21,19 @@ the engine-global `clear`/`speed` handling). This is the authoritative parity ma
 | `LOOP_COMMAND_STOP_TRACK_BASE` | 0x40+i | `looper<i>/play`=0 | per-track stop = clearing that one play checkbox |
 | `LOOP_COMMAND_CLEAR_ALL` | 0x01 | `cmd/clearall` | engine-global Faust `button("clear")` — wipes all 20 loops |
 | `LOOP_COMMAND_ERASE_TRACK_BASE` | 0x60+i | `looper<i>/erase` | per-looper Faust `button("erase")` — wipes that one loop |
-| `LOOP_COMMAND_HALFSPEED_ON/OFF` | 0x0C/0x0D | `cmd/halfspeed` | engine-global `speed`=0.5 while held (varispeed: shorter fdelay ⇒ 0.5× read) |
-| `LOOP_COMMAND_DOUBLESPEED_ON/OFF` | 0x0E/0x0F | `cmd/doublespeed` | engine-global `speed`=2.0 while held (2× read) |
+| `LOOP_COMMAND_HALFSPEED_ON/OFF` | 0x0C/0x0D | `cmd/halfspeed` | engine-global `speed`=0.5 while held (varispeed read rate) |
+| `LOOP_COMMAND_DOUBLESPEED_ON/OFF` | 0x0E/0x0F | `cmd/doublespeed` | engine-global `speed`=2.0 while held (2× read rate) |
+| `LOOP_COMMAND_LOOP_IMMEDIATE` | 0x08 | `cmd/loopnow` | engine-global `loopnow` — jumps every read head to its mark point (synchronized re-trigger) |
+| `LOOP_COMMAND_SET_LOOP_START` | 0x09 | `looper<i>/markset` | per-looper `markset` — latches the current read position as the restart mark |
+| `LOOP_COMMAND_CLEAR_LOOP_START` | 0x0A | `looper<i>/markclear` | per-looper `markclear` — resets the mark to the loop's natural start (0) |
+| `LOOP_COMMAND_ABORT_RECORDING` | 0x06 | `looper<i>/rec`=0 | releasing rec ends the take; record replaces in place so there is nothing to "un-append" |
 | Link tempo/phase | — | `looper<i>/len` | audio thread sizes every loop from the Link BPM (varispeed grid sync) |
+
+Loop-start / mark-point (0x08–0x0A) and the varispeed read rate are why the engine
+is a **buffer + playhead** (rwtable), not a feedback-delay ring: a delay ring has no
+addressable read position to jump to a mark or re-trigger. The engine (`dsp/loop.dsp`)
+writes the live input at a recording write-pointer and reads at a resettable phase
+read-pointer, exactly like the hardware's loopMachine — so these commands map 1:1.
 
 Momentary semantics match the hardware exactly: `HALFSPEED`/`DOUBLESPEED` and
 `clear`/`erase` are **held** (value 1 = active, release = neutral), driven each

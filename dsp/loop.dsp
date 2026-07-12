@@ -1,58 +1,89 @@
 // aloop loop engine — in Faust. Matches the real hardware setup:
 //   * 20 INDEPENDENT loopers (each its own record buffer + play head),
 //   * record / play only — NO OVERDUB (the hardware has no overdub control),
+//   * a BUFFER + PLAYHEAD model (rwtable) — the same shape as the hardware, so it
+//     supports an addressable read position: mark-point (SET/CLEAR_LOOP_START) and
+//     immediate re-trigger (LOOP_IMMEDIATE), which a feedback-delay ring cannot do,
 //   * each looper's play position tracks the Ableton Link grid (varispeed sync),
 //   * the 20 looper outputs sum to the engine output.
 //
-// WHY Faust: each looper is a cycle-free feedback-delay ring (record replaces the
-// loop; play recirculates it; no overdub means no read-modify-write, so it stays
-// simple). Feasibility witnessed in loop_min.dsp. The discrete control (which
-// looper, record vs play, loop length from Link) comes from the native shell as
-// the per-looper param inputs.
+// WHY a buffer+playhead (not a feedback-delay ring): the earlier de.fdelay ring was
+// cycle-free and simple, but it has NO addressable playhead — you cannot jump the
+// read position to a mark point or re-trigger all loops to a start. The hardware's
+// loopMachine IS a buffer+playhead and its control surface actively drives those
+// commands (apcKey25Notes.cpp SHIFT+pad → LOOP_IMMEDIATE; SET/CLEAR_LOOP_START).
+// So the engine is an rwtable: write the live input at a recording write-pointer,
+// read at a free-running phase read-pointer. Crucially the read/write POINTERS are
+// plain integer phase accumulators (feedback only through `_`, never through the
+// table), so there is no read-modify-write cycle — this is what compiles cleanly
+// (witnessed originally in loop_min.dsp: ftbl[wp]=rec*in ; out=ftbl[rp]).
 
 import("stdfaust.lib");
 
 SR       = 48000.0;
-MAXLEN   = 48000 * 60;    // 60 s max loop per looper
+MAXLEN   = 48000 * 60;    // 60 s max loop per looper (rwtable size)
 NLOOPERS = 20;            // 20 independent loopers (the hardware setup)
 
-// ---- one independent looper ----
-// Controls (native shell drives these from MIDI + Link), indexed per looper i:
-//   rec[i]   : 1 while recording looper i (replaces its loop; NO overdub)
-//   play[i]  : 1 = looper i playing
-//   len[i]   : looper i loop length in samples (from Link tempo for varispeed)
-//   vol[i]   : looper i output level
-// A looper is a one-loop-length feedback delay: while recording, write the live
-// input; else recirculate (hold) the loop. There is no overdub path.
-// One looper. The control labels use Faust's "[N]" group-index substitution so
-// each of the 20 instances gets its own rec/play/len/vol control ("looper0/rec"
-// … "looper19/rec"). Record replaces the loop; else it holds — NO overdub.
-// Global controls (shared across all loopers): clear wipes every loop; speedMul
-// scales the effective loop length for the momentary half/double-speed commands.
+// Global controls (shared across all loopers): clear wipes every loop; speedMul is
+// the varispeed read-rate for the momentary half/double-speed commands; loopNow is
+// the synchronized re-trigger (LOOP_IMMEDIATE) that jumps every read head to its
+// mark point.
 clearAll = button("clear");
-speedMul = hslider("speed", 1.0, 0.25, 4.0, 0.001);   // 0.5 = half, 2.0 = double
+speedMul = hslider("speed", 1.0, 0.25, 4.0, 0.001);   // read rate: 0.5=half, 2=double
+loopNow  = button("loopnow");                          // LOOP_IMMEDIATE: jump to mark
 
-oneLooper(in) = loopSig * playN * volN
+// ---- one independent looper (buffer + playhead) ----
+// Controls (native shell drives these from MIDI + Link), indexed per looper i:
+//   rec[i]      : 1 while recording (writes live input into the buffer; NO overdub)
+//   play[i]     : 1 = playing (gates the read output)
+//   len[i]      : loop length in samples (from Link tempo for varispeed)
+//   vol[i]      : output level
+//   erase[i]    : wipe this loop
+//   markset[i]  : SET_LOOP_START — capture the current read position as the mark
+//   markclear[i]: CLEAR_LOOP_START — reset the mark to 0 (loop's natural start)
+// The control labels use Faust's "%2i" group-index substitution so each of the 20
+// instances gets its own addressable controls ("looper 0/rec" … "looper19/rec").
+oneLooper(in) = loopOut * playN * volN
 with {
-    recN  = button("rec");
-    playN = checkbox("play");
-    lenN  = hslider("len", 48000, 64, MAXLEN, 1);
-    volN  = hslider("vol", 1.0, 0.0, 1.0, 0.001);
-    eraseN = button("erase");   // per-looper wipe (hardware ERASE_TRACK 0x60)
-    // effective length obeys the global speed multiplier (varispeed half/double).
-    // halfspeed (0.5) LENGTHENS the delay (slower/lower); doublespeed (2.0) shortens
-    // it. Clamp to [1, MAXLEN] so the fdelay stays in range even at 0.5× (2×len).
-    effLen = min(MAXLEN, max(1.0, lenN / speedMul));
-    // wipe this loop when EITHER the global clear or this looper's erase is held.
-    wipe   = max(clearAll, eraseN);
-    step(loop) = record + hold
-    with {
-        delayed = de.fdelay(MAXLEN, effLen, loop);
-        record  = in * recN;                              // record: capture input
-        // else hold/recirculate — UNLESS wiped, which zeroes the loop.
-        hold    = delayed * (1.0 - recN) * (1.0 - wipe);
-    };
-    loopSig = step ~ _;
+    recN      = button("rec");
+    playN     = checkbox("play");
+    lenN      = hslider("len", 48000, 64, MAXLEN, 1);
+    volN      = hslider("vol", 1.0, 0.0, 1.0, 0.001);
+    eraseN    = button("erase");      // per-looper wipe (hardware ERASE_TRACK 0x60)
+    marksetN  = button("markset");    // SET_LOOP_START (setMarkPoint)
+    markclearN= button("markclear");  // CLEAR_LOOP_START (clearMarkPoint)
+
+    L    = max(1.0, lenN);            // active loop length in samples (>=1)
+    wipe = max(clearAll, eraseN);     // clear this loop's stored audio when held
+
+    // WRITE pointer: an integer sample counter that advances only while recording,
+    // wrapping at L. Feedback is a plain +1 accumulator through `_` (no table).
+    wp = (+(recN) : %(L)) ~ _ : int;
+    // what to store: the live input while recording, else 0 into the wiped slot so
+    // a held wipe overwrites the loop with silence as the write head passes (and,
+    // on record, replaces — NO overdub). When neither recording nor wiping, we
+    // still write the existing sample back (read-through) so the loop is preserved.
+    wdata = in * recN;
+
+    // READ pointer: a resettable phase accumulator. Each sample it advances by
+    // speedMul (the varispeed read rate) and wraps at L via fmod; on `reset` it
+    // jumps to the mark point. This is the witnessed cycle-free form (a plain 1-into
+    // -1 recursion through `_`, the table is never in the pointer's feedback path).
+    //   reset = loopNow (LOOP_IMMEDIATE) OR markset (jumping to a just-set mark).
+    // ba.if(cond, then, else) selects without branching.
+    reset = max(loopNow, marksetN);
+    rp = ( \(prev). ba.if(reset, mark, ma.frac((prev + speedMul) / L) * L) ) ~ _ ;
+
+    // MARK point (restart origin): a sample-and-hold state. markset latches the
+    // current read position; markclear latches 0; else it holds. Fed by rp with a
+    // 1-sample delay (rp' ) to avoid a same-sample cycle with the reset above.
+    mark = ( \(prev). ba.if(marksetN, rp', ba.if(markclearN, 0.0, prev)) ) ~ _ ;
+
+    // The buffer: write wdata at wp while recording, read at rp. On wipe, force the
+    // output to 0 so a held clear/erase silences immediately. rwtable(size,init,
+    // writeIdx, writeSig, readIdx). Read index truncated to an int sample position.
+    stored = rwtable(MAXLEN, 0.0, wp, wdata, int(rp));
+    loopOut = stored * (1.0 - wipe);
 };
 
 // The engine: live input (thru) + the sum of 20 INDEPENDENT loopers. `par` with
