@@ -1,7 +1,1 @@
-- id: hardware-test-execution
-  subject: EXECUTE all test/hardware/*.sh on a real Raspberry Pi 4 and record the numbers (RT jitter, f_uac2 latency, Link no-glitch, AP multicast). This is the ONLY genuinely hardware-blocked item — the harnesses are all built + one-command runnable.
-  notes: The single honest blocked-on-hardware row.
-  blockedBy:
-  - external
-  - no-Pi4-in-session — run the completed test/hardware/ suite on a Pi4
-  status: pending
+[]
