@@ -70,6 +70,13 @@ public:
     // allocation, locking, or syscalls — RT-safe by contract.
     void runBlock(int nframes);
 
+    // Process an EXTERNAL mono buffer in place: copy it into the host's I/O
+    // buffer, run the plugin chain, copy the result back. This is what the audio
+    // thread calls to run the user effect on the home-stack output — the plugin
+    // audio ports are connected to the host's ioBuffer_, so the signal actually
+    // flows through the user plugin. RT-safe (no alloc in the per-block path).
+    void process(float* buf, int nframes);
+
     // Rescan the user dir for added/removed bundles (hot-swap). Called from the
     // CONTROL thread, never the audio thread; the audio thread sees the new set
     // via the same double-buffer-flip discipline as the param snapshot.

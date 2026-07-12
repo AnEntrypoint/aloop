@@ -133,10 +133,10 @@ static void* worker(void*) {
 #ifdef ALOOP_HAVE_FAUST_LOOP
             for (int i = 0; i < N; i++) fin[i] = buf[i] / 32768.0f;
             faustHome.compute(N, fins, fouts);
-            // the user LV2(s) process the home-stack output on the free core, in
-            // the same block — zero added latency, no graph (ADR-002). connect()
-            // wired the user plugins to the shared IO buffer.
-            userFx.runBlock(N);
+            // the user LV2(s) process the home-stack OUTPUT (fout) on the free
+            // core, in the same block — zero added latency, no graph (ADR-002).
+            // process() runs the plugin chain in place; passthrough if none loaded.
+            userFx.process(fout.data(), N);
             for (int i = 0; i < N; i++) {
                 float v = fout[i] * 32768.0f;
                 buf[i] = (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));

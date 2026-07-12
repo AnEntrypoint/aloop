@@ -171,6 +171,20 @@ void Lv2Host::runBlock(int nframes) {
     for (auto& p : plugins_) runOne(p, nframes);
 }
 
+void Lv2Host::process(float* buf, int nframes) {
+    // No plugins loaded → passthrough (the common case: no user effect present,
+    // DEGRADED-MODES). Otherwise the signal flows through the plugin chain: the
+    // plugins' audio ports are connected to ioBuffer_ (in connect()), so we copy
+    // in, run, copy out. No allocation in the per-block path (ioBuffer_ is sized
+    // once in connect()).
+    if (plugins_.empty()) return;
+    int n = nframes;
+    if ((int)ioBuffer_.size() < n) return;   // safety: connect() must have sized it
+    for (int i = 0; i < n; i++) ioBuffer_[(size_t)i] = buf[i];
+    runBlock(n);
+    for (int i = 0; i < n; i++) buf[i] = ioBuffer_[(size_t)i];
+}
+
 void Lv2Host::rescanUser(const std::string& userDir) {
     // Control-thread only. Reload the user dir; the audio thread picks up the new
     // set via the same double-buffer-flip discipline as the param snapshot.
