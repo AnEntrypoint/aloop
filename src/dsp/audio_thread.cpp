@@ -236,10 +236,18 @@ static void* worker(void*) {
         // through the dmix/dsnoop plugin's own large fixed period), was the actual
         // cause of the "massive latency vs looper" symptom: the wire path was
         // running at ~20ms+ per direction instead of the intended N/sampleRate
-        // (1.33ms at the default 64-sample block). Setting the period to exactly N
-        // and a 2-period buffer (the minimum ALSA needs for double-buffering)
-        // makes the real wire latency match block_size, same as looper's bare-metal
-        // USB gadget audio path (which has no OS buffering layer to begin with).
+        // (1.33ms at the default 64-sample block).
+        //
+        // WITNESSED live on a real Pi 4: an initial 2-period buffer (256 frames
+        // total, the ALSA minimum) produced 690 xruns within seconds — too tight
+        // for a USB gadget PCM, where each read/write also rides USB's own
+        // transfer-scheduling jitter on top of this thread's SCHED_FIFO jitter
+        // (unlike looper's bare-metal Circle build, which has no OS/USB-stack
+        // contention at all). 4 periods (256 total *frames of headroom* — i.e.
+        // 4*N frames of buffer against the same N-frame period/wakeup size) keeps
+        // the same per-period 1.33ms granularity (the actual latency-determining
+        // number) while giving the ring enough slack to absorb that jitter
+        // without underrunning constantly.
         auto configurePcm = [&](snd_pcm_t* pcm) -> bool {
             snd_pcm_hw_params_t* hw;
             snd_pcm_hw_params_alloca(&hw);
@@ -251,7 +259,7 @@ static void* worker(void*) {
             snd_pcm_hw_params_set_rate_near(pcm, hw, &rate, nullptr);
             snd_pcm_uframes_t period = (snd_pcm_uframes_t)N;
             snd_pcm_hw_params_set_period_size_near(pcm, hw, &period, nullptr);
-            snd_pcm_uframes_t bufSize = period * 2;
+            snd_pcm_uframes_t bufSize = period * 4;
             snd_pcm_hw_params_set_buffer_size_near(pcm, hw, &bufSize);
             if (snd_pcm_hw_params(pcm, hw) < 0) return false;
             if (period != (snd_pcm_uframes_t)N)
