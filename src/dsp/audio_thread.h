@@ -30,14 +30,31 @@ struct AudioConfig {
     // MIDI input device: "auto" scans hw:0..7 for the first rawmidi input; an
     // explicit "hw:N,0,0" pins it (aloop.conf midi_device).
     std::string midiDevice = "auto";
-    // Wire audio device (aloop.conf [audio] audio_device=). The f_uac2 gadget's
-    // ALSA card name is stable across boots (unlike its numeric index, which
-    // shifts depending on USB host-device enumeration order); "default" would
-    // route through ALSA's dmix/dsnoop plugin (a large fixed period, ignoring
-    // block_size) and, without an /etc/asound.conf pinning it, "default" can
-    // resolve to a different card altogether (e.g. a real USB audio interface
-    // plugged in for monitoring) rather than the OTG-facing gadget. Opening the
-    // named hw device directly is both correct and lower-latency.
+    // Two DISTINCT ALSA devices, matching looper's split exactly (see ADR-015):
+    // looper's real engine input/output is the USB-HOST audio class interface
+    // (AudioInputUSB/AudioOutputUSB) — an instrument/mic physically plugs into
+    // it and it is the tight-latency path a musician actually hears. The OTG
+    // gadget (AudioOutputOTG/AudioInputOTG) is a passive MIRROR: the same
+    // processed output is also sent out the gadget to whatever host computer is
+    // plugged into the Pi's OTG port, and audio arriving FROM that host is
+    // additively mixed into the engine input — but OTG is never the primary
+    // path and its latency is explicitly not latency-critical (looper gives it
+    // 4x the buffering headroom of the real device path).
+    //
+    // instrumentDevice = the real USB audio interface (aloop.conf
+    // [audio] instrument_device=, default hw:0,0 — the first non-gadget USB
+    // audio card, e.g. the M-Audio AIR 192|4). This is what the audio thread
+    // reads capture from and writes its tight-latency playback to every block.
+    std::string instrumentDevice = "hw:0,0";
+    // audioDevice = the f_uac2 OTG gadget (aloop.conf [audio] audio_device=).
+    // The gadget's ALSA card name is stable across boots (unlike its numeric
+    // index, which shifts depending on USB host-device enumeration order);
+    // "default" would route through ALSA's dmix/dsnoop plugin (a large fixed
+    // period, ignoring block_size) and, without an /etc/asound.conf pinning
+    // it, "default" can resolve to a different card altogether rather than
+    // the gadget. This device is written to on a best-effort, non-blocking
+    // basis (see worker()) — it must never stall or desync the instrument
+    // device's real-time path, matching looper's independent-cursor design.
     std::string audioDevice = "hw:UAC2Gadget,0";
     // Shared secret for the remote-control listener (control/remote_control.h,
     // aloop.conf [remote] token=). Empty = listener disabled (no reboot/log-tail
@@ -48,7 +65,9 @@ struct AudioConfig {
 
 // Starts the RT audio pipeline:
 //   - mlockall(MCL_CURRENT|MCL_FUTURE)  — no page faults in the audio path
-//   - opens the ALSA PCM bridged to the f_uac2 gadget
+//   - opens the real instrument USB audio interface (tight-latency capture +
+//     playback, ADR-015) and, best-effort/non-blocking, the f_uac2 OTG gadget
+//     as a passive mirror of the same output
 //   - spawns the audio worker thread(s): SCHED_FIFO at rtPriority, pinned to the
 //     home-FX / user-FX cores via pthread_setaffinity_np
 //   - the worker loop per block: read PCM -> loopMachine::update (DSP) ->

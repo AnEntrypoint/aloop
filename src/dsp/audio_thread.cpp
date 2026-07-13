@@ -17,6 +17,7 @@
 #include <ctime>
 #include <cstdio>
 #include <cstring>
+#include <cerrno>
 #include <atomic>
 #include <vector>
 #include <memory>
@@ -208,26 +209,30 @@ static void* worker(void*) {
 
 #ifdef ALOOP_HAVE_ALSA
     snd_pcm_t *cap = nullptr, *play = nullptr;
-    // The f_uac2 gadget exposes an ALSA card, but it does not necessarily exist
-    // yet at process start: the gadget only fully enumerates once a USB HOST is
-    // actually plugged into the Pi's OTG port (dwc2 peripheral mode needs a host
-    // to negotiate with), and the local.d gadget-config script races aloop's own
-    // boot. A ONE-SHOT open (the prior behavior) meant "boot before cable" or
-    // "boot before local.d finishes" permanently silenced audio for the whole
-    // process lifetime. Retry for up to ~30s (matches typical cable-plug/gadget
-    // settle time), then keep running with audio down rather than blocking boot.
+    // TWO distinct devices, matching looper's split exactly (ADR-015):
+    //   - instrumentDevice (default hw:0,0, e.g. the M-Audio AIR 192|4): the
+    //     REAL tight-latency capture+playback path a musician plugs an
+    //     instrument/mic into and actually hears. `cap`/`play` below are
+    //     ALWAYS this device — never the OTG gadget.
+    //   - audioDevice (the f_uac2 OTG gadget, hw:UAC2Gadget,0): a best-effort
+    //     MIRROR of the same processed output, opened separately below
+    //     (`otgPlay`) and written non-blocking so an absent/slow/non-streaming
+    //     OTG host can never stall or desync the instrument device's
+    //     real-time path (looper: AudioOutputUSB is the graph's real output;
+    //     AudioOutputOTG is a passive tap on the same ring with its own,
+    //     looser-latency read cursor).
     const int kAlsaOpenRetries = 30;
-    const char* wireDev = g_cfg.audioDevice.c_str();
+    const char* wireDev = g_cfg.instrumentDevice.c_str();
     for (int attempt = 0; attempt < kAlsaOpenRetries; attempt++) {
         if (snd_pcm_open(&cap,  wireDev, SND_PCM_STREAM_CAPTURE,  0) == 0 &&
             snd_pcm_open(&play, wireDev, SND_PCM_STREAM_PLAYBACK, 0) == 0) break;
         if (cap)  { snd_pcm_close(cap);  cap  = nullptr; }
         if (play) { snd_pcm_close(play); play = nullptr; }
-        if (attempt == 0) fprintf(stderr, "[audio] ALSA open of %s failed — is the f_uac2 gadget up? retrying...\n", wireDev);
+        if (attempt == 0) fprintf(stderr, "[audio] ALSA open of %s failed — is the instrument USB audio interface plugged in? retrying...\n", wireDev);
         struct timespec ts{1, 0}; nanosleep(&ts, nullptr);
     }
     if (!cap || !play) {
-        fprintf(stderr, "[audio] ALSA still unavailable after %ds — is a USB host cable plugged in? audio stays down until restart\n", kAlsaOpenRetries);
+        fprintf(stderr, "[audio] ALSA still unavailable after %ds — is the instrument USB audio interface plugged in? audio stays down until restart\n", kAlsaOpenRetries);
     } else {
         // Explicit hw_params targeting the REAL block_size (N frames/period), not
         // ALSA's snd_pcm_set_params() convenience call — that call picks whatever
@@ -291,6 +296,50 @@ static void* worker(void*) {
             fprintf(stderr, "[audio] warning: explicit hw_params rejected by %s — falling back to driver defaults (higher latency)\n", wireDev);
         snd_pcm_prepare(cap);
         snd_pcm_prepare(play);
+
+        // OTG gadget mirror output: opened NONBLOCK so a missing/non-streaming
+        // host on the other end of the OTG cable (the common case — see
+        // ADR-014's idle-USB-audio-class finding) never blocks this thread. A
+        // failed open here is silent-degrade-only: the instrument-device path
+        // above is already fully functional without it, matching looper's
+        // "OTG is a passive mirror, never the graph's real output" design.
+        snd_pcm_t* otgPlay = nullptr;
+        bool otgReady = false;
+        if (snd_pcm_open(&otgPlay, g_cfg.audioDevice.c_str(), SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK) == 0) {
+            snd_pcm_hw_params_t* ohw;
+            snd_pcm_hw_params_alloca(&ohw);
+            snd_pcm_hw_params_any(otgPlay, ohw);
+            snd_pcm_hw_params_set_access(otgPlay, ohw, SND_PCM_ACCESS_RW_INTERLEAVED);
+            snd_pcm_hw_params_set_format(otgPlay, ohw, SND_PCM_FORMAT_S16_LE);
+            snd_pcm_hw_params_set_channels(otgPlay, ohw, wireCh);
+            unsigned int otgRate = (unsigned int)g_cfg.sampleRate;
+            snd_pcm_hw_params_set_rate_near(otgPlay, ohw, &otgRate, nullptr);
+            // Looser latency target than the instrument device on purpose
+            // (looper: OTG_LAG_TARGET=384 vs the real path's 96, 4x headroom) —
+            // the OTG side doesn't need tight timing, just enough buffer that
+            // its own USB-gadget scheduling jitter doesn't underrun constantly
+            // (WITNESSED: a period matching block_size alone produced hundreds
+            // of xruns/sec on the gadget path even with a real host attached).
+            snd_pcm_uframes_t otgPeriod = (snd_pcm_uframes_t)N * 4;
+            snd_pcm_hw_params_set_period_size_near(otgPlay, ohw, &otgPeriod, nullptr);
+            snd_pcm_uframes_t otgBuf = otgPeriod * 4;
+            snd_pcm_hw_params_set_buffer_size_near(otgPlay, ohw, &otgBuf);
+            if (snd_pcm_hw_params(otgPlay, ohw) == 0) {
+                snd_pcm_sw_params_t* osw;
+                snd_pcm_sw_params_alloca(&osw);
+                snd_pcm_sw_params_current(otgPlay, osw);
+                snd_pcm_sw_params_set_start_threshold(otgPlay, osw, otgPeriod);
+                snd_pcm_sw_params_set_avail_min(otgPlay, osw, otgPeriod);
+                snd_pcm_sw_params(otgPlay, osw);
+                snd_pcm_prepare(otgPlay);
+                otgReady = true;
+            }
+        }
+        if (!otgReady) {
+            fprintf(stderr, "[audio] OTG gadget mirror (%s) unavailable — instrument-device audio is unaffected, gadget mirror stays off until it appears\n", g_cfg.audioDevice.c_str());
+            if (otgPlay) { snd_pcm_close(otgPlay); otgPlay = nullptr; }
+        }
+
         while (g_running.load()) {
             snd_pcm_sframes_t r = snd_pcm_readi(cap, buf.data(), N);
             if (r < 0) { g_telem.xruns++; snd_pcm_recover(cap, (int)r, 1); continue; }
@@ -436,7 +485,21 @@ static void* worker(void*) {
 
             snd_pcm_sframes_t w = snd_pcm_writei(play, buf.data(), N);
             if (w < 0) { g_telem.xruns++; snd_pcm_recover(play, (int)w, 1); }
+
+            // OTG mirror: best-effort, never allowed to affect the instrument
+            // device's timing above. -EAGAIN (nonblock, ring still has enough
+            // queued) is expected and silently skipped — it just means this
+            // block's mirror copy is dropped, not a real error. Any other
+            // negative return is a genuine device-level problem (unplugged,
+            // reset); recover once, and if the device is gone for good the
+            // next block's -EAGAIN/error keeps getting silently absorbed here
+            // rather than ever blocking or crashing the RT path.
+            if (otgReady) {
+                snd_pcm_sframes_t ow = snd_pcm_writei(otgPlay, buf.data(), N);
+                if (ow < 0 && ow != -EAGAIN) snd_pcm_recover(otgPlay, (int)ow, 1);
+            }
         }
+        if (otgPlay) snd_pcm_close(otgPlay);
         snd_pcm_close(cap); snd_pcm_close(play);
     }
 #else
