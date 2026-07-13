@@ -18,10 +18,24 @@
 
 namespace aloop {
 
+void ApcGrid::bindAll(ParamStore& ps) {
+    char name[32];
+    for (int looper = 0; looper < kLooperCount; looper++) {
+        for (const char* field : {"rec", "play", "erase"}) {
+            snprintf(name, sizeof name, "looper%d/%s", looper, field);
+            ps.bind(name);
+        }
+    }
+    ps.bind("fx/pitchbend");
+    ps.bind("fx/pitchbend_engaged");
+    ps.bind("fx/microrepeat_div");
+    ps.bind("fx/monitorfold");
+    ps.bind("fx/formant");
+}
+
 static void setLooper(ParamStore& ps, int looper, const char* field, float v) {
     char name[32];
     snprintf(name, sizeof name, "looper%d/%s", looper, field);
-    ps.bind(name);
     ps.setByName(name, v);
 }
 
@@ -169,7 +183,6 @@ void ApcGrid::applyPreset(int p, ParamStore& ps) {
 // pitchStage's live-offset input) — see PRD row wiring notes.
 void ApcGrid::onModWheel(uint8_t data2, ParamStore& ps) {
     bool inDeadzone = (data2 >= 59 && data2 <= 69);
-    ps.bind("fx/pitchbend"); ps.bind("fx/pitchbend_engaged");
     if (inDeadzone) {
         ps.setByName("fx/pitchbend_engaged", 0.0f);
         ps.setByName("fx/pitchbend", 0.0f);
@@ -181,7 +194,6 @@ void ApcGrid::onModWheel(uint8_t data2, ParamStore& ps) {
 }
 void ApcGrid::onAbsolutePitch(uint8_t data2, ParamStore& ps) {
     float semis = (data2 / 127.0f) * 24.0f - 12.0f;
-    ps.bind("fx/pitchbend"); ps.bind("fx/pitchbend_engaged");
     ps.setByName("fx/pitchbend", semis);
     ps.setByName("fx/pitchbend_engaged", 1.0f);
 }
@@ -191,7 +203,6 @@ void ApcGrid::onMicrorepeatOn(int note, ParamStore& ps) {
     static const uint8_t div[5] = {1, 2, 4, 8, 16};
     if (note < 82 || note > 86) return;
     m_microRepeatDiv = div[note - 82];
-    ps.bind("fx/microrepeat_div");
     ps.setByName("fx/microrepeat_div", (float)m_microRepeatDiv);
 }
 void ApcGrid::onMicrorepeatOff(int note, ParamStore& ps) {
@@ -201,7 +212,6 @@ void ApcGrid::onMicrorepeatOff(int note, ParamStore& ps) {
     // a stale earlier note release must not cancel a newer held one).
     if (m_microRepeatDiv == div[note - 82]) {
         m_microRepeatDiv = 0;
-        ps.bind("fx/microrepeat_div");
         ps.setByName("fx/microrepeat_div", 0.0f);
     }
 }
@@ -212,29 +222,29 @@ void ApcGrid::onMicrorepeatOff(int note, ParamStore& ps) {
 // exactly as looper's p.monitorMode = m_shift is read every block).
 void ApcGrid::onShiftPress(ParamStore& ps) {
     m_shift = true;
-    ps.bind("fx/monitorfold");
     ps.setByName("fx/monitorfold", 1.0f);
 }
 void ApcGrid::onShiftRelease(ParamStore& ps) {
     m_shift = false;
-    ps.bind("fx/monitorfold");
     ps.setByName("fx/monitorfold", 0.0f);
 }
 
 // --- CC53 formant depth (apcKey25Filters.cpp:53-58) -------------------------
 // Deadzone around center (63/64, matching the mod-wheel deadzone convention
-// used elsewhere on this controller) with SHIFT held roughly doubling the
-// usable range -- the two semitone ranges looper ships (±3 normal, ±6 under
-// SHIFT scaled from the same CC curve as FORMANT's -3..3 zone in
-// effects_runtime.dsp).
+// used elsewhere on this controller). effects_runtime.dsp's FORMANT hslider is
+// declared -3..3 (audio_thread.cpp targetToZone maps fx/formant straight onto
+// that zone, no rescale) so the achievable range IS ±3, not the raw CC's
+// theoretical ±1 normalized value scaled arbitrarily: unshifted reaches half
+// that (±1.5), SHIFT held reaches the full ±3 -- doubling the usable range
+// within the zone's own declared bounds, matching looper's SHIFT-expands
+// behavior without exceeding what FORMANT can actually represent.
 void ApcGrid::onFormantCC(uint8_t data2, ParamStore& ps) {
-    ps.bind("fx/formant");
     const bool inDeadzone = (data2 >= 62 && data2 <= 65);
     if (inDeadzone) { ps.setByName("fx/formant", 0.0f); return; }
     const float norm = ((float)(int)data2 - 63.5f) / 63.5f;   // -1..1
-    const float range = m_shift ? 1.0f : 0.5f;                // SHIFT doubles the usable range
-    float v = norm * range;
-    if (v > 1.0f) v = 1.0f; else if (v < -1.0f) v = -1.0f;
+    const float maxDepth = m_shift ? 3.0f : 1.5f;              // SHIFT doubles the usable range within FORMANT's -3..3
+    float v = norm * maxDepth;
+    if (v > 3.0f) v = 3.0f; else if (v < -3.0f) v = -3.0f;
     ps.setByName("fx/formant", v);
 }
 

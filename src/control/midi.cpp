@@ -73,6 +73,13 @@ void runMidiLoop(ParamStore& ps, const char* device) {
     // Publish each binding's target into the store's name index so the audio
     // thread knows which Faust zones to set. (ParamStore holds a name→value map.)
     for (auto& kv : map) ps.bind(kv.second);
+    // ApcGrid's own targets (loopers, live-pitch, microrepeat, monitor-fold,
+    // formant) are NOT in controls.conf's flat map -- pre-bind them here, once,
+    // before any MIDI event can reach ApcGrid's dispatch methods. Those methods
+    // must never call ps.bind() themselves: bind() takes bindMtx but
+    // setByName/get/forEach do not, so a runtime bind() from the MIDI thread
+    // would race the audio thread's unlocked forEach over the same map.
+    ApcGrid::bindAll(ps);
 
 #ifdef ALOOP_HAVE_ALSA
     snd_rawmidi_t* in = nullptr;

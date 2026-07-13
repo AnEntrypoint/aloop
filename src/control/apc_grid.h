@@ -41,6 +41,18 @@ inline int gridPresetIndex(int row, int col) {
 // MIDI read loop uses) so this stays independent of any specific timer API.
 class ApcGrid {
 public:
+    // Register every target name this engine can ever write, ONCE, before the
+    // audio thread starts reading (called from runMidiLoop's startup, same
+    // moment controls.conf's bindings are registered). ParamStore::bind()
+    // takes bindMtx but setByName/get/forEach do NOT -- calling bind() from a
+    // hot dispatch path (onShiftPress, onFormantCC, etc, all reachable from
+    // the MIDI thread mid-flight) races the audio thread's unlocked forEach
+    // over the same unordered_map. Pre-binding here and never bind()ing again
+    // from onPadPress/onShiftPress/etc keeps the "bind at startup, read-only
+    // after" invariant midi.h's ParamStore doc actually promises.
+    static void bindAll(ParamStore& ps);
+
+
     // A pad (note 0..39, channel 0) was pressed. Writes commands into `ps`.
     void onPadPress(int note, unsigned now_ms, ParamStore& ps);
     // A pad (note 0..39, channel 0) was released. Writes commands into `ps`.
