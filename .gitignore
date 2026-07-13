@@ -33,3 +33,6 @@ dist/
 
 # host-side netboot serving scratch (artifacts + WSL adhoc scripts)
 .netboot-stage/
+.netboot-serve/
+.netboot-serve.log
+.netboot-serve.err.log

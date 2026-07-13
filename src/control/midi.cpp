@@ -8,16 +8,20 @@
 // matching Faust control zone (looperN/rec, fx/hp, …).
 
 #include "midi.h"
+#include "apc_grid.h"
 
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
+#include <ctime>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #if __has_include(<alsa/asoundlib.h>)
 #include <alsa/asoundlib.h>
+#include <poll.h>
 #define ALOOP_HAVE_ALSA 1
 #endif
 
@@ -37,6 +41,11 @@ static bool parseMidiKey(const std::string& s, bool& isNote, int& num, int& ch) 
 // The loaded map: a MIDI event key → the target control name (e.g. "looper3/rec").
 // Key packs (isNote<<16 | num<<1 | anychannel) — simple + fast.
 static uint32_t midiKey(bool isNote, int num) { return ((uint32_t)isNote << 8) | (uint32_t)(num & 0xFF); }
+
+static unsigned nowMs() {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
+}
 
 void runMidiLoop(ParamStore& ps, const char* device) {
     // --- load the remappable control map ---
@@ -89,14 +98,48 @@ void runMidiLoop(ParamStore& ps, const char* device) {
             return;
         }
     }
-    fprintf(stderr, "[midi] reading %s (remappable control map)\n", devbuf);
+    fprintf(stderr, "[midi] reading %s (remappable control map + APC grid engine)\n", devbuf);
+    ApcGrid grid;
+    // Hold-duration polling (erase >=1s, preset capture >=1s) must run on a
+    // WALL-CLOCK tick, not on MIDI-message arrival — a held pad with no other
+    // MIDI traffic in flight would otherwise never resolve (snd_rawmidi_read is
+    // SND_RAWMIDI_SYNC/blocking with no timeout; looper's own apcKey25::update()
+    // is likewise driven from the audio thread's periodic tick, not from MIDI
+    // events — audio.cpp:423). Use poll() on the rawmidi fd(s) with a 100ms
+    // timeout so pollHolds() runs regularly even with the port idle.
+    int nfds = snd_rawmidi_poll_descriptors_count(in);
+    std::vector<struct pollfd> pfds((size_t)(nfds > 0 ? nfds : 1));
+    if (nfds > 0) snd_rawmidi_poll_descriptors(in, pfds.data(), (unsigned)nfds);
     uint8_t st = 0, d1 = 0, d2 = 0; int phase = 0; uint8_t b;
-    while (snd_rawmidi_read(in, &b, 1) == 1) {
+    for (;;) {
+        int pr = (nfds > 0) ? poll(pfds.data(), (nfds_t)nfds, 100) : 100;
+        if (pr == 0) { grid.pollHolds(nowMs(), ps); continue; }   // timeout: no MIDI, just poll holds
+        if (pr < 0) { grid.pollHolds(nowMs(), ps); continue; }    // interrupted/error: keep polling holds, retry read
+        if (snd_rawmidi_read(in, &b, 1) != 1) break;
         if (b & 0x80) { st = b; phase = 1; continue; }
         if (phase == 1) { d1 = b; phase = 2; continue; }
         // phase 2: full message
         d2 = b; phase = 1;
         uint8_t type = st & 0xF0;
+        uint8_t channel = st & 0x0F;
+        unsigned now = nowMs();
+        grid.pollHolds(now, ps);   // also check on every real event, for prompt response
+
+        // --- real APC Key25 hardware surface (apcKey25.cpp/apcKey25Notes.cpp), channel 0 only ---
+        if (channel == 0) {
+            if (type == 0xB0 && d1 == 1)  { grid.onModWheel(d2, ps); continue; }       // CC1 mod-wheel live-pitch
+            if (type == 0xB0 && d1 == 52) { grid.onAbsolutePitch(d2, ps); continue; }  // CC52 absolute live-pitch
+            if (d1 >= 82 && d1 <= 86) {                                                // microrepeat latch notes
+                if (type == 0x90 && d2 > 0) { grid.onMicrorepeatOn((int)d1, ps); continue; }
+                if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onMicrorepeatOff((int)d1, ps); continue; }
+            }
+            if (d1 < kApcRows * kApcCols) {                                            // 5x8 pad grid
+                if (type == 0x90 && d2 > 0) { grid.onPadPress((int)d1, now, ps); continue; }
+                if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onPadRelease((int)d1, now, ps); continue; }
+            }
+        }
+
+        // --- everything else (filters, transport buttons, speed) via the flat remap ---
         uint32_t key = 0; float val = 0;
         if (type == 0xB0) { key = midiKey(false, d1); val = d2 / 127.0f; }         // CC
         else if (type == 0x90 && d2 > 0) { key = midiKey(true, d1); val = 1.0f; }  // note-on

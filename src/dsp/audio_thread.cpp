@@ -14,6 +14,7 @@
 
 #include <pthread.h>
 #include <sched.h>
+#include <ctime>
 #include <cstdio>
 #include <cstring>
 #include <atomic>
@@ -127,7 +128,7 @@ static std::string targetToZone(const std::string& target) {
     if (target == "fx/time")    return "TIME";
     if (target == "fx/formant") return "FORMANT";
     if (target == "fx/pitch")   return "SEMIS";
-    return "";   // commands (cmd/*) are handled separately, not a Faust zone
+    return "";   // commands (cmd/*) and fx/pitchbend*, fx/microrepeat_div are handled separately, not a plain 1:1 Faust zone
 }
 
 // Pin the CURRENT thread to `core` and set SCHED_FIFO at `prio`. This is the
@@ -190,10 +191,25 @@ static void* worker(void*) {
 
 #ifdef ALOOP_HAVE_ALSA
     snd_pcm_t *cap = nullptr, *play = nullptr;
-    // The f_uac2 gadget exposes an ALSA card; open capture (host→Pi) + playback.
-    if (snd_pcm_open(&cap,  "default", SND_PCM_STREAM_CAPTURE,  0) < 0 ||
-        snd_pcm_open(&play, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0) {
-        fprintf(stderr, "[audio] ALSA open failed — is the f_uac2 gadget up?\n");
+    // The f_uac2 gadget exposes an ALSA card, but it does not necessarily exist
+    // yet at process start: the gadget only fully enumerates once a USB HOST is
+    // actually plugged into the Pi's OTG port (dwc2 peripheral mode needs a host
+    // to negotiate with), and the local.d gadget-config script races aloop's own
+    // boot. A ONE-SHOT open (the prior behavior) meant "boot before cable" or
+    // "boot before local.d finishes" permanently silenced audio for the whole
+    // process lifetime. Retry for up to ~30s (matches typical cable-plug/gadget
+    // settle time), then keep running with audio down rather than blocking boot.
+    const int kAlsaOpenRetries = 30;
+    for (int attempt = 0; attempt < kAlsaOpenRetries; attempt++) {
+        if (snd_pcm_open(&cap,  "default", SND_PCM_STREAM_CAPTURE,  0) == 0 &&
+            snd_pcm_open(&play, "default", SND_PCM_STREAM_PLAYBACK, 0) == 0) break;
+        if (cap)  { snd_pcm_close(cap);  cap  = nullptr; }
+        if (play) { snd_pcm_close(play); play = nullptr; }
+        if (attempt == 0) fprintf(stderr, "[audio] ALSA open failed — is the f_uac2 gadget up? retrying...\n");
+        struct timespec ts{1, 0}; nanosleep(&ts, nullptr);
+    }
+    if (!cap || !play) {
+        fprintf(stderr, "[audio] ALSA still unavailable after %ds — is a USB host cable plugged in? audio stays down until restart\n", kAlsaOpenRetries);
     } else {
         // Open the PCM with the WIRE channel count (stereo, matching the gadget).
         snd_pcm_set_params(cap,  SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
@@ -246,6 +262,20 @@ static void* worker(void*) {
                         fui.set(z, 0.0f);
                     }
                 }
+                // APC live-pitch (CC1 mod-wheel / CC52 absolute, apc_grid.cpp): a
+                // performance offset ON TOP of the static SEMIS knob (fx/pitch), so
+                // add rather than overwrite — releasing the mod-wheel (engaged=0)
+                // must fall back to the static knob value, not silently zero it.
+                float staticSemis = g_params->get("fx/pitch");
+                if (g_params->get("fx/pitchbend_engaged") > 0.5f) {
+                    fui.set("SEMIS", staticSemis + g_params->get("fx/pitchbend"));
+                    fui.set("ENGAGED", 1.0f);
+                } else {
+                    fui.set("SEMIS", staticSemis);
+                }
+                // Microrepeat latch (apc_grid.cpp notes 82-86) -> the microStage's
+                // DIV zone (dsp/effects_runtime.dsp; was hardcoded 0, never wired).
+                fui.set("DIV", g_params->get("fx/microrepeat_div"));
             }
             // Per-looper STATE telemetry (the GET_STATE 0x30 equivalent): read each
             // looper's rec/play/vol back from the Faust zones into the atomic
@@ -279,6 +309,12 @@ static void* worker(void*) {
                         snprintf(z, sizeof z, "looper%2d/len", lp);
                         fui.set(z, (float)lenSamples);
                     }
+                    // Microrepeat's MLB (masterLoopBlocks, effects_runtime.dsp): the
+                    // same phrase length expressed in DSP blocks, so a repeat slice
+                    // (lenSamples/DIV) stays grid-aligned with the loop.
+                    fui.set("MLB", (float)(lenSamples / N));
+                } else {
+                    fui.set("MLB", 0.0f);   // unsynced: microrepeat stays disabled (DIV!=0 & MLB>=16 gate)
                 }
             }
             // Deinterleave the stereo wire -> mono DSP input: average the wire

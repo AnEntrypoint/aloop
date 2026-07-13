@@ -16,8 +16,12 @@ TIME     = hslider("TIME",    0.5, 0.0, 1.0, 0.001);
 FORMANT  = hslider("FORMANT", 0.0, -3.0, 3.0, 0.001);
 SEMIS    = hslider("SEMIS",   0.0, -12.0, 12.0, 0.001);
 ENGAGED  = checkbox("ENGAGED");
-DIV      = 0;      // microrepeat div: a command, wired separately if used
-MLB      = 0;
+// Microrepeat (apc_grid.cpp notes 82-86 -> fx/microrepeat_div): DIV is the beat
+// divisor {0=off,1,2,4,8,16} set live from the control map; MLB is the current
+// loop's length in blocks (masterLoopBlocks), read from the same varispeed grid
+// the looper uses for Link sync so a repeat slice stays musically aligned.
+DIV      = nentry("DIV", 0, 0, 16, 1);
+MLB      = nentry("MLB", 0, 0, 4096, 1);
 
 // Reuse the verified dubfx stage components with these runtime params.
 filterStage = component("effects/home/faust/filters.dsp")[ HPCUT=HPCUT; LPCUT=LPCUT; LPRES=LPRES; ];
