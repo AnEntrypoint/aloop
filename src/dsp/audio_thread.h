@@ -30,6 +30,15 @@ struct AudioConfig {
     // MIDI input device: "auto" scans hw:0..7 for the first rawmidi input; an
     // explicit "hw:N,0,0" pins it (aloop.conf midi_device).
     std::string midiDevice = "auto";
+    // Wire audio device (aloop.conf [audio] audio_device=). The f_uac2 gadget's
+    // ALSA card name is stable across boots (unlike its numeric index, which
+    // shifts depending on USB host-device enumeration order); "default" would
+    // route through ALSA's dmix/dsnoop plugin (a large fixed period, ignoring
+    // block_size) and, without an /etc/asound.conf pinning it, "default" can
+    // resolve to a different card altogether (e.g. a real USB audio interface
+    // plugged in for monitoring) rather than the OTG-facing gadget. Opening the
+    // named hw device directly is both correct and lower-latency.
+    std::string audioDevice = "hw:UAC2Gadget,0";
     // Shared secret for the remote-control listener (control/remote_control.h,
     // aloop.conf [remote] token=). Empty = listener disabled (no reboot/log-tail
     // over the network at all — the safe default, unlike looper's unauthenticated

@@ -48,6 +48,8 @@ aloop::AudioConfig loadConfig(const char* path) {
         else if (sscanf(line, " user_dir = %199s", s) == 1) cfg.userDir = s;
         // optional explicit MIDI device (else "auto" scans hw:0..7).
         else if (sscanf(line, " midi_device = %199s", s) == 1) cfg.midiDevice = s;
+        // wire audio device (else the f_uac2 gadget's stable-named hw device).
+        else if (sscanf(line, " audio_device = %199s", s) == 1) cfg.audioDevice = s;
         // remote-control shared secret ([remote] token=); unset = listener disabled.
         else if (sscanf(line, " token = %199s", s) == 1) cfg.remoteToken = s;
     }

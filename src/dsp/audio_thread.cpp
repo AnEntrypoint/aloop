@@ -217,22 +217,52 @@ static void* worker(void*) {
     // process lifetime. Retry for up to ~30s (matches typical cable-plug/gadget
     // settle time), then keep running with audio down rather than blocking boot.
     const int kAlsaOpenRetries = 30;
+    const char* wireDev = g_cfg.audioDevice.c_str();
     for (int attempt = 0; attempt < kAlsaOpenRetries; attempt++) {
-        if (snd_pcm_open(&cap,  "default", SND_PCM_STREAM_CAPTURE,  0) == 0 &&
-            snd_pcm_open(&play, "default", SND_PCM_STREAM_PLAYBACK, 0) == 0) break;
+        if (snd_pcm_open(&cap,  wireDev, SND_PCM_STREAM_CAPTURE,  0) == 0 &&
+            snd_pcm_open(&play, wireDev, SND_PCM_STREAM_PLAYBACK, 0) == 0) break;
         if (cap)  { snd_pcm_close(cap);  cap  = nullptr; }
         if (play) { snd_pcm_close(play); play = nullptr; }
-        if (attempt == 0) fprintf(stderr, "[audio] ALSA open failed — is the f_uac2 gadget up? retrying...\n");
+        if (attempt == 0) fprintf(stderr, "[audio] ALSA open of %s failed — is the f_uac2 gadget up? retrying...\n", wireDev);
         struct timespec ts{1, 0}; nanosleep(&ts, nullptr);
     }
     if (!cap || !play) {
         fprintf(stderr, "[audio] ALSA still unavailable after %ds — is a USB host cable plugged in? audio stays down until restart\n", kAlsaOpenRetries);
     } else {
-        // Open the PCM with the WIRE channel count (stereo, matching the gadget).
-        snd_pcm_set_params(cap,  SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
-                           wireCh, g_cfg.sampleRate, 1, 20000);
-        snd_pcm_set_params(play, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
-                           wireCh, g_cfg.sampleRate, 1, 20000);
+        // Explicit hw_params targeting the REAL block_size (N frames/period), not
+        // ALSA's snd_pcm_set_params() convenience call — that call picks whatever
+        // period/buffer satisfies a requested LATENCY (previously 20ms), which both
+        // ignores block_size entirely and, combined with opening "default" (routed
+        // through the dmix/dsnoop plugin's own large fixed period), was the actual
+        // cause of the "massive latency vs looper" symptom: the wire path was
+        // running at ~20ms+ per direction instead of the intended N/sampleRate
+        // (1.33ms at the default 64-sample block). Setting the period to exactly N
+        // and a 2-period buffer (the minimum ALSA needs for double-buffering)
+        // makes the real wire latency match block_size, same as looper's bare-metal
+        // USB gadget audio path (which has no OS buffering layer to begin with).
+        auto configurePcm = [&](snd_pcm_t* pcm) -> bool {
+            snd_pcm_hw_params_t* hw;
+            snd_pcm_hw_params_alloca(&hw);
+            snd_pcm_hw_params_any(pcm, hw);
+            snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED);
+            snd_pcm_hw_params_set_format(pcm, hw, SND_PCM_FORMAT_S16_LE);
+            snd_pcm_hw_params_set_channels(pcm, hw, wireCh);
+            unsigned int rate = (unsigned int)g_cfg.sampleRate;
+            snd_pcm_hw_params_set_rate_near(pcm, hw, &rate, nullptr);
+            snd_pcm_uframes_t period = (snd_pcm_uframes_t)N;
+            snd_pcm_hw_params_set_period_size_near(pcm, hw, &period, nullptr);
+            snd_pcm_uframes_t bufSize = period * 2;
+            snd_pcm_hw_params_set_buffer_size_near(pcm, hw, &bufSize);
+            if (snd_pcm_hw_params(pcm, hw) < 0) return false;
+            if (period != (snd_pcm_uframes_t)N)
+                fprintf(stderr, "[audio] warning: device would not grant period=%d frames, got %lu — latency will not match block_size\n",
+                        N, (unsigned long)period);
+            return true;
+        };
+        if (!configurePcm(cap) || !configurePcm(play))
+            fprintf(stderr, "[audio] warning: explicit hw_params rejected by %s — falling back to driver defaults (higher latency)\n", wireDev);
+        snd_pcm_prepare(cap);
+        snd_pcm_prepare(play);
         while (g_running.load()) {
             snd_pcm_sframes_t r = snd_pcm_readi(cap, buf.data(), N);
             if (r < 0) { g_telem.xruns++; snd_pcm_recover(cap, (int)r, 1); continue; }
