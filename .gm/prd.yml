@@ -98,4 +98,5 @@
   witness: 'src/control/apc_grid.cpp onFormantCC: maxDepth = m_shift ? 3.0f : 1.5f (was 1.0f : 0.5f with an unreachable +-1 clamp regardless of shift state); comment corrected to describe the real -3..3 FORMANT hslider bounds (effects_runtime.dsp:16) instead of the unreachable +-6 claim'
 - id: fix-verify-ci-no-regression
   subject: Push the bindAll race fix + formant scaling fix and witness build-binary/build-lv2 CI green (no regression from the fix) -- this Windows dev host cannot compile locally.
-  status: pending
+  status: completed
+  witness: gh run watch 29264388232 (build-binary) = success in 3m34s; build-image (29264388035, 29264640514) also green for head_sha 190d2cd. No regression from the bindAll race fix or formant scaling correction.
