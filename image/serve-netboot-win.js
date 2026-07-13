@@ -7,8 +7,22 @@
 // (bootfile bootcode.bin), so the Pi 4 fetches its firmware over TFTP even while ICS
 // is running. It also serves the Alpine HTTP root on :8080 (apks/modloop/apkovl).
 //
+// SELF-UPDATE (mirrors looper's tftp-server.js checkAndUpdate): looper polls
+// GitHub Releases every 30s for a new looper-sd.zip and rewrites its SD-resident
+// kernel; aloop has no Releases (CI artifacts only) and boots diskless (the WHOLE
+// root is re-fetched fresh every power-cycle, not just a kernel file), so the
+// equivalent here polls the latest GREEN build-binary + build-lv2 Actions runs,
+// downloads their artifacts when the head_sha changes, rebuilds the netboot root
+// in place (image/build-netboot.sh) with the new binary+lv2, and sends REBOOT to
+// the already-running Pi (src/control/remote_control.cpp, udp/4446) so it picks
+// up the new build on its next boot. aloop's repo is PRIVATE, so a GITHUB_TOKEN
+// (env, or --token) is REQUIRED for this (unlike looper's public-repo Releases,
+// which need no auth) — the loop refuses to start without one, loudly, rather
+// than silently never finding anything.
+//
 // Run from an ADMIN shell (ports 67 + 69 need privilege):
-//   node image/serve-netboot-win.js [--root <netboot-root>] [--server 192.168.137.1]
+//   GITHUB_TOKEN=<token> node image/serve-netboot-win.js [--root <netboot-root>] [--server 192.168.137.1]
+//   ALOOP_NO_AUTO_UPDATE=1 to disable the poll loop (matches looper's LOOPER_NO_AUTO_UPDATE).
 //
 // Default root is .netboot-serve/ (build-netboot.sh OUT). Ctrl-C stops everything.
 
@@ -16,6 +30,8 @@ const fs = require('fs');
 const path = require('path');
 const dgram = require('dgram');
 const http = require('http');
+const https = require('https');
+const { execFileSync } = require('child_process');
 
 function arg(name, def) { const i = process.argv.indexOf(name); return i > 0 && process.argv[i + 1] ? process.argv[i + 1] : def; }
 
@@ -33,6 +49,16 @@ const BOOTFILE  = 'bootcode.bin';                 // Pi 4 firmware entry point (
 const POOL_START = [192, 168, 137, 100];
 const SUBNET     = [255, 255, 255, 0];
 const LEASE_SECS = 3600;
+
+// ---- self-update config (see the file header comment) -----------------------
+const REPO           = 'AnEntrypoint/aloop';
+const GITHUB_TOKEN    = arg('--token', process.env.GITHUB_TOKEN || process.env.ALOOP_GITHUB_TOKEN || '');
+const AUTO_UPDATE     = process.env.ALOOP_NO_AUTO_UPDATE !== '1';
+const UPDATE_INTERVAL_MS = parseInt(arg('--update-interval', '30000'));   // matches looper's 30s poll
+const SHA_FILE  = path.join(path.dirname(ROOT), '.netboot-update-sha');
+const PI_HOST   = arg('--pi', '192.168.137.100');
+const PI_TOKEN  = arg('--pi-token', process.env.PI_TOKEN || '');
+const NETBOOT_SERVER = SERVER_IP;   // build-netboot.sh's NETBOOT_SERVER = the same IP we serve HTTP on
 
 if (!fs.existsSync(path.join(ROOT, 'start4.elf'))) {
   console.error('[serve] netboot root looks wrong: no start4.elf in ' + ROOT + ' (run image/build-netboot.sh)');
@@ -162,5 +188,113 @@ const httpSrv = http.createServer((req, res) => {
 });
 httpSrv.on('error', err => console.error('[HTTP]', err.message));
 httpSrv.listen(HTTP_PORT, SERVER_IP, () => console.log('[HTTP] listening http://' + SERVER_IP + ':' + HTTP_PORT + '/'));
+
+// ---- self-update (mirrors looper's tftp-server.js checkAndUpdate) -----------
+let currentSha = null, rateLimitedUntil = 0;
+try { currentSha = fs.readFileSync(SHA_FILE, 'utf8').trim(); console.log('[update] last-built sha: ' + currentSha); } catch (e) {}
+
+function ghGet(apiPath) {
+  return new Promise((resolve, reject) => {
+    https.get('https://api.github.com' + apiPath, {
+      headers: { 'User-Agent': 'aloop-netboot-serve/1.0', 'Authorization': 'token ' + GITHUB_TOKEN, 'Accept': 'application/vnd.github+json' }
+    }, res => {
+      if (res.statusCode === 301 || res.statusCode === 302) return ghGet(new URL(res.headers.location).pathname + new URL(res.headers.location).search).then(resolve).catch(reject);
+      let body = ''; res.on('data', c => body += c); res.on('end', () => resolve({ status: res.statusCode, body, headers: res.headers }));
+    }).on('error', reject);
+  });
+}
+// Artifact downloads are a zip; write it, unzip via PowerShell's Expand-Archive
+// (no extra dependency on a bare Windows host, matching looper's use of
+// PowerShell for its own zip extraction in dev-server.js's sibling scripts).
+//
+// GitHub's artifact endpoint answers with a 303 (not 301/302) to a pre-signed
+// Azure Blob Storage URL (the SAS token is IN the query string, e.g.
+// productionresultsNN.blob.core.windows.net/...&sig=...). WITNESSED: sending
+// our GitHub `Authorization: token ...` header on to that redirect target
+// makes Azure return 403 (it sees an auth header it doesn't recognize on a
+// URL that's already authorized via its own signature) -- the header must be
+// stripped once we leave api.github.com, only ever sent to the ORIGINAL host.
+function downloadArtifactZip(archiveUrl, destZip) {
+  return new Promise((resolve, reject) => {
+    const originalHost = new URL(archiveUrl).host;
+    const follow = u => {
+      const sameHost = new URL(u).host === originalHost;
+      const headers = { 'User-Agent': 'aloop-netboot-serve/1.0' };
+      if (sameHost) headers['Authorization'] = 'token ' + GITHUB_TOKEN;
+      https.get(u, { headers }, res => {
+        if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 303) return follow(res.headers.location);
+        if (res.statusCode !== 200) return reject(new Error('artifact download HTTP ' + res.statusCode));
+        const tmp = destZip + '.tmp', out = fs.createWriteStream(tmp);
+        res.pipe(out); out.on('finish', () => { fs.renameSync(tmp, destZip); resolve(); }); out.on('error', reject);
+      }).on('error', reject);
+    };
+    follow(archiveUrl);
+  });
+}
+async function latestGreenRun(workflowFile) {
+  const r = await ghGet('/repos/' + REPO + '/actions/workflows/' + workflowFile + '/runs?status=success&branch=main&per_page=1');
+  if (r.status === 403 || r.status === 429) { rateLimitedUntil = Date.now() + (parseInt(r.headers['retry-after'] || '60') * 1000); console.error('[update] rate-limited'); return null; }
+  if (r.status !== 200) { console.log('[update] ' + workflowFile + ' runs: GitHub status ' + r.status); return null; }
+  const runs = JSON.parse(r.body).workflow_runs;
+  return runs && runs[0] ? runs[0] : null;
+}
+async function downloadRunArtifact(runId, artifactName, destDir) {
+  const r = await ghGet('/repos/' + REPO + '/actions/runs/' + runId + '/artifacts');
+  if (r.status !== 200) throw new Error('list artifacts HTTP ' + r.status);
+  const art = JSON.parse(r.body).artifacts.find(a => a.name === artifactName);
+  if (!art) throw new Error('no artifact named ' + artifactName + ' on run ' + runId);
+  fs.mkdirSync(destDir, { recursive: true });
+  const zipPath = path.join(destDir, artifactName + '.zip');
+  await downloadArtifactZip(art.archive_download_url, zipPath);
+  execFileSync('powershell', ['-NoProfile', '-Command', 'Expand-Archive -Path "' + zipPath + '" -DestinationPath "' + destDir + '" -Force'], { stdio: 'pipe' });
+  return destDir;
+}
+function sendPiReboot() {
+  if (!PI_TOKEN) { console.log('[update] no --pi-token/PI_TOKEN set — skipping REBOOT (Pi will pick up the new build on its NEXT power-cycle anyway)'); return; }
+  const sock = dgram.createSocket('udp4');
+  const msg = Buffer.from('REBOOT:' + PI_TOKEN);
+  sock.send(msg, 4446, PI_HOST, err => { sock.close(); console.log(err ? '[update] REBOOT send failed: ' + err.message : '[update] REBOOT sent to ' + PI_HOST + ':4446'); });
+}
+async function checkAndUpdate() {
+  if (!AUTO_UPDATE) return;
+  if (!GITHUB_TOKEN) { console.error('[update] no GITHUB_TOKEN/ALOOP_GITHUB_TOKEN/--token set — aloop/aloop is PRIVATE, auto-update cannot list runs or download artifacts without one. Set the env var or pass --token, or set ALOOP_NO_AUTO_UPDATE=1 to silence this.'); return; }
+  try {
+    if (Date.now() < rateLimitedUntil) { console.log('[update] rate-limited, skipping this tick'); return; }
+    const [binRun, lv2Run] = await Promise.all([latestGreenRun('build-binary.yml'), latestGreenRun('build-lv2.yml')]);
+    if (!binRun || !lv2Run) { console.log('[update] no green build-binary/build-lv2 run found yet'); return; }
+    const sha = binRun.head_sha + ':' + lv2Run.head_sha;
+    if (sha === currentSha) { console.log('[update] up to date (sha ' + sha.slice(0, 16) + '...)'); return; }
+    console.log('[update] new build found: ' + sha.slice(0, 16) + '... (was ' + (currentSha ? currentSha.slice(0, 16) + '...' : 'none') + ')');
+
+    const work = path.join(path.dirname(ROOT), '.netboot-update-work');
+    fs.rmSync(work, { recursive: true, force: true });
+    const binDir = await downloadRunArtifact(binRun.id, 'aloop-aarch64-musl', path.join(work, 'bin'));
+    const lv2Dir = await downloadRunArtifact(lv2Run.id, 'home-fx-lv2', path.join(work, 'lv2'));
+    const aloopBin = path.join(binDir, 'aloop');
+    if (!fs.existsSync(aloopBin)) throw new Error('aloop binary not found in downloaded artifact at ' + aloopBin);
+
+    console.log('[update] rebuilding netboot root -> ' + ROOT);
+    execFileSync('bash', [path.join(__dirname, 'build-netboot.sh')], {
+      cwd: path.join(__dirname, '..'),
+      env: Object.assign({}, process.env, { OUT: ROOT, ALOOP_BIN: aloopBin, LV2_DIR: lv2Dir, NETBOOT_SERVER: NETBOOT_SERVER }),
+      stdio: 'pipe'
+    });
+    currentSha = sha; fs.writeFileSync(SHA_FILE, sha);
+    console.log('[update] netboot root rebuilt with the new build; sending REBOOT so the Pi re-fetches it');
+    sendPiReboot();
+  } catch (e) {
+    console.error('[update] failed:', e.message);
+  }
+}
+
+if (AUTO_UPDATE && !GITHUB_TOKEN) {
+  console.error('[update] AUTO-UPDATE DISABLED: no GitHub token available (set GITHUB_TOKEN or --token, or ALOOP_NO_AUTO_UPDATE=1 to silence this warning)');
+} else if (AUTO_UPDATE) {
+  console.log('[update] self-update ENABLED — polling build-binary/build-lv2 every ' + (UPDATE_INTERVAL_MS / 1000) + 's');
+  checkAndUpdate();
+  setInterval(checkAndUpdate, UPDATE_INTERVAL_MS);
+} else {
+  console.log('[update] self-update DISABLED (ALOOP_NO_AUTO_UPDATE=1)');
+}
 
 console.log('[serve] ready — power-cycle the Pi (SD out, network boot). Ctrl-C to stop.');

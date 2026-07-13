@@ -206,3 +206,50 @@ Where it stops tells you the layer:
 - **DHCP ok but no `GET /…modloop-rpi`** → the HTTP root server (`:8080`) is
   unreachable from the Pi, or the URLs in `cmdline.txt` point at the wrong
   `NETBOOT_SERVER`.
+
+## 6. Self-updating serve (Windows) — auto-refresh from CI, like looper's tftp-server.js
+
+`image/serve-netboot-win.js` (the native Windows DHCP+TFTP+HTTP server, §3's
+Windows path) polls GitHub Actions every 30 seconds for a newer green
+`build-binary`/`build-lv2` run and, when one appears, downloads the artifacts,
+rebuilds the served netboot root **in place** (`image/build-netboot.sh`), and
+sends `REBOOT` to the already-running Pi (`src/control/remote_control.cpp`,
+udp/4446) so it picks up the fresh build on its next boot — no manual re-serve,
+no manual re-flash, matching looper's `tftp-server.js` `checkAndUpdate()` loop.
+
+```sh
+# aloop's repo is PRIVATE, so a token with `repo` + `actions:read` scope is
+# REQUIRED (unlike looper's public-repo Releases, which need no auth at all).
+# `gh auth token` works if you're already `gh auth login`'d.
+GITHUB_TOKEN=$(gh auth token) node image/serve-netboot-win.js \
+  --root .netboot-serve --server 192.168.137.1 \
+  --pi 192.168.137.100 --pi-token <the aloop.conf [remote] token=>
+```
+
+What it does each poll tick:
+
+1. Lists the latest successful run of `build-binary.yml` and `build-lv2.yml` on
+   `main` via the Actions API (no `gh` CLI dependency — raw `https.get`, same
+   shape as looper's `httpsGet`/`downloadFile`).
+2. Compares the pair of `head_sha`s against `.netboot-update-sha` (sibling of
+   the netboot root) — matches looper's `.tftp-sha` tracking file.
+3. On a new sha: downloads both artifacts (`aloop-aarch64-musl`,
+   `home-fx-lv2`), unzips them (PowerShell `Expand-Archive` — no extra
+   dependency), and re-runs `build-netboot.sh` with `ALOOP_BIN`/`LV2_DIR`
+   pointed at them and `OUT` pointed at the live-served root.
+4. Sends `REBOOT:<token>` to `--pi`/`--pi-token` so a Pi that's already running
+   picks up the change immediately; a Pi that's mid-boot or off just gets the
+   new build on its next power-cycle regardless (the whole root is re-fetched
+   fresh every boot — there's no stale-kernel risk like an SD card).
+
+Options: `--update-interval <ms>` (default 30000, matches looper's 30s poll);
+`ALOOP_NO_AUTO_UPDATE=1` disables the loop entirely (matches looper's
+`LOOPER_NO_AUTO_UPDATE`); omitting `--pi-token`/`PI_TOKEN` skips the `REBOOT`
+step with a clear log line (the rebuild still happens — only the "poke a
+running Pi right now" step is skipped).
+
+**WITNESSED live** (real Pi 4, board serial `7bec0617`): the update loop found
+a green build, downloaded + rebuilt the root, and the Pi's own DHCP/TFTP fetch
+of firmware/kernel/initramfs was served correctly **concurrently**, with no
+interference between the two. The rebuilt `aloop.apkovl.tar.gz` carried the
+fresh binary+LV2 (grew from a smaller layout-only size to a real payload).
