@@ -293,7 +293,16 @@ static void* worker(void*) {
         snd_pcm_prepare(play);
         while (g_running.load()) {
             snd_pcm_sframes_t r = snd_pcm_readi(cap, buf.data(), N);
-            if (r < 0) { g_telem.xruns++; snd_pcm_recover(cap, (int)r, 1); continue; }
+            if (r < 0) {
+                g_telem.xruns++;
+                static uint64_t capLogCount = 0;
+                if (capLogCount < 20) {
+                    fprintf(stderr, "[audio] capture readi error: %ld (%s)\n", (long)r, snd_strerror((int)r));
+                    capLogCount++;
+                }
+                snd_pcm_recover(cap, (int)r, 1);
+                continue;
+            }
 
             // === run the Faust home stack (loop engine + effects) this block ===
             // s16 -> float, compute(), float -> s16. The Faust program does the
