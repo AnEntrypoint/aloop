@@ -310,7 +310,22 @@ async function checkAndUpdate() {
     if (!fs.existsSync(aloopBin)) throw new Error('aloop binary not found in downloaded artifact at ' + aloopBin);
 
     console.log('[update] rebuilding netboot root -> ' + ROOT);
-    execFileSync('bash', [path.join(__dirname, 'build-netboot.sh')], {
+    // Windows commonly has THREE different "bash.exe" on PATH: Git-Bash
+    // (understands native C:/... paths), the WSL launcher stub under
+    // System32, and a WindowsApps alias. Plain execFileSync('bash', ...)
+    // resolves whichever one PATH lists first for the CURRENT process/shell —
+    // WITNESSED live: under this script's launch environment that resolved to
+    // the WSL stub, which cannot see C:/dev/... at all ("No such file or
+    // directory" on a path that verifiably exists). Pin the real Git-Bash
+    // install explicitly so this doesn't depend on PATH order.
+    const gitBashCandidates = [
+      'C:\\Program Files\\Git\\bin\\bash.exe',
+      'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+      'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+    ];
+    const bashExe = gitBashCandidates.find(p => fs.existsSync(p)) || 'bash';
+    const buildScript = path.join(__dirname, 'build-netboot.sh').replace(/\\/g, '/');
+    execFileSync(bashExe, [buildScript], {
       cwd: path.join(__dirname, '..'),
       env: Object.assign({}, process.env, { OUT: ROOT, ALOOP_BIN: aloopBin, LV2_DIR: lv2Dir, NETBOOT_SERVER: NETBOOT_SERVER }),
       stdio: 'pipe'
