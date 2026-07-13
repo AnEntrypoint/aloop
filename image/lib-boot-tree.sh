@@ -248,7 +248,10 @@ SSHCFG
       ./etc/init.d/aloop ./etc/init.d/autoap \
       $(find opt/aloop/test -type f -name '*.sh' 2>/dev/null | sed 's|^|./|') )
   gzip -f "$APKOVL_TAR"
-  mv "$APKOVL_TAR.gz" "$_work/$APKOVL"
+  # $APKOVL_TAR.gz IS $_work/$APKOVL already (APKOVL_TAR = $_work/aloop.apkovl.tar,
+  # APKOVL = aloop.apkovl.tar.gz) — no mv needed; a self-mv errors "same file" on
+  # real Linux (WITNESSED: this exact line failed CI after landing, having
+  # silently no-op'd on this dev host's Git-Bash mv instead of erroring there).
   cp "$_work/$APKOVL" "$_boot/$APKOVL"
   # Verify the fix actually landed — never trust chmod silently; check the archive.
   # (Use `tar -tzv --occurrence=-1` semantics implicitly: grep the LAST match,
