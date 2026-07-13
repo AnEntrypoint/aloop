@@ -147,10 +147,18 @@ boot_tree_config() {
   if [ -f "$_boot/config.txt" ] && ! grep -q 'include usercfg.txt' "$_boot/config.txt"; then
     echo "include usercfg.txt" >> "$_boot/config.txt"
   fi
-  if [ -f "$_boot/cmdline.txt" ]; then
-    printf ' %s' "$(cat "$ROOT/kernel/cmdline.txt")" >> "$_boot/cmdline.txt"
-  else
-    cat "$ROOT/kernel/cmdline.txt" > "$_boot/cmdline.txt"
-  fi
-  echo "[boot-tree] boot config merged (dwc2 + serial + isolcpus cmdline)"
+  # cmdline.txt MUST be a SINGLE line: the Pi firmware reads only the first line as
+  # the kernel command line, so ANY embedded newline silently truncates every param
+  # after it. The stock Alpine cmdline.txt ends with a trailing '\n', and the RT
+  # fragment (kernel/cmdline.txt) may too — appending raw left an embedded newline
+  # between them, dropping isolcpus + (for netboot) ip=dhcp/alpine_repo/modloop/apkovl
+  # entirely (WITNESSED: Pi never ran the initramfs DHCP -> dropped to emergency
+  # shell). Strip ALL newlines from both parts and re-emit one line + one trailing \n.
+  _existing=""
+  [ -f "$_boot/cmdline.txt" ] && _existing="$(tr '\n' ' ' < "$_boot/cmdline.txt")"
+  _rt="$(tr '\n' ' ' < "$ROOT/kernel/cmdline.txt")"
+  # Collapse runs of whitespace, trim, join with a single space, one trailing newline.
+  printf '%s\n' "$(printf '%s %s' "$_existing" "$_rt" | tr -s ' ' | sed 's/^ //;s/ $//')" \
+    > "$_boot/cmdline.txt"
+  echo "[boot-tree] boot config merged, cmdline.txt collapsed to a single line (dwc2 + serial + isolcpus)"
 }

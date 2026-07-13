@@ -120,6 +120,21 @@ GND→pin 6, Pi TX GPIO14→adapter RX, Pi RX GPIO15→adapter TX, **115200 8N1*
 These are the actual problems a live netboot surfaced (Pi 4, board serial
 `7bec0617`), each fixed in `image/build-netboot.sh` / `image/serve-netboot.sh`:
 
+- **Initramfs never DHCPs → drops to an emergency shell (`cmdline.txt` had an embedded
+  newline)** — the single highest-impact bug. The Pi 4 firmware reads **only the first
+  line** of `cmdline.txt` as the kernel command line. The stock Alpine `cmdline.txt`
+  ends with a trailing newline, and the builder appended the RT + netboot params
+  *after* it, leaving an **embedded `\n`** — so `isolcpus`, `ip=dhcp`, `alpine_repo`,
+  `modloop` and `apkovl` were **all silently dropped**. Without `ip=dhcp` the Alpine
+  init sets `do_networking=false`, the initramfs `udhcpc` never runs (the live log
+  showed **only the firmware's DHCP, never the initramfs's**), no root arrives over
+  the network, and init drops to the emergency recovery shell. (It also silently
+  disabled `isolcpus` RT isolation on the **SD card** too.) **Fix:** `boot_tree_config`
+  (`image/lib-boot-tree.sh`) and the netboot append (`image/build-netboot.sh`) now
+  collapse `cmdline.txt` to a **single line** (strip all newlines, join, one trailing
+  `\n`). Witness with `od -c aloop-netboot/cmdline.txt` — there must be exactly one
+  `\n`, at EOF, and `ip=dhcp`/`alpine_repo`/`modloop`/`apkovl`/`isolcpus` must all be
+  on that one line.
 - **Kernel panic `unable to mount root fs, unknown-block(0,0)`** — the Pi 4 firmware
   TFTP-loads config/kernel/initramfs fine, but the Alpine *diskless* initramfs then
   has no block device to find the apks/modloop/apkovl on. **Fix:** the Alpine RPi
@@ -159,3 +174,35 @@ These are the actual problems a live netboot surfaced (Pi 4, board serial
   FS. **firmware completeness** — the Alpine RPi tarball already ships the full Pi 4
   TFTP firmware chain (`start4.elf`/`fixup4.dat`/`bootcode.bin`/`bcm2711-rpi-4-b.dtb`);
   no external firmware sourcing is required.
+
+## 6. Debug boot — see exactly where the initramfs stalls
+
+When a netboot stalls in the initramfs, don't guess — build with `NETBOOT_DEBUG=1`
+and read the serial console. The debug cmdline drops `quiet` and adds `debug_init`
+(the Alpine init runs `set -x`), so every step prints:
+
+```sh
+NETBOOT_DEBUG=1 NETBOOT_SERVER=192.168.137.1 OUT=/srv/tftp/aloop-netboot image/build-netboot.sh
+```
+
+Attach a serial console (the `dwc2`/`enable_uart=1` config is already in `usercfg.txt`)
+and power-cycle. A **healthy** boot prints, in order:
+
+```
+Loading boot drivers    → Mounting boot media    → Obtaining IP via DHCP (eth0)
+→ GET /apks/aarch64/APKINDEX.tar.gz  → GET /boot/modloop-rpi  → GET /aloop.apkovl.tar.gz
+```
+
+Where it stops tells you the layer:
+
+- **No `Obtaining IP via DHCP (eth0)` line at all** → the kernel never got `ip=dhcp`
+  (the embedded-newline bug above — check `od -c cmdline.txt`).
+- **`Obtaining IP via DHCP (eth0)` but no DHCP in the serve log** → the initramfs
+  `udhcpc` DISCOVER isn't reaching your dnsmasq. **The wired link must have no other
+  DHCP server for the initramfs round** — Windows ICS runs a second one on the same
+  NIC; `--dhcp-authoritative` covers the firmware round but the cleanest fix is to
+  serve on a link with ICS disabled (or no competing DHCP). Watch the serve log for a
+  DHCPDISCOVER *seconds after* the firmware's TFTP GETs — that one is the initramfs.
+- **DHCP ok but no `GET /…modloop-rpi`** → the HTTP root server (`:8080`) is
+  unreachable from the Pi, or the URLs in `cmdline.txt` point at the wrong
+  `NETBOOT_SERVER`.

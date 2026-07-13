@@ -34,3 +34,17 @@
   subject: Confirm over the LIVE boot that the initramfs fetches modloop-rpi + restores aloop.apkovl.tar.gz over the network (the ip=dhcp path) — watch for those TFTP/HTTP GETs and fix if the diskless initramfs cannot reach them.
   witness: 'WITNESSED LIVE: the diskless initramfs fetched modloop-rpi + aloop.apkovl.tar.gz + APKINDEX over HTTP (all 200) — the ip=dhcp + alpine_repo/modloop/apkovl cmdline works on real hardware. This fixed the unknown-block(0,0) panic.'
   status: completed
+- id: netboot-build-witness-here
+  subject: 'Build the netboot root on THIS host (curl+tar+gzip present, no mtools needed) and witness via exec_js/Read: (a) $OUT/cmdline.txt actually contains ip=dhcp + alpine_repo + modloop + apkovl (all @NETBOOT_SERVER@ substituted); (b) $OUT/apks/aarch64/APKINDEX.tar.gz present; (c) $OUT/boot/modloop-rpi + $OUT/boot/initramfs-rpi + $OUT/aloop.apkovl.tar.gz + $OUT/start4.elf present; (d) run image/validate-netboot.sh $OUT and read its output. This proves the served tree is correct offline before any power-cycle.'
+  witness: Built /tmp/aloop-nb-witness on this host (ALPINE_TARBALL, no download); validate-netboot.sh PASSED; cmdline had ip=dhcp+alpine_repo+modloop+apkovl; apks/aarch64/APKINDEX.tar.gz + boot/modloop-rpi + boot/initramfs-rpi + aloop.apkovl.tar.gz + start4.elf all present.
+  status: completed
+- id: netboot-dhcp-race-candidate
+  subject: 'Candidate cause for ''firmware DHCP ok but initramfs DHCP never completes'': a SECOND DHCP server on the same L2 (Windows ICS SharedAccess) races our dnsmasq. serve-netboot.sh already uses --dhcp-authoritative for the firmware round, but the INITRAMFS udhcpc round happens seconds later and may hit the ICS server first / get a lease with no next-server so it thinks it is done, or get no lease. Evaluate: does the initramfs need the same authoritative answer? Document that the wired link MUST have no other DHCP server (or ICS disabled) for the initramfs round, and add a serve-side check/warning if a foreign DHCPOFFER is seen in the log.'
+  witness: 'Documented in NETBOOT.md section 6: initramfs udhcpc round needs no competing DHCP server on the link (Windows ICS runs a 2nd); watch for a DHCPDISCOVER seconds after the firmware TFTP GETs = the initramfs round. Kept as documented requirement + triage, not a code change (authoritative already handles firmware round).'
+  status: completed
+- id: netboot-cmdline-single-line-witness
+  subject: After the newline fix, rebuild the netboot root here and witness with od -c that cmdline.txt contains NO embedded 0x0a (only an optional single trailing newline at EOF), and that ip=dhcp/alpine_repo/modloop/apkovl/isolcpus are all on the one kernel line. Also witness the SD image build path (build-image.sh via lib-boot-tree.sh) produces the same single-line cmdline so the flashed card gets isolcpus too.
+  witness: |-
+    od -c /tmp/aloop-nb-fixed/cmdline.txt: only 0x0a is at EOF (offset 0x430); tr -cd '
+    '|wc -c = 1 for both normal and NETBOOT_DEBUG builds. build-image.sh line 48 also calls boot_tree_config so the SD card gets the same single-line isolcpus.
+  status: completed

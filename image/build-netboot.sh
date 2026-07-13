@@ -89,10 +89,31 @@ echo "[netboot] overlay: added eth0 dhcp + networking service (wired link stays 
 # @NETBOOT_SERVER@ is substituted with the serve host's IP (env NETBOOT_SERVER,
 # default 192.168.137.1 — the common WSL/ICS layout; override for your LAN).
 NETBOOT_SERVER="${NETBOOT_SERVER:-192.168.137.1}"
-NBCMD="$(sed "s/@NETBOOT_SERVER@/$NETBOOT_SERVER/g" "$ROOT/image/config/netboot-cmdline.txt")"
+NBCMD="$(sed "s/@NETBOOT_SERVER@/$NETBOOT_SERVER/g" "$ROOT/image/config/netboot-cmdline.txt" | tr '\n' ' ')"
 if [ -f "$BOOT/cmdline.txt" ] && ! grep -q 'ip=dhcp' "$BOOT/cmdline.txt"; then
-  printf ' %s' "$NBCMD" >> "$BOOT/cmdline.txt"
-  echo "[netboot] appended netboot cmdline (server=$NETBOOT_SERVER): $NBCMD"
+  # cmdline.txt must stay a SINGLE line (Pi firmware reads only the first line —
+  # an embedded newline silently drops every later param, incl. ip=dhcp, so the
+  # initramfs never DHCPs and drops to an emergency shell). boot_tree_config already
+  # collapsed it to one line; rebuild it as one line again with the netboot params
+  # appended, never `>>` after the trailing newline.
+  _base="$(tr '\n' ' ' < "$BOOT/cmdline.txt")"
+  printf '%s\n' "$(printf '%s %s' "$_base" "$NBCMD" | tr -s ' ' | sed 's/^ //;s/ $//')" \
+    > "$BOOT/cmdline.txt"
+  echo "[netboot] appended netboot cmdline as a single line (server=$NETBOOT_SERVER): $NBCMD"
+fi
+
+# --- 4b. Optional diagnostic cmdline (NETBOOT_DEBUG=1) ---------------------------
+# The default cmdline is `quiet` — great for production, terrible for diagnosing a
+# boot that stalls in the initramfs. With NETBOOT_DEBUG=1 we drop `quiet` and add
+# `debug_init` so the Alpine init runs `set -x` and every step (Loading boot drivers
+# -> Mounting boot media -> Obtaining IP via DHCP (eth0) -> apk fetch) prints to the
+# serial console. Attach a serial console and power-cycle to see exactly where it
+# stops. Still a SINGLE line (rebuilt, never `>>`).
+if [ "${NETBOOT_DEBUG:-0}" = "1" ] && [ -f "$BOOT/cmdline.txt" ]; then
+  _dbg="$(tr '\n' ' ' < "$BOOT/cmdline.txt" | sed 's/\bquiet\b//g')"
+  case " $_dbg " in *" debug_init "*) : ;; *) _dbg="$_dbg debug_init" ;; esac
+  printf '%s\n' "$(printf '%s' "$_dbg" | tr -s ' ' | sed 's/^ //;s/ $//')" > "$BOOT/cmdline.txt"
+  echo "[netboot] NETBOOT_DEBUG=1: dropped 'quiet', added 'debug_init' (verbose serial init)"
 fi
 
 # --- 5. Sanity: the pieces the diskless initramfs needs must be in the root -----

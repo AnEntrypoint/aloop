@@ -52,6 +52,16 @@ else bad "missing usercfg.txt"; fi
 # cmdline.txt: isolcpus tuning AND ip=dhcp (the netboot-specific NIC bring-up).
 if [ -f "$DIR/cmdline.txt" ]; then
   CMD=$(cat "$DIR/cmdline.txt")
+  # The Pi firmware reads ONLY the first line of cmdline.txt. An embedded newline
+  # silently drops every param after it (this is what stopped the initramfs DHCP and
+  # dropped the Pi to an emergency shell). Enforce a single line: at most one newline,
+  # and it must be the trailing EOF one.
+  NL=$(tr -cd '\n' < "$DIR/cmdline.txt" | wc -c | tr -d ' ')
+  if [ "$NL" -le 1 ]; then
+    ok "cmdline.txt is a single line (no embedded newline — Pi firmware reads line 1 only)"
+  else
+    bad "cmdline.txt has $NL newlines — embedded newline truncates the kernel cmdline (ip=dhcp etc. dropped)"
+  fi
   echo "$CMD" | grep -q 'isolcpus' && ok "cmdline.txt has isolcpus (RT core isolation)" \
     || bad "cmdline.txt missing isolcpus tuning"
   echo "$CMD" | grep -q 'ip=dhcp' && ok "cmdline.txt has ip=dhcp (initramfs NIC bring-up for netboot)" \
