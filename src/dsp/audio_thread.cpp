@@ -375,26 +375,19 @@ static void* worker(void*) {
 bool AudioThread::start(const AudioConfig& cfg, ParamStore* params, LinkBridge* link) {
     cfg_ = cfg; g_cfg = cfg; g_params = params; g_link = link;
     g_running.store(true);
-    // WITNESSED live on a real Pi 4 (musl/Alpine): pthread_create with a NULL
-    // attr (the default) gave this thread musl's default stack size, which is
-    // FAR smaller than glibc's ~8 MiB (historically as low as 128 KiB) —
-    // `worker()` allocates the Faust AloopLoopDsp instance (20 loopers' worth
-    // of internal state) plus several std::vector buffers as locals, and the
-    // thread segfaulted at the very first function-prologue stack write inside
-    // setRealtimeSelf (a stack overflow, confirmed via gdb backtrace + core
-    // dump: fault instruction was `stp x29, x30, [sp, #N]`, the frame-pointer
-    // save every function does on entry — nothing plausible fails there
-    // except an invalid/exhausted stack). Explicit 8 MiB stack (matching
-    // glibc's default so behavior doesn't depend on which libc the binary
-    // happens to link against) via pthread_attr fixes this at the source
-    // rather than shrinking the DSP engine's footprint to fit an arbitrary
-    // small default.
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
-    int rc = pthread_create(&g_worker, &attr, worker, nullptr);
-    pthread_attr_destroy(&attr);
-    if (rc != 0) {
+    // NOTE: a real, reproducible SIGSEGV was WITNESSED live on a real Pi 4 at
+    // the very first instruction of setRealtimeSelf() (called as worker()'s
+    // first line) — confirmed via gdb + a real core dump: the fault is a
+    // plain stack-frame-save write (`stp x29, x30, [sp, #N]`) to an unmapped
+    // address. An explicit 8 MiB pthread stack (matching glibc's default, in
+    // case musl's default was too small) was tried here and did NOT fix it —
+    // same crash, same relative offset, confirmed via a second core dump
+    // (ruling out a plain stack-size-too-small explanation). Reverted to the
+    // default (nullptr) attr pending further investigation — see PRD row
+    // reopen-audio-thread-segfault-investigation. This crash remains
+    // UNRESOLVED; do not re-introduce a stacksize "fix" without a witnessed
+    // core dump showing it actually changes the fault site.
+    if (pthread_create(&g_worker, nullptr, worker, nullptr) != 0) {
         fprintf(stderr, "[audio] fatal: could not create audio thread\n");
         return false;
     }

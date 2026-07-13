@@ -150,6 +150,22 @@ output_log="/var/log/aloop.log"
 error_log="/var/log/aloop.log"
 respawn_delay=2
 respawn_max=0
+# WITNESSED live on a real Pi 4: kernel/rt-tune.sh sets `ulimit -l unlimited`
+# (memlock, needed for mlockall(MCL_FUTURE)) but that runs inside a
+# `local.d/*.start` script, which OpenRC's `local` service `eval`s in a
+# transient subshell that exits once local's start() returns — the ulimit
+# change NEVER reaches aloop, a separate process started later by a separate
+# service (confirmed: `ulimit -l` on the booted device showed the 8192 KB
+# default, not unlimited). rc_ulimit is OpenRC's own per-service ulimit
+# mechanism (read by openrc-run.sh itself before exec'ing command) — the
+# correct place for a limit the SERVICE'S OWN process needs. This is a real,
+# independent correctness fix for mlockall regardless of a separate,
+# still-unresolved SIGSEGV investigated the same session (see PRD row
+# reopen-audio-thread-segfault-investigation) — manually setting `ulimit -l
+# unlimited` before running aloop interactively did NOT fix that crash, so
+# this fix is not claimed to resolve it, only to make memlock actually
+# unlimited for the service as rt-tune.sh always intended.
+rc_ulimit="-l unlimited -r 95"
 depend() { after local; need localmount; }
 SVC
   cat > "$OVL/etc/init.d/autoap" <<'SVC'
