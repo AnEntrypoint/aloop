@@ -28,6 +28,7 @@ set(DSP_SOURCES
   link/link_bridge.cpp    # Ableton Link -> the lock-free snapshot
   control/telemetry.cpp   # the diagnosability surface
   control/midi.cpp        # ALSA rawmidi + the control mapping
+  control/apc_grid.cpp    # APC Key25 grid/tap-hold/preset/live-pitch/microrepeat engine
   main.cpp                # the wiring
 )
 
