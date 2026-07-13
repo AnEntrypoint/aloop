@@ -37,9 +37,23 @@ function arg(name, def) { const i = process.argv.indexOf(name); return i > 0 && 
 
 // Mirror all console output to a logfile so an elevated (UAC) launch, which cannot
 // redirect stdout, is still observable. --log <path> overrides the default.
+// This process runs indefinitely (self-update poll loop) and mirrors every
+// TFTP/HTTP/DHCP line — with no cap the file grows unbounded over a
+// multi-day serve session. Truncate back to zero once it crosses LOG_MAX_BYTES
+// (a crude rotation: no history kept, but that matches this script's own
+// existing "truncate on every restart" behavior, just applied mid-run too).
 const LOG_FILE = arg('--log', path.join(__dirname, '..', '.netboot-serve.log'));
+const LOG_MAX_BYTES = parseInt(arg('--log-max-bytes', String(10 * 1024 * 1024)));   // 10 MiB
 try { fs.writeFileSync(LOG_FILE, ''); } catch (e) {}
-const _log = (...a) => { const line = a.join(' '); try { fs.appendFileSync(LOG_FILE, line + '\n'); } catch (e) {} process.stdout.write(line + '\n'); };
+const _log = (...a) => {
+  const line = a.join(' ');
+  try {
+    const st = fs.statSync(LOG_FILE);
+    if (st.size > LOG_MAX_BYTES) fs.writeFileSync(LOG_FILE, '[log] rotated (exceeded ' + LOG_MAX_BYTES + ' bytes)\n');
+    fs.appendFileSync(LOG_FILE, line + '\n');
+  } catch (e) {}
+  process.stdout.write(line + '\n');
+};
 console.log = _log; console.error = _log;
 
 const ROOT      = path.resolve(arg('--root', path.join(__dirname, '..', '.netboot-serve')));
@@ -162,15 +176,33 @@ function buildDhcpReply(type, xid, mac, offeredIp) {
 }
 const dhcp = dgram.createSocket({ type: 'udp4', reuseAddr: true });
 dhcp.on('message', (msg) => {
-  if (msg.length < 240 || msg[0] !== 1 || msg.readUInt32BE(236) !== 0x63825363) return;
-  const xid = msg.readUInt32BE(4), mac = msg.slice(28, 34);
-  const macStr = Array.from(mac).map(b => b.toString(16).padStart(2, '0')).join(':');
-  let msgType = 0, o = 240;
-  while (o < msg.length) { const opt = msg[o++]; if (opt === 255) break; if (opt === 0) continue; const len = msg[o++]; if (opt === 53) msgType = msg[o]; o += len; }
-  const offeredIp = allocate(macStr);
-  console.log('[DHCP] ' + (msgType === 1 ? 'DISCOVER' : msgType === 3 ? 'REQUEST' : 'type' + msgType) + ' from ' + macStr + ' -> ' + offeredIp + ' (boot=' + BOOTFILE + ', tftp=' + SERVER_IP + ')');
-  const reply = buildDhcpReply(msgType === 1 ? 2 : 5, xid, mac, offeredIp);       // OFFER for DISCOVER, ACK otherwise
-  dhcp.send(reply, 68, '255.255.255.255', err => err && console.error('[DHCP]', err.message));
+  // A malformed/truncated packet from anything on the LAN must never take the
+  // whole serve process down (same defensive posture as the TFTP/HTTP
+  // handlers, which already guard every path). Node's Buffer indexing itself
+  // can't throw (out-of-range reads return undefined, not an exception), but
+  // wrap the handler anyway — cheap insurance against any future change here
+  // (e.g. a readUInt16BE on a short slice DOES throw) regressing that safety.
+  try {
+    if (msg.length < 240 || msg[0] !== 1 || msg.readUInt32BE(236) !== 0x63825363) return;
+    const xid = msg.readUInt32BE(4), mac = msg.slice(28, 34);
+    const macStr = Array.from(mac).map(b => b.toString(16).padStart(2, '0')).join(':');
+    let msgType = 0, o = 240;
+    while (o < msg.length) {
+      const opt = msg[o++];
+      if (opt === 255) break;
+      if (opt === 0) continue;
+      if (o >= msg.length) break;                 // truncated: a length byte was promised but absent
+      const len = msg[o++];
+      if (opt === 53 && o < msg.length) msgType = msg[o];
+      o += len;                                    // may overshoot msg.length; the while-guard ends the loop next iteration
+    }
+    const offeredIp = allocate(macStr);
+    console.log('[DHCP] ' + (msgType === 1 ? 'DISCOVER' : msgType === 3 ? 'REQUEST' : 'type' + msgType) + ' from ' + macStr + ' -> ' + offeredIp + ' (boot=' + BOOTFILE + ', tftp=' + SERVER_IP + ')');
+    const reply = buildDhcpReply(msgType === 1 ? 2 : 5, xid, mac, offeredIp);       // OFFER for DISCOVER, ACK otherwise
+    dhcp.send(reply, 68, '255.255.255.255', err => err && console.error('[DHCP]', err.message));
+  } catch (e) {
+    console.error('[DHCP] malformed packet, ignored:', e.message);
+  }
 });
 dhcp.on('error', err => { if (err.code === 'EACCES') { console.error('[DHCP] need ADMIN: port 67'); process.exit(1); } console.error('[DHCP]', err.message); });
 dhcp.bind(67, '0.0.0.0', () => { dhcp.setBroadcast(true); console.log('[DHCP] listening :67'); });
@@ -225,7 +257,11 @@ function downloadArtifactZip(archiveUrl, destZip) {
         if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 303) return follow(res.headers.location);
         if (res.statusCode !== 200) return reject(new Error('artifact download HTTP ' + res.statusCode));
         const tmp = destZip + '.tmp', out = fs.createWriteStream(tmp);
-        res.pipe(out); out.on('finish', () => { fs.renameSync(tmp, destZip); resolve(); }); out.on('error', reject);
+        const cleanupAndReject = err => { fs.rmSync(tmp, { force: true }); reject(err); };
+        res.on('error', cleanupAndReject);   // a mid-stream socket error on the readable itself, not just the write side
+        res.pipe(out);
+        out.on('finish', () => { fs.renameSync(tmp, destZip); resolve(); });
+        out.on('error', cleanupAndReject);
       }).on('error', reject);
     };
     follow(archiveUrl);

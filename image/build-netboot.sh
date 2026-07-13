@@ -126,23 +126,48 @@ fi
 [ -f "$BOOT/fixup4.dat" ]              || { echo "[netboot] ERROR: fixup4.dat (Pi4 firmware) missing"; exit 1; }
 [ -f "$BOOT/bcm2711-rpi-4-b.dtb" ]     || { echo "[netboot] ERROR: Pi4 DTB missing";                  exit 1; }
 
-# --- 6. Publish the netboot root ------------------------------------------------
+# --- 6. Publish the netboot root — ATOMICALLY -----------------------------------
 # A plain directory; a TFTP server exports it as-is. (Per-serial subdirs are a
 # runtime concern of the TFTP server config, documented in docs/NETBOOT.md.)
-rm -rf "$OUT"
-mkdir -p "$OUT"
+#
+# WHY staged + renamed, not rm -rf + populate-in-place: a self-updating serve
+# (image/serve-netboot-win.js) can rebuild $OUT while a Pi is ACTIVELY
+# TFTP/HTTP-fetching from it (WITNESSED: a real Pi 4's boot-chain fetch was
+# served concurrently with a live rebuild). An in-place rm -rf/cp -a leaves a
+# window where $OUT is empty or half-copied — an in-flight read can get a
+# spurious "not found" or a truncated file. `mv` between two directories ON THE
+# SAME FILESYSTEM is atomic (a single rename(2) syscall, POSIX-guaranteed): a
+# reader either sees the complete OLD tree or the complete NEW tree, never a
+# partial one. The staging dir is a SIBLING of $OUT (same parent, so same
+# filesystem) — NOT $WORK (mktemp -d typically lands on a different mount,
+# e.g. /tmp vs a repo-relative $OUT, which would silently degrade `mv` to a
+# non-atomic copy+delete across filesystems).
+OUT_NEW="${OUT}.new.$$"
+OUT_OLD="${OUT}.old.$$"
+rm -rf "$OUT_NEW" "$OUT_OLD"
+mkdir -p "$OUT_NEW"
 # Copy the whole boot tree (including dotfiles like .alpine-release) into the
-# netboot root. `cp -a "$BOOT/." "$OUT/"` copies the DIRECTORY CONTENTS (the
-# trailing /. ), preserving perms, without the glob/dotfile-expansion pitfalls of
-# a for-loop (an unmatched `.[!.]*` would pass a literal pattern to cp).
-cp -a "$BOOT/." "$OUT/"
+# staged netboot root. `cp -a "$BOOT/." "$OUT_NEW/"` copies the DIRECTORY
+# CONTENTS (the trailing /. ), preserving perms, without the glob/dotfile-
+# expansion pitfalls of a for-loop (an unmatched `.[!.]*` would pass a literal
+# pattern to cp).
+cp -a "$BOOT/." "$OUT_NEW/"
 
 # WITNESSED on the real Pi 4: the Alpine tarball ships boot/initramfs-rpi as mode
 # 600 (root-only), and cp -a PRESERVES that. A TFTP server runs unprivileged (dnsmasq
 # drops to `nobody`), so it gets "Permission denied" on the initramfs and the Pi
 # boots a kernel with NO initramfs -> panics "unable to mount root fs". Make the whole
 # served tree world-readable (dirs +rx, files +r) so any TFTP/HTTP server can read it.
-chmod -R a+rX "$OUT"
+chmod -R a+rX "$OUT_NEW"
 
-echo "[netboot] wrote netboot root -> $OUT/ ($(du -sh "$OUT" | cut -f1))"
+# Atomic swap: move the CURRENT $OUT aside (if it exists), rename the staged
+# tree into place, then clean up the old one. The window between the two `mv`s
+# is a bare rename of an already-fully-built directory — a reader either finds
+# $OUT (old, still complete, momentarily) or $OUT (new, complete); it is never
+# missing and never half-populated.
+if [ -d "$OUT" ]; then mv "$OUT" "$OUT_OLD"; fi
+mv "$OUT_NEW" "$OUT"
+rm -rf "$OUT_OLD"
+
+echo "[netboot] wrote netboot root -> $OUT/ ($(du -sh "$OUT" | cut -f1)) [atomic swap]"
 echo "[netboot] serve it: see docs/NETBOOT.md (image/serve-netboot.sh — DHCP+TFTP+HTTP)"
