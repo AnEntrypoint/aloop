@@ -19,6 +19,7 @@
 #include <cstring>
 #include <atomic>
 #include <vector>
+#include <memory>
 
 // ALSA is present in the build container (see build-binary.yml). Guarded so the
 // design compiles for review even where ALSA headers are absent; the real device
@@ -174,8 +175,23 @@ static void* worker(void*) {
 
     // Instantiate the Faust home stack (loop engine + effects). Its compute()
     // runs the whole home DSP per block — the loop record/play + the effects.
+    //
+    // WITNESSED live on a real Pi 4 (gdb + a real core dump, built with -g -O0
+    // via a temporary debug CI job): AloopLoopDsp is 336,326,896 bytes (~320
+    // MiB) — the 20 loopers' MAXLEN=48000*60 (60s) delay-line buffers add up
+    // fast. As a STACK-LOCAL variable inside this thread's entry function, no
+    // pthread stack size (musl's small default, or an explicit 8 MiB — both
+    // tried and both crashed identically) could ever be large enough; the
+    // SIGSEGV at setRealtimeSelf's very first local-variable stack write was
+    // this frame simply being un-mapped from the moment the thread's stack
+    // pointer moved past its real (small) allocation to make room for a
+    // 320 MiB local later in the same function. Heap-allocate it instead —
+    // this is a one-time allocation at thread startup, never in the per-block
+    // RT hot path, so it carries none of the "no allocation in the audio
+    // callback" real-time risk the rest of this file is written to avoid.
 #ifdef ALOOP_HAVE_FAUST_LOOP
-    AloopLoopDsp faustHome;
+    auto faustHomePtr = std::make_unique<AloopLoopDsp>();
+    AloopLoopDsp& faustHome = *faustHomePtr;
     faustHome.init((int)g_cfg.sampleRate);
     FaustUI fui; faustHome.buildUserInterface(&fui);
     float* fins[1]  = { fin.data() };
@@ -375,18 +391,16 @@ static void* worker(void*) {
 bool AudioThread::start(const AudioConfig& cfg, ParamStore* params, LinkBridge* link) {
     cfg_ = cfg; g_cfg = cfg; g_params = params; g_link = link;
     g_running.store(true);
-    // NOTE: a real, reproducible SIGSEGV was WITNESSED live on a real Pi 4 at
-    // the very first instruction of setRealtimeSelf() (called as worker()'s
-    // first line) — confirmed via gdb + a real core dump: the fault is a
-    // plain stack-frame-save write (`stp x29, x30, [sp, #N]`) to an unmapped
-    // address. An explicit 8 MiB pthread stack (matching glibc's default, in
-    // case musl's default was too small) was tried here and did NOT fix it —
-    // same crash, same relative offset, confirmed via a second core dump
-    // (ruling out a plain stack-size-too-small explanation). Reverted to the
-    // default (nullptr) attr pending further investigation — see PRD row
-    // reopen-audio-thread-segfault-investigation. This crash remains
-    // UNRESOLVED; do not re-introduce a stacksize "fix" without a witnessed
-    // core dump showing it actually changes the fault site.
+    // A real, reproducible SIGSEGV was WITNESSED live on a real Pi 4 here.
+    // Root-caused via a debug build (-g -O0, unstripped) + gdb against a real
+    // core dump: worker() declared `AloopLoopDsp faustHome;` as a stack-local
+    // (sizeof(AloopLoopDsp) == 336,326,896 bytes, ~320 MiB — 20 loopers' worth
+    // of 60s delay-line buffers) — no thread stack size, default or an
+    // earlier-tried explicit 8 MiB, could ever hold that. Fixed by
+    // heap-allocating it inside worker() instead (std::make_unique). The
+    // default (nullptr) pthread attr here is correct as-is; do not add a large
+    // explicit stack size in its place, since the fix is heap allocation, not
+    // stack sizing.
     if (pthread_create(&g_worker, nullptr, worker, nullptr) != 0) {
         fprintf(stderr, "[audio] fatal: could not create audio thread\n");
         return false;
