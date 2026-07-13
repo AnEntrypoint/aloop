@@ -128,6 +128,7 @@ static std::string targetToZone(const std::string& target) {
     if (target == "fx/time")    return "TIME";
     if (target == "fx/formant") return "FORMANT";
     if (target == "fx/pitch")   return "SEMIS";
+    if (target == "fx/monitorfold") return "MONITORFOLD";
     return "";   // commands (cmd/*) and fx/pitchbend*, fx/microrepeat_div are handled separately, not a plain 1:1 Faust zone
 }
 
@@ -289,6 +290,10 @@ static void* worker(void*) {
                     snprintf(z, sizeof z, "looper%2d/vol",  lp); g_telem.looperVol[lp]  = fui.get(z, 1.0f);
                 }
             }
+            // monitorMode telemetry (apcKey25.cpp:361's p.monitorMode = m_shift):
+            // read back the same MONITORFOLD zone ApcGrid::onShiftPress/Release
+            // drives, so a dev host can observe SHIFT/monitor-fold state live.
+            g_telem.monitorMode = fui.get("MONITORFOLD") > 0.5f;
             // Varispeed Link sync: when synced, set every looper's loop length from
             // the Link tempo (a musical phrase = a whole number of beats). A tempo
             // change resizes the loops so they stay locked to the session — the

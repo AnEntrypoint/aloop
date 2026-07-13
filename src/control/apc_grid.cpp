@@ -206,4 +206,36 @@ void ApcGrid::onMicrorepeatOff(int note, ParamStore& ps) {
     }
 }
 
+// --- SHIFT (apcKey25.cpp:96,185) --------------------------------------------
+// Held state, not a trigger: gates CC53 formant range (onFormantCC) and the
+// monitor-fold routing (fx/monitorfold, applied immediately on press/release
+// exactly as looper's p.monitorMode = m_shift is read every block).
+void ApcGrid::onShiftPress(ParamStore& ps) {
+    m_shift = true;
+    ps.bind("fx/monitorfold");
+    ps.setByName("fx/monitorfold", 1.0f);
+}
+void ApcGrid::onShiftRelease(ParamStore& ps) {
+    m_shift = false;
+    ps.bind("fx/monitorfold");
+    ps.setByName("fx/monitorfold", 0.0f);
+}
+
+// --- CC53 formant depth (apcKey25Filters.cpp:53-58) -------------------------
+// Deadzone around center (63/64, matching the mod-wheel deadzone convention
+// used elsewhere on this controller) with SHIFT held roughly doubling the
+// usable range -- the two semitone ranges looper ships (±3 normal, ±6 under
+// SHIFT scaled from the same CC curve as FORMANT's -3..3 zone in
+// effects_runtime.dsp).
+void ApcGrid::onFormantCC(uint8_t data2, ParamStore& ps) {
+    ps.bind("fx/formant");
+    const bool inDeadzone = (data2 >= 62 && data2 <= 65);
+    if (inDeadzone) { ps.setByName("fx/formant", 0.0f); return; }
+    const float norm = ((float)(int)data2 - 63.5f) / 63.5f;   // -1..1
+    const float range = m_shift ? 1.0f : 0.5f;                // SHIFT doubles the usable range
+    float v = norm * range;
+    if (v > 1.0f) v = 1.0f; else if (v < -1.0f) v = -1.0f;
+    ps.setByName("fx/formant", v);
+}
+
 } // namespace aloop

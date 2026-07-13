@@ -58,11 +58,17 @@ grid-locked, plays at 0.5×/2×). The `TRACK_BASE 0x20` / `STOP_TRACK_BASE 0x40`
 
 ## APC Key25 controls (the exact mapping — src/control/midi.cpp, param_mapping.md)
 - CC48–55 → reverb/delay/time/HP/LP/resonance (all `/127`)
-- CC53 → formant depth (deadzone + range, SHIFT expands)
+- CC53 → formant depth (deadzone + range, SHIFT expands) — `ApcGrid::onFormantCC`
 - CC52 / keybed / mod-wheel → live pitch semitones
 - notes 82–86 → microrepeat divisors {1,2,4,8,16}
 - notes 70/71 → global speed-scrub (varispeed)
-- SHIFT gestures → loop-fold/monitor routing
+- SHIFT (note 0x62/98, channel 0 only) → held state gating CC53's range AND the
+  loop-fold/monitor routing: while held, the running loops are folded INTO the
+  effect input (`fx/monitorfold` → Faust `MONITORFOLD`, `dsp/aloop.dsp`'s
+  `foldMix`) with the dry loop contribution complementarily suppressed, so the
+  loops are heard once, through the effects — `ApcGrid::onShiftPress/Release`,
+  `AudioThread::Telemetry::monitorMode`. Drum-record-mode (looper's per-key
+  keybed sampler) is NOT ported — see `docs/DECISIONS.md` ADR-012.
 - the 8×5 grid → track/clip select + state display
 
 ## Link / transport

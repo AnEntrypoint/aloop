@@ -84,3 +84,6 @@
   subject: Full aloop-vs-looper parity audit found effects graph PARTIAL (home Faust chain real+complete via dsp/effects_runtime.dsp 5-stage pitch->delay->reverb->microrepeat->filter, but Lv2Host user-plugin port wiring was scaffolding-only) -- see lv2-user-port-wiring-fixed for the fix. looper itself has no swappable-plugin graph at all (hardcoded engine_*.h effects), so aloops home-chain parity was already a superset; the gap was specific to aloops own LV2-hosting feature design, not something looper does either.
   status: completed
   witness: Gap identified and fixed via lv2-user-port-wiring-fixed; home Faust chain (dsp/effects_runtime.dsp) confirmed already complete
+- id: apc-shift-ci-build-verify
+  subject: Push the SHIFT state-tracking + CC53 range + monitor-fold DSP + telemetry changes and witness build-binary CI green (the only environment that compiles the full aarch64 musl target) -- this Windows dev host cannot compile locally.
+  status: pending

@@ -18,6 +18,7 @@ constexpr int kApcCols = 8;
 constexpr int kLooperCount = 20;
 constexpr int kPresetCount = 10;
 constexpr unsigned kHoldEraseMs = 1000;   // apcKey25.h APC_HOLD_ERASE_MS
+constexpr int kApcBtnShift = 0x62;         // apcKey25.h APC_BTN_SHIFT (98) -- channel 0 only, see onShiftPress
 
 // row*8+col grid index -> looper index (cols 2-5) or -1 (apcKey25Notes.cpp _looperFromPad)
 inline int gridLooperIndex(int row, int col) {
@@ -57,6 +58,21 @@ public:
     void onMicrorepeatOn(int note, ParamStore& ps);
     void onMicrorepeatOff(int note, ParamStore& ps);
 
+    // SHIFT (channel 0 note APC_BTN_SHIFT, apcKey25.h 0x62/98). Mirrors looper's
+    // apcKey25.cpp:96,185 channel-0-only gating (the keybed's channel-1 note 98
+    // is a different physical key and must NOT be treated as SHIFT). Held-state,
+    // not a momentary trigger: onShiftPress/Release just flip m_shift and update
+    // the two things it gates (CC53 formant range, monitor-fold).
+    void onShiftPress(ParamStore& ps);
+    void onShiftRelease(ParamStore& ps);
+    bool shiftHeld() const { return m_shift; }
+
+    // CC53 formant depth: looper apcKey25Filters.cpp:53-58 -- a deadzone around
+    // center with SHIFT roughly doubling the usable range. Intercepted here
+    // (not the flat controls.conf remap) because the SHIFT-dependent curve
+    // can't be expressed as a static 1:1 binding.
+    void onFormantCC(uint8_t data2, ParamStore& ps);
+
 private:
     bool m_looperHeld[kLooperCount] = {};
     unsigned m_looperHoldStart[kLooperCount] = {};
@@ -72,6 +88,7 @@ private:
     uint32_t m_presetMask[kPresetCount] = {};
 
     uint8_t m_microRepeatDiv = 0;
+    bool m_shift = false;
 
     void applyRecPlayCycle(int looper, ParamStore& ps);
     void capturePreset(int p, ParamStore& ps);

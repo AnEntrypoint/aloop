@@ -66,14 +66,16 @@ with {
     loopSig = step ~ _;
 };
 
-// The engine: live input (thru) + the sum of 20 INDEPENDENT loopers. `par` with
-// a "%2i"-labelled vgroup gives each instance its own addressable controls
-// (looper00/rec … looper19/rec). All loopers see the same live input; the input
-// is fanned to each looper and to the dry thru, then everything sums.
-//   in -> [ thru | looper0 | looper1 | … | looper19 ] -> sum
+// The engine outputs (dry-thru, loop-sum) SEPARATELY rather than pre-summed, so
+// the caller (aloop.dsp) can implement looper's SHIFT-held monitor-fold: fold
+// the loop-sum into the effect chain's input while complementarily suppressing
+// the dry loop contribution at the final mix (loopMachine.cpp:709-730's
+// g_fold/g_dry crossfade). `par` with a "%2i"-labelled vgroup gives each
+// instance its own addressable controls (looper00/rec … looper19/rec).
+//   in -> [ thru , (looper0 + looper1 + … + looper19) ]
 // vgroup label "looper%2i" → Faust substitutes the par index, giving group names
 // "looper 0" … "looper19" (a space for single digits). The native shell's
 // targetToZone normalizes to this exact form so each looper is addressable.
-loopEngine = _ <: (_ , par(i, NLOOPERS, vgroup("looper%2i", oneLooper))) :> _ ;
+loopEngine = _ <: (_ , (par(i, NLOOPERS, vgroup("looper%2i", oneLooper)) :> _));
 
-process(in) = loopEngine(in);
+process(in) = loopEngine(in);   // (dry, loopSum) — two outputs, see aloop.dsp's fold mix

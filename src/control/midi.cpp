@@ -127,8 +127,16 @@ void runMidiLoop(ParamStore& ps, const char* device) {
 
         // --- real APC Key25 hardware surface (apcKey25.cpp/apcKey25Notes.cpp), channel 0 only ---
         if (channel == 0) {
+            // SHIFT (apcKey25.cpp:96,185): channel-0-only guard is this `if
+            // (channel == 0)` block itself -- the keybed's channel-1 note 98 never
+            // reaches here, so it is never mistaken for SHIFT (apcKey25.cpp:91-95).
+            if (d1 == kApcBtnShift) {
+                if (type == 0x90 && d2 > 0) { grid.onShiftPress(ps); continue; }
+                if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onShiftRelease(ps); continue; }
+            }
             if (type == 0xB0 && d1 == 1)  { grid.onModWheel(d2, ps); continue; }       // CC1 mod-wheel live-pitch
             if (type == 0xB0 && d1 == 52) { grid.onAbsolutePitch(d2, ps); continue; }  // CC52 absolute live-pitch
+            if (type == 0xB0 && d1 == 53) { grid.onFormantCC(d2, ps); continue; }      // CC53 formant (deadzone + SHIFT range)
             if (d1 >= 82 && d1 <= 86) {                                                // microrepeat latch notes
                 if (type == 0x90 && d2 > 0) { grid.onMicrorepeatOn((int)d1, ps); continue; }
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onMicrorepeatOff((int)d1, ps); continue; }

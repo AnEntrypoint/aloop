@@ -65,6 +65,7 @@ public:
         bool     linkSynced = false;
         double   bpm = 0.0;
         bool     apMode = false;    // hosting AP vs joined STA
+        bool     monitorMode = false;   // SHIFT held (apcKey25.cpp:361's p.monitorMode) -- loops folded into effects
         // Per-looper state — the Linux-native equivalent of the hardware's
         // GET_STATE 0x30 dump (which of the 20 loopers are recording/playing and
         // their levels). Read from the Faust zones each block; served on udp/4445.

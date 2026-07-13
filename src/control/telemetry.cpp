@@ -75,12 +75,13 @@ void Telemetry::publish() {
     char json[768];
     int n = snprintf(json, sizeof json,
         "{\"core_busy\":[%.0f,%.0f,%.0f,%.0f],\"xruns\":%llu,"
-        "\"link\":{\"synced\":%s,\"bpm\":%.1f},\"wifi\":\"%s\","
+        "\"link\":{\"synced\":%s,\"bpm\":%.1f},\"wifi\":\"%s\",\"monitor_mode\":%s,"
         "\"loopers\":{\"rec\":%u,\"play\":%u,\"vol\":%s}}",
         t.coreBusyPct[0], t.coreBusyPct[1], t.coreBusyPct[2], t.coreBusyPct[3],
         (unsigned long long)t.xruns,
         t.linkSynced ? "true" : "false", t.bpm,
         t.apMode ? "ap" : "sta",
+        t.monitorMode ? "true" : "false",
         recBits, playBits, vols);
 
     // Write the status file for shell/curl inspection.
