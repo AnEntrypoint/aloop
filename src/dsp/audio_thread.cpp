@@ -171,7 +171,22 @@ static void* worker(void*) {
     // straight copy. See ADR-008 / f_uac2-gadget.sh.
     const int wireCh = (ch < 2) ? 2 : ch;   // USB wire is stereo; DSP is mono
 
-    std::vector<int16_t> buf((size_t)N * wireCh, 0);  // pre-allocated, pre-faulted (wire frames)
+    // Instrument device sample buffer is int32_t, NOT int16_t. WITNESSED live:
+    // the M-Audio AIR 192|4 (and most class-compliant USB audio interfaces)
+    // only supports S32_LE (24-bit data left-justified in a 32-bit word,
+    // confirmed via /proc/asound/card0/stream0: "Format: S32_LE, Bits: 24") —
+    // there is no S16_LE fallback on this hardware. The prior code hardcoded
+    // SND_PCM_FORMAT_S16_LE and an int16_t buffer without checking whether the
+    // format request actually succeeded; ALSA silently negotiated S32_LE
+    // anyway (hw_params still succeeded — only the specific format request was
+    // ignored) while the code kept treating the wire as 16-bit, writing
+    // half-width garbage into what the hardware read as 32-bit words — this
+    // is what produced loud static once the instrument device was finally
+    // opened at all (ADR-015). The OTG gadget, by contrast, genuinely IS
+    // S16_LE (src/usb/f_uac2-gadget.sh sets c_ssize/p_ssize=2 ourselves), so
+    // the two devices need separate wire buffers in their own native formats.
+    std::vector<int32_t> buf((size_t)N * wireCh, 0);       // instrument device (S32_LE)
+    std::vector<int16_t> otgBuf((size_t)N * wireCh, 0);    // OTG gadget mirror (S16_LE)
     std::vector<float> fin((size_t)N, 0.0f), fout((size_t)N, 0.0f);  // mono DSP buffers
 
     // Instantiate the Faust home stack (loop engine + effects). Its compute()
@@ -258,7 +273,17 @@ static void* worker(void*) {
             snd_pcm_hw_params_alloca(&hw);
             snd_pcm_hw_params_any(pcm, hw);
             snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED);
-            snd_pcm_hw_params_set_format(pcm, hw, SND_PCM_FORMAT_S16_LE);
+            // The instrument device is S32_LE (24-bit data left-justified in a
+            // 32-bit word — most class-compliant USB audio interfaces, including
+            // the M-Audio AIR 192|4, have no S16_LE mode at all). WITNESSED live:
+            // requesting S16_LE here previously succeeded at the snd_pcm_hw_params()
+            // call (no error returned) while the device silently negotiated S32_LE
+            // anyway — the return value of set_format() itself was never checked,
+            // so the mismatch went undetected until it produced loud static on
+            // real hardware. Now explicit, and the buffer type (int32_t `buf`,
+            // declared above) matches.
+            if (snd_pcm_hw_params_set_format(pcm, hw, SND_PCM_FORMAT_S32_LE) < 0)
+                fprintf(stderr, "[audio] warning: instrument device rejected S32_LE format request\n");
             snd_pcm_hw_params_set_channels(pcm, hw, wireCh);
             unsigned int rate = (unsigned int)g_cfg.sampleRate;
             snd_pcm_hw_params_set_rate_near(pcm, hw, &rate, nullptr);
@@ -267,6 +292,12 @@ static void* worker(void*) {
             snd_pcm_uframes_t bufSize = period * 4;
             snd_pcm_hw_params_set_buffer_size_near(pcm, hw, &bufSize);
             if (snd_pcm_hw_params(pcm, hw) < 0) return false;
+            // Verify the format actually negotiated matches what buf's element
+            // type assumes — a silent mismatch here is exactly the loud-static bug.
+            snd_pcm_format_t negotiatedFmt;
+            if (snd_pcm_hw_params_get_format(hw, &negotiatedFmt) == 0 && negotiatedFmt != SND_PCM_FORMAT_S32_LE)
+                fprintf(stderr, "[audio] warning: instrument device negotiated format %s, not S32_LE — audio will be corrupted (buf is int32_t)\n",
+                        snd_pcm_format_name(negotiatedFmt));
             if (period != (snd_pcm_uframes_t)N)
                 fprintf(stderr, "[audio] warning: device would not grant period=%d frames, got %lu — latency will not match block_size\n",
                         N, (unsigned long)period);
@@ -322,8 +353,8 @@ static void* worker(void*) {
             // of xruns/sec on the gadget path even with a real host attached).
             snd_pcm_uframes_t otgPeriod = (snd_pcm_uframes_t)N * 4;
             snd_pcm_hw_params_set_period_size_near(otgPlay, ohw, &otgPeriod, nullptr);
-            snd_pcm_uframes_t otgBuf = otgPeriod * 4;
-            snd_pcm_hw_params_set_buffer_size_near(otgPlay, ohw, &otgBuf);
+            snd_pcm_uframes_t otgBufFrames = otgPeriod * 4;
+            snd_pcm_hw_params_set_buffer_size_near(otgPlay, ohw, &otgBufFrames);
             if (snd_pcm_hw_params(otgPlay, ohw) == 0) {
                 snd_pcm_sw_params_t* osw;
                 snd_pcm_sw_params_alloca(&osw);
@@ -448,11 +479,16 @@ static void* worker(void*) {
             // Deinterleave the stereo wire -> mono DSP input: average the wire
             // channels (mono content is identical L/R; a stereo source is summed to
             // mono, matching the looper's mono internal path). wireCh==1 degenerates
-            // to a straight copy.
+            // to a straight copy. `buf` is S32_LE (24-bit data left-justified in the
+            // top of a 32-bit word — confirmed via /proc/asound stream0 "Bits: 24"),
+            // so normalize by INT32_MAX-equivalent range (2147483648.0), NOT 32768 —
+            // using the s16 divisor here was the earlier "loud static" bug: it
+            // treated 32-bit samples as if they were 16-bit magnitude, producing
+            // values ~65536x too large before Faust even saw them.
             for (int i = 0; i < N; i++) {
                 float acc = 0.0f;
-                for (int c = 0; c < wireCh; c++) acc += buf[(size_t)i * wireCh + c];
-                fin[i] = (acc / wireCh) / 32768.0f;
+                for (int c = 0; c < wireCh; c++) acc += (float)buf[(size_t)i * wireCh + c];
+                fin[i] = (acc / wireCh) / 2147483648.0f;
             }
             // Time the DSP work vs the block budget → home-core busy % telemetry.
             timespec t0, t1;
@@ -475,11 +511,20 @@ static void* worker(void*) {
             }
             // Interleave the mono DSP output onto every wire channel (mono
             // duplicated to L and R so a stereo host hears it centered). wireCh==1
-            // degenerates to a straight copy.
+            // degenerates to a straight copy. Two separate conversions since the
+            // instrument device (S32_LE) and the OTG gadget (S16_LE, our own
+            // configfs c_ssize/p_ssize=2) have genuinely different wire formats —
+            // see the capture-side comment above for why a shared 16-bit buffer
+            // caused loud static once the instrument device was opened at all.
             for (int i = 0; i < N; i++) {
-                float v = fout[i] * 32768.0f;
-                int16_t s = (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
-                for (int c = 0; c < wireCh; c++) buf[(size_t)i * wireCh + c] = s;
+                float v32 = fout[i] * 2147483648.0f;
+                int32_t s32 = (int32_t)(v32 > 2147483647.0f ? 2147483647 : (v32 < -2147483648.0f ? -2147483648.0f : v32));
+                float v16 = fout[i] * 32768.0f;
+                int16_t s16 = (int16_t)(v16 > 32767 ? 32767 : (v16 < -32768 ? -32768 : v16));
+                for (int c = 0; c < wireCh; c++) {
+                    buf[(size_t)i * wireCh + c] = s32;
+                    otgBuf[(size_t)i * wireCh + c] = s16;
+                }
             }
 #endif
 
@@ -495,7 +540,7 @@ static void* worker(void*) {
             // next block's -EAGAIN/error keeps getting silently absorbed here
             // rather than ever blocking or crashing the RT path.
             if (otgReady) {
-                snd_pcm_sframes_t ow = snd_pcm_writei(otgPlay, buf.data(), N);
+                snd_pcm_sframes_t ow = snd_pcm_writei(otgPlay, otgBuf.data(), N);
                 if (ow < 0 && ow != -EAGAIN) snd_pcm_recover(otgPlay, (int)ow, 1);
             }
         }
