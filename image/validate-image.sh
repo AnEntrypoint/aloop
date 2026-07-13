@@ -54,6 +54,15 @@ echo "$CFG" | grep -q 'dwc2' && echo "$CFG" | grep -q 'peripheral' \
   && ok "usercfg.txt sets dwc2 peripheral (f_uac2 gadget mode)" \
   || bad "usercfg.txt missing dwc2 dr_mode=peripheral"
 CMD=$(mtype z:cmdline.txt 2>/dev/null || true)
+# The Pi firmware reads ONLY the first line of cmdline.txt — an embedded newline
+# silently drops every later kernel param (isolcpus etc.). Enforce a single line.
+# (mtools may translate the trailing EOL; count LF bytes and allow at most one.)
+CMDNL=$(mtype z:cmdline.txt 2>/dev/null | tr -cd '\n' | wc -c | tr -d ' ')
+if [ "${CMDNL:-0}" -le 1 ]; then
+  ok "cmdline.txt is a single line (no embedded newline — firmware reads line 1 only)"
+else
+  bad "cmdline.txt has $CMDNL newlines — embedded newline truncates the kernel cmdline (isolcpus etc. dropped)"
+fi
 echo "$CMD" | grep -q 'isolcpus' && ok "cmdline.txt has isolcpus (RT core isolation)" \
   || bad "cmdline.txt missing isolcpus tuning"
 
