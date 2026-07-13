@@ -248,6 +248,15 @@ Options: `--update-interval <ms>` (default 30000, matches looper's 30s poll);
 step with a clear log line (the rebuild still happens — only the "poke a
 running Pi right now" step is skipped).
 
+**Windows commonly has 3 different `bash.exe` on PATH** (Git-Bash, the WSL
+launcher stub under `System32`, a WindowsApps alias) — `build-netboot.sh` is
+invoked via an explicitly-pinned Git-Bash path (`C:\Program Files\Git\bin\bash.exe`
+by default), not a bare `bash` lookup, because a bare lookup can resolve to the
+WSL stub depending on launch environment, which cannot see `C:/...` paths at
+all and fails with a misleading "No such file or directory" on a path that
+verifiably exists. If the rebuild step ever fails with that exact error, check
+which `bash.exe` actually ran, not whether the script path is correct.
+
 **WITNESSED live** (real Pi 4, board serial `7bec0617`): the update loop found
 a green build, downloaded + rebuilt the root, and the Pi's own DHCP/TFTP fetch
 of firmware/kernel/initramfs was served correctly **concurrently**, with no
