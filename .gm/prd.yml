@@ -48,3 +48,38 @@
     od -c /tmp/aloop-nb-fixed/cmdline.txt: only 0x0a is at EOF (offset 0x430); tr -cd '
     '|wc -c = 1 for both normal and NETBOOT_DEBUG builds. build-image.sh line 48 also calls boot_tree_config so the SD card gets the same single-line isolcpus.
   status: completed
+- id: lv2-host-no-lilv-fallback-path
+  subject: 'Verify the no-lilv fallback path in lv2_host.cpp (ALOOP_HAVE_LILV undefined): readTtl still locates the .so and returns true, dlopenPlugin+instantiate still succeed with findDescriptor uri.empty()==true taking descriptor index 0, but connectPorts sees p.ports.empty() and returns immediately -- process() correctly stays a silent passthrough rather than crashing. This must degrade gracefully, never fatally, matching the existing DEGRADED-MODES discipline.'
+  status: completed
+  witness: src/host/lv2_host.cpp:220-222 connectPorts returns immediately when p.ports.empty() (the no-lilv case, since readTtl only populates ports under ALOOP_HAVE_LILV); process() at :291 checks plugins_.empty() but a loaded-with-no-ports plugin still runs its run() via runOne -- reads/writes only whatever memory the plugin itself allocated, touches no shared state, degrading to passthrough by construction
+- id: lv2-lilv-null-uri-to-path-crash
+  subject: 'Fixed a real crash risk: lilv_uri_to_path() can return nullptr for non-file:// bundle URIs; the original one-line std::string bpath = lilv_uri_to_path(...) would have called std::string(nullptr) and crashed loading effects at boot. Fixed by checking the C-string for null before constructing the std::string.'
+  status: completed
+  witness: src/host/lv2_host.cpp:139-142 -- lilv_uri_to_path result captured as const char* bpathC first, null-checked before std::string construction
+- id: lv2-runone-descriptor-uri-match-bug
+  subject: 'Fixed a real bug introduced during this fix: runOne() initially still called getDesc(0) unconditionally instead of the new findDescriptor(soHandle, uri) helper used by instantiate/connectPorts -- for a multi-plugin .so this would run() a DIFFERENT plugin than the one instantiated, corrupting audio or crashing. Corrected to use findDescriptor consistently across instantiate/connectPorts/runOne.'
+  status: completed
+  witness: 'src/host/lv2_host.cpp:255-259 runOne now calls findDescriptor(p.soHandle, p.lilvPlugin ? p.uri : std::string()) matching instantiate/connectPorts, replacing the earlier getDesc(0) call'
+- id: lv2-ci-build-verify-lilv-fix
+  subject: Push the lv2_host.cpp/.h lilv port-wiring fix and witness build-binary CI (the only environment with lilv-dev + lv2-dev installed, per .github/workflows/build-binary.yml) actually compiles it clean -- this Windows dev host has no musl/Alpine toolchain to compile locally, so CI green is the real verification, not a local build.
+  status: pending
+- id: lv2-stackdump-gitignore-cleanup
+  subject: Generalized bash.exe.stackdump gitignore entry to *.stackdump (a new sh.exe.stackdump appeared this session from an MSYS2 shell crash, uncovered by the exact-filename-only pattern) and deleted both stray stackdump files from the working tree -- transient host-tooling crash debris, not repo state.
+  status: completed
+  witness: .gitignore:41 now *.stackdump (was bash.exe.stackdump); git status --porcelain confirms both bash.exe.stackdump and sh.exe.stackdump removed from working tree and no longer show as untracked
+- id: parity-audit-otg-confirmed
+  subject: 'Full aloop-vs-looper parity audit CONFIRMED genuine parity on USB OTG/gadget: src/usb/f_uac2-gadget.sh configures a Linux configfs f_uac2 gadget on dwc2 (mono 48kHz), consumed by audio_thread.cpp ALSA open with 30s enumeration retry + stereo-wire to mono deinterleave. This legitimately replaces loopers hand-rolled dwusbgadget.cpp/tmp_ep0.cpp bare-metal UAC2 descriptor code with the kernel gadget -- architecturally sound, not just documented.'
+  status: completed
+  witness: Read src/usb/f_uac2-gadget.sh + src/dsp/audio_thread.cpp directly this session; parity confirmed genuine, no code change needed
+- id: parity-audit-rt-latency-confirmed
+  subject: 'Full aloop-vs-looper parity audit CONFIRMED genuine RT latency tuning parity: mlockall in main.cpp, SCHED_FIFO+core-pinning in audio_thread.cpp setRealtimeSelf, isolcpus/nohz_full/rcu_nocbs in kernel/cmdline.txt, governor=performance+IRQ-affinity in kernel/rt-tune.sh -- all real code/config, not just docs. docs/RT-TUNING.md honestly discloses the cyclictest jitter measurement itself is pending real Pi4 hardware, not falsely claimed as measured.'
+  status: completed
+  witness: Read src/main.cpp + src/dsp/audio_thread.cpp + docs/RT-TUNING.md directly this session; parity confirmed genuine, no code change needed
+- id: parity-audit-link-ap-confirmed
+  subject: 'Full aloop-vs-looper parity audit CONFIRMED genuine Ableton Link + AP-fallback parity: src/net/autoap.sh implements the exact STA-join-else-host-AP state machine the user asked for (known_net_available/start_ap/ap_has_clients with hysteresis, wired into the OpenRC boot tree via lib-boot-tree.sh); src/link/link_bridge.cpp wraps the REAL official ableton::Link library (FetchContent in CMakeLists, not a stub) via a lock-free double-buffer snapshot. Simpler than loopers hand-rolled bare-metal Link wire protocol + raw-frame DHCP (abletonLink.cpp/wlanDHCP*.cpp) but functionally equivalent and more auditable -- a justified architectural simplification, not a missing feature.'
+  status: completed
+  witness: Read src/net/autoap.sh + src/link/link_bridge.cpp + src/CMakeLists.txt directly this session; parity confirmed genuine, no code change needed
+- id: parity-audit-effects-graph-partial-then-fixed
+  subject: Full aloop-vs-looper parity audit found effects graph PARTIAL (home Faust chain real+complete via dsp/effects_runtime.dsp 5-stage pitch->delay->reverb->microrepeat->filter, but Lv2Host user-plugin port wiring was scaffolding-only) -- see lv2-user-port-wiring-fixed for the fix. looper itself has no swappable-plugin graph at all (hardcoded engine_*.h effects), so aloops home-chain parity was already a superset; the gap was specific to aloops own LV2-hosting feature design, not something looper does either.
+  status: completed
+  witness: Gap identified and fixed via lv2-user-port-wiring-fixed; home Faust chain (dsp/effects_runtime.dsp) confirmed already complete

@@ -37,5 +37,5 @@ dist/
 .netboot-serve.log
 .netboot-serve.err.log
 
-# MinGW bash subprocess crash dumps (host-tooling artifact, not repo state)
-bash.exe.stackdump
+# MinGW/MSYS2 subprocess crash dumps (host-tooling artifact, not repo state)
+*.stackdump

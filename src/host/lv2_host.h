@@ -30,15 +30,28 @@ namespace aloop {
 // the health state used by the crash watchdog.
 struct Lv2Plugin {
     std::string bundlePath;     // path to the .lv2 directory on flash
-    std::string uri;            // the plugin URI from the .ttl
+    std::string uri;            // the plugin URI (its LV2 URI, read via lilv; the
+                                 // dlopen path when lilv is unavailable)
+    std::string soPath;         // the dlopen target (the bundle's .so)
     void*       soHandle = nullptr;   // dlopen handle to the .so
     void*       instance = nullptr;   // the LV2 instance (LV2_Handle)
+    void*       lilvPlugin = nullptr; // const LilvPlugin* (opaque here; lilv.h only in the .cpp)
 
-    // Port wiring. LV2 audio ports are connected to our block buffers; control
-    // ports are connected to values driven from the MIDI/param snapshot.
-    std::vector<float*> audioIn;
-    std::vector<float*> audioOut;
-    std::vector<float*> control;      // pointers into the control-value store
+    // Port wiring, resolved from real port metadata (lilv on the device build):
+    // each port's LV2 index + class (audio/control, in/out). Audio ports are
+    // connected to our shared block buffer; control ports get their own
+    // persistent float storage seeded from the port's declared default.
+    struct PortInfo {
+        uint32_t index = 0;
+        std::string symbol;     // port symbol, e.g. "gain" — the ParamStore bind key
+        bool isAudio = false;   // false = control port
+        bool isInput = false;
+    };
+    std::vector<PortInfo> ports;
+    std::vector<float*>   audioIn;     // pointers into the shared ioBuffer_
+    std::vector<float*>   audioOut;
+    std::vector<float>    controlValues;   // one slot per control port, index-aligned to `ports`
+    std::vector<size_t>   controlPortIdx;  // controlValues[i] belongs to ports[controlPortIdx[i]]
 
     // Health: a plugin that faults or overruns is disabled by the watchdog and
     // skipped (bypassed) so the home chain + audio keep running (ADR-002).
@@ -98,10 +111,12 @@ private:
 
     // The shared per-block audio buffers the plugin ports connect to.
     std::vector<float> ioBuffer_;
+    void* lilvWorld_ = nullptr;   // LilvWorld*, opaque here (lilv.h only in the .cpp); owns lilvPlugin lifetimes
 
-    bool readTtl(const std::string& bundlePath, Lv2Plugin& out);   // minimal .ttl parse / lilv
+    bool readTtl(const std::string& bundlePath, Lv2Plugin& out);   // resolves soPath + uri + ports via lilv
     bool dlopenPlugin(Lv2Plugin& p);
     void instantiate(Lv2Plugin& p, double sampleRate);
+    void connectPorts(Lv2Plugin& p, int blockSize);   // binds each port by real index/class (lilv-derived)
     void runOne(Lv2Plugin& p, int nframes);   // guarded run() (watchdog-wrapped)
 };
 

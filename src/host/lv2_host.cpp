@@ -26,6 +26,18 @@
 #define ALOOP_HAVE_LV2 1
 #endif
 
+// lilv reads real port metadata (index/class/symbol/default) from the bundle's
+// .ttl so a THIRD-PARTY plugin's ports can be wired without hardcoding a layout
+// (unlike the home Faust stack, which is compiled in directly and never goes
+// through this host — see main.cpp). Soft dependency (pkg_check_modules without
+// REQUIRED in CMakeLists): if absent, readTtl() falls back to locating the .so by
+// directory scan and connectPorts() cannot wire ports, so the plugin loads but
+// never actually runs signal through it (logged, never fatal).
+#if __has_include(<lilv/lilv.h>)
+#include <lilv/lilv.h>
+#define ALOOP_HAVE_LILV 1
+#endif
+
 namespace aloop {
 
 // ---- crash watchdog (ADR-002) -------------------------------------------------
@@ -85,27 +97,82 @@ bool Lv2Host::loadBundle(const std::string& bundlePath, int coreAffinity) {
     return true;
 }
 
-// Minimal .ttl handling: find the .so path and the plugin URI. On the device we
-// use lilv (linked in CMake) for full metadata; this fallback keeps the host
-// buildable without it and is enough to locate + load the binary.
+#ifdef ALOOP_HAVE_LILV
+namespace {
+LilvWorld* g_lilvWorld = nullptr;   // one world for the process; plugins loaded from it live as long as it does
+}
+#endif
+
+// Resolve the bundle's real plugin URI + port layout via lilv, falling back to a
+// directory scan for just the .so path if lilv is unavailable (soft dependency —
+// see the ALOOP_HAVE_LILV comment above). The fallback path lets a plugin LOAD
+// (dlopen + instantiate) but connectPorts() then has no port metadata to wire
+// with, so process() stays a no-op passthrough for that plugin — logged, not fatal.
 bool Lv2Host::readTtl(const std::string& bundlePath, Lv2Plugin& out) {
-    // A Faust-built bundle contains <name>.so and manifest.ttl. Locate the .so.
     DIR* d = opendir(bundlePath.c_str());
     if (!d) return false;
-    struct dirent* e; std::string so, ttl;
+    struct dirent* e; std::string so;
     while ((e = readdir(d))) {
         std::string n = e->d_name;
         if (n.size() > 3 && n.substr(n.size() - 3) == ".so") so = bundlePath + "/" + n;
-        if (n.size() > 4 && n.substr(n.size() - 4) == ".ttl") ttl = bundlePath + "/" + n;
     }
     closedir(d);
     if (so.empty()) return false;
-    out.uri = so;   // the dlopen target; the real URI is read from the ttl on device
+    out.soPath = so;
+    out.uri = so;   // overwritten with the real LV2 URI below when lilv resolves the bundle
+
+#ifdef ALOOP_HAVE_LILV
+    if (!g_lilvWorld) { g_lilvWorld = lilv_world_new(); lilv_world_load_all(g_lilvWorld); }
+    if (!lilvWorld_) lilvWorld_ = g_lilvWorld;
+
+    // Load just this bundle's manifest (it may not be in lilv's default search
+    // path — home/user effect dirs are aloop-specific), then find its one plugin.
+    std::string uri = "file://" + bundlePath + "/";
+    LilvNode* bundleUri = lilv_new_uri(g_lilvWorld, uri.c_str());
+    lilv_world_load_bundle(g_lilvWorld, bundleUri);
+    lilv_node_free(bundleUri);
+
+    const LilvPlugins* plugins = lilv_world_get_all_plugins(g_lilvWorld);
+    const LilvPlugin* found = nullptr;
+    LILV_FOREACH(plugins, i, plugins) {
+        const LilvPlugin* pl = lilv_plugins_get(plugins, i);
+        const LilvNode* bundle = lilv_plugin_get_bundle_uri(pl);
+        const char* bpathC = lilv_uri_to_path(lilv_node_as_uri(bundle));
+        std::string bpath = bpathC ? bpathC : "";
+        if (!bpath.empty() && bundlePath.find(bpath) == 0) { found = pl; break; }
+    }
+    if (found) {
+        out.lilvPlugin = (void*)found;
+        out.uri = lilv_node_as_uri(lilv_plugin_get_uri(found));
+
+        LilvNode* audioClass   = lilv_new_uri(g_lilvWorld, LILV_URI_AUDIO_PORT);
+        LilvNode* controlClass = lilv_new_uri(g_lilvWorld, LILV_URI_CONTROL_PORT);
+        LilvNode* inputClass   = lilv_new_uri(g_lilvWorld, LILV_URI_INPUT_PORT);
+
+        uint32_t n = lilv_plugin_get_num_ports(found);
+        for (uint32_t idx = 0; idx < n; idx++) {
+            const LilvPort* port = lilv_plugin_get_port_by_index(found, idx);
+            Lv2Plugin::PortInfo pi;
+            pi.index    = idx;
+            pi.isAudio  = lilv_port_is_a(found, port, audioClass);
+            pi.isInput  = lilv_port_is_a(found, port, inputClass);
+            const LilvNode* symNode = lilv_port_get_symbol(found, port);
+            pi.symbol = symNode ? lilv_node_as_string(symNode) : ("port" + std::to_string(idx));
+            if (!pi.isAudio && !lilv_port_is_a(found, port, controlClass)) continue;   // skip atom/CV/etc — unsupported port types are left unconnected, not fatal
+            out.ports.push_back(pi);
+        }
+        lilv_node_free(inputClass);
+        lilv_node_free(controlClass);
+        lilv_node_free(audioClass);
+    } else {
+        fprintf(stderr, "[host] lilv found no plugin matching bundle %s — falling back to .so-only load (no port wiring)\n", bundlePath.c_str());
+    }
+#endif
     return true;
 }
 
 bool Lv2Host::dlopenPlugin(Lv2Plugin& p) {
-    p.soHandle = dlopen(p.uri.c_str(), RTLD_NOW | RTLD_LOCAL);
+    p.soHandle = dlopen(p.soPath.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!p.soHandle) return false;
 #ifdef ALOOP_HAVE_LV2
     auto desc = (const LV2_Descriptor* (*)(uint32_t))dlsym(p.soHandle, "lv2_descriptor");
@@ -116,11 +183,24 @@ bool Lv2Host::dlopenPlugin(Lv2Plugin& p) {
     return true;
 }
 
+#ifdef ALOOP_HAVE_LV2
+// A .so can export multiple LV2_Descriptors (lv2_descriptor(0), (1), ...); match
+// by URI so we instantiate the one this bundle's .ttl actually names, not just
+// index 0 (which is only guaranteed correct for single-plugin binaries).
+static const LV2_Descriptor* findDescriptor(void* soHandle, const std::string& uri) {
+    auto getDesc = (const LV2_Descriptor* (*)(uint32_t))dlsym(soHandle, "lv2_descriptor");
+    if (!getDesc) return nullptr;
+    for (uint32_t i = 0; ; i++) {
+        const LV2_Descriptor* d = getDesc(i);
+        if (!d) return nullptr;                       // end of the list — no match
+        if (uri.empty() || uri == d->URI) return d;    // uri.empty() = fallback path (no lilv), take the first
+    }
+}
+#endif
+
 void Lv2Host::instantiate(Lv2Plugin& p, double sampleRate) {
 #ifdef ALOOP_HAVE_LV2
-    auto getDesc = (const LV2_Descriptor* (*)(uint32_t))dlsym(p.soHandle, "lv2_descriptor");
-    if (!getDesc) { p.enabled = false; return; }
-    const LV2_Descriptor* d = getDesc(0);
+    const LV2_Descriptor* d = findDescriptor(p.soHandle, p.lilvPlugin ? p.uri : std::string());
     if (!d) { p.enabled = false; return; }
     p.instance = (void*)d->instantiate(d, sampleRate, p.bundlePath.c_str(), nullptr);
     if (!p.instance) { p.enabled = false; return; }
@@ -130,21 +210,53 @@ void Lv2Host::instantiate(Lv2Plugin& p, double sampleRate) {
 #endif
 }
 
+// Bind every port lilv discovered in readTtl() to real memory: audio ports point
+// into the shared ioBuffer_ (so runOne()'s connect_port + run() actually reads/
+// writes the same signal audio_thread.cpp copies in/out via process()); control
+// ports get their own persistent float slot (their symbol is the ParamStore bind
+// key a future control-map row targets, matching the home stack's name-keyed
+// convention). Without lilv metadata (out.ports empty) there is nothing to
+// connect — the plugin instantiates and run()s but touches no shared memory, so
+// process() below correctly stays a passthrough for it.
+void Lv2Host::connectPorts(Lv2Plugin& p, int blockSize) {
+#ifdef ALOOP_HAVE_LV2
+    if (!p.instance || p.ports.empty()) return;
+    const LV2_Descriptor* d = findDescriptor(p.soHandle, p.lilvPlugin ? p.uri : std::string());
+    if (!d || !d->connect_port) return;
+
+    p.controlValues.assign(p.ports.size(), 0.0f);
+    for (size_t i = 0; i < p.ports.size(); i++) {
+        auto& pi = p.ports[i];
+        if (pi.isAudio) {
+            // Mono I/O (AudioConfig.channels == 1): every audio port shares the
+            // one-channel ioBuffer_ — an input port reads it, an output port
+            // overwrites it, matching process()'s copy-in/run/copy-out contract.
+            float* buf = ioBuffer_.data();
+            d->connect_port(p.instance, pi.index, buf);
+            (pi.isInput ? p.audioIn : p.audioOut).push_back(buf);
+        } else {
+            d->connect_port(p.instance, pi.index, &p.controlValues[i]);
+            p.controlPortIdx.push_back(i);
+        }
+    }
+    (void)blockSize;
+#else
+    (void)p; (void)blockSize;
+#endif
+}
+
 void Lv2Host::connect(int blockSize, int numChannels) {
     ioBuffer_.assign((size_t)blockSize * numChannels, 0.0f);
     for (auto& p : plugins_) {
         instantiate(p, 48000.0);
-        // Connect this plugin's audio in/out ports to the shared io buffer, and
-        // its control ports to the param-value store. (Port indices come from the
-        // .ttl via lilv on device.) The chain is wired input→home→user→output.
+        connectPorts(p, blockSize);
     }
 }
 
 void Lv2Host::runOne(Lv2Plugin& p, int nframes) {
     if (!p.enabled || !p.instance) return;
 #ifdef ALOOP_HAVE_LV2
-    auto getDesc = (const LV2_Descriptor* (*)(uint32_t))dlsym(p.soHandle, "lv2_descriptor");
-    const LV2_Descriptor* d = getDesc ? getDesc(0) : nullptr;
+    const LV2_Descriptor* d = findDescriptor(p.soHandle, p.lilvPlugin ? p.uri : std::string());
     if (!d) { p.enabled = false; return; }
     // Watchdog checkpoint: a fault inside run() longjmps back and disables it.
     g_inPlugin = 1;
