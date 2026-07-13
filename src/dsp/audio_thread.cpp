@@ -293,16 +293,7 @@ static void* worker(void*) {
         snd_pcm_prepare(play);
         while (g_running.load()) {
             snd_pcm_sframes_t r = snd_pcm_readi(cap, buf.data(), N);
-            if (r < 0) {
-                g_telem.xruns++;
-                static uint64_t capLogCount = 0;
-                if (capLogCount < 20) {
-                    fprintf(stderr, "[audio] capture readi error: %ld (%s)\n", (long)r, snd_strerror((int)r));
-                    capLogCount++;
-                }
-                snd_pcm_recover(cap, (int)r, 1);
-                continue;
-            }
+            if (r < 0) { g_telem.xruns++; snd_pcm_recover(cap, (int)r, 1); continue; }
 
             // === run the Faust home stack (loop engine + effects) this block ===
             // s16 -> float, compute(), float -> s16. The Faust program does the
@@ -444,21 +435,7 @@ static void* worker(void*) {
 #endif
 
             snd_pcm_sframes_t w = snd_pcm_writei(play, buf.data(), N);
-            if (w < 0) {
-                g_telem.xruns++;
-                static uint64_t logCount = 0;
-                if (logCount < 20) {
-                    fprintf(stderr, "[audio] playback writei error: %ld (%s)\n", (long)w, snd_strerror((int)w));
-                    logCount++;
-                }
-                snd_pcm_recover(play, (int)w, 1);
-            } else if (w < N) {
-                static uint64_t shortCount = 0;
-                if (shortCount < 20) {
-                    fprintf(stderr, "[audio] playback short write: wrote %ld of %d frames\n", (long)w, N);
-                    shortCount++;
-                }
-            }
+            if (w < 0) { g_telem.xruns++; snd_pcm_recover(play, (int)w, 1); }
         }
         snd_pcm_close(cap); snd_pcm_close(play);
     }
