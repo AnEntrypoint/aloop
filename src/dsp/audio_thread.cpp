@@ -265,6 +265,26 @@ static void* worker(void*) {
             if (period != (snd_pcm_uframes_t)N)
                 fprintf(stderr, "[audio] warning: device would not grant period=%d frames, got %lu — latency will not match block_size\n",
                         N, (unsigned long)period);
+            // sw_params: the hw_params default start_threshold for a PLAYBACK
+            // stream is the full buffer_size — WITNESSED live on a real Pi 4:
+            // /proc/asound/.../pcm0p/sub0/status stayed stuck in "PREPARED"
+            // forever (never auto-started), because this loop only ever writes
+            // one N-frame period per snd_pcm_writei() call and immediately
+            // blocks on the next capture read, so the ring never reached a full
+            // buffer_size of queued frames to cross that default threshold —
+            // meanwhile CAPTURE (which starts as soon as ANY data is available,
+            // not gated on a full buffer) ran fine, so the two streams silently
+            // desynced and playback undor-ran on every single write. Lowering
+            // start_threshold to exactly one period means playback triggers on
+            // the very first snd_pcm_writei(), matching how capture already
+            // behaves.
+            snd_pcm_sw_params_t* sw;
+            snd_pcm_sw_params_alloca(&sw);
+            snd_pcm_sw_params_current(pcm, sw);
+            snd_pcm_sw_params_set_start_threshold(pcm, sw, period);
+            snd_pcm_sw_params_set_avail_min(pcm, sw, period);
+            if (snd_pcm_sw_params(pcm, sw) < 0)
+                fprintf(stderr, "[audio] warning: sw_params (start_threshold) rejected — playback may not auto-start\n");
             return true;
         };
         if (!configurePcm(cap) || !configurePcm(play))
