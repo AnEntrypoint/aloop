@@ -12,6 +12,7 @@
 #include "link/link_bridge.h"
 #include "control/telemetry.h"
 #include "control/midi.h"
+#include "control/remote_control.h"
 
 #include <sys/mman.h>
 #include <csignal>
@@ -47,6 +48,8 @@ aloop::AudioConfig loadConfig(const char* path) {
         else if (sscanf(line, " user_dir = %199s", s) == 1) cfg.userDir = s;
         // optional explicit MIDI device (else "auto" scans hw:0..7).
         else if (sscanf(line, " midi_device = %199s", s) == 1) cfg.midiDevice = s;
+        // remote-control shared secret ([remote] token=); unset = listener disabled.
+        else if (sscanf(line, " token = %199s", s) == 1) cfg.remoteToken = s;
     }
     fclose(f);
     return cfg;
@@ -105,19 +108,29 @@ int main(int argc, char** argv) {
     aloop::Telemetry telem;
     telem.start(/*udpPort=*/4445, &audio);
 
+    // Remote control (reboot + log-tail, dev-tooling parity with looper's UDP
+    // REBOOT/syslog mechanisms — see docs/REMOTE-CONTROL.md). Own port (4446,
+    // not 4445) so telemetry's query-response semantics never conflate with a
+    // destructive verb. Inert unless aloop.conf sets [remote] token=.
+    aloop::RemoteControl remote;
+    remote.start(/*udpPort=*/4446, cfg.remoteToken);
+
     printf("[aloop] ready.\n");
 
-    // Control loop: pump Link + telemetry ~ a few Hz. The audio runs independently
-    // on its own cores; this thread never touches the audio hot path.
+    // Control loop: pump Link + telemetry + remote-control ~ a few Hz. The audio
+    // runs independently on its own cores; this thread never touches the audio
+    // hot path.
     while (g_run.load()) {
         link.controlTick();
         telem.publish();
+        remote.poll();
         usleep(200 * 1000);   // 5 Hz
     }
 
     printf("[aloop] shutting down.\n");
     audio.stop();
     telem.stop();
+    remote.stop();
     link.stop();
     return 0;
 }

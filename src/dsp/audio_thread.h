@@ -30,6 +30,11 @@ struct AudioConfig {
     // MIDI input device: "auto" scans hw:0..7 for the first rawmidi input; an
     // explicit "hw:N,0,0" pins it (aloop.conf midi_device).
     std::string midiDevice = "auto";
+    // Shared secret for the remote-control listener (control/remote_control.h,
+    // aloop.conf [remote] token=). Empty = listener disabled (no reboot/log-tail
+    // over the network at all — the safe default, unlike looper's unauthenticated
+    // UDP REBOOT protocol).
+    std::string remoteToken = "";
 };
 
 // Starts the RT audio pipeline:
