@@ -95,6 +95,17 @@ if [ -f "$OVLTMP/o.tar.gz" ]; then
     else
       note "  (arch check skipped: file(1) unavailable)"
     fi
+    # Unlike the binary/LV2 (legitimately optional for a layout-only build), the
+    # vendored runtime libs (usr/lib/*.so — alsa-lib + the lilv stack) are ALWAYS
+    # required once the binary is bundled. WITNESSED live on a real Pi 4: aloop
+    # fails to start without them (telemetry never came up) because the device's
+    # only reachable apk repo has no alsa-lib/lilv packages. Hard FAIL, not WARN.
+    for lib in usr/lib/libasound.so.2 usr/lib/liblilv-0.so.0 usr/lib/libserd-0.so.0 \
+               usr/lib/libsord-0.so.0 usr/lib/libsratom-0.so.0 usr/lib/libzix-0.so.0 \
+               usr/lib/libstdc++.so.6 usr/lib/libgcc_s.so.1; do
+      [ -f "$ARCHTMP/$lib" ] && ok "apkovl: $lib" \
+        || bad "apkovl missing $lib — aloop binary is present but WILL FAIL TO START (no alsa-lib/lilv/libstdc++ on device)"
+    done
     rm -rf "$ARCHTMP"
   else
     echo "  WARN apkovl has NO aloop binary (layout-only build — set ALOOP_BIN)"

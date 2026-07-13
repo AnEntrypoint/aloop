@@ -75,8 +75,31 @@ IFACE
 # Enable OpenRC networking at boot so eth0 comes up (symlink, marker fallback).
 ln -sf /etc/init.d/networking "$NBOVL/etc/runlevels/boot/networking" 2>/dev/null \
   || : > "$NBOVL/etc/runlevels/boot/networking"
-( cd "$NBOVL" && tar -czf "$BOOT/aloop.apkovl.tar.gz" . )
-echo "[netboot] overlay: added eth0 dhcp + networking service (wired link stays up in userspace)"
+# WHY two tar passes, not one: extracting the apkovl here (tar -xzf above) and
+# re-packing with a plain tar -czf SILENTLY DROPS the executable bit on a host
+# where chmod is a no-op (NTFS/Git-Bash) — WITNESSED: lib-boot-tree.sh's own
+# same fix (see its "two tar passes" comment) gets undone right here, because
+# this repack step extracts to real files on this filesystem and starts over
+# from whatever chmod actually achieved (nothing, on NTFS). Same fix, same
+# reason: force +x on the executable paths in THIS tar invocation too.
+NBOVL_TAR="$WORK/nbovl.tar"
+( cd "$NBOVL" && tar -cf "$NBOVL_TAR" . )
+# `./`-prefixed paths, matching the first pass's `.`-rooted entries exactly —
+# see lib-boot-tree.sh's identical fix for why this must match, not just be
+# equivalent (tar -r appends rather than overwrites a differently-spelled path).
+( cd "$NBOVL" && tar --mode='+x' -rf "$NBOVL_TAR" \
+    ./opt/aloop/aloop ./opt/aloop/autoap.sh \
+    ./etc/local.d/10-rt-tune.start ./etc/local.d/20-usb-gadget.start \
+    ./etc/init.d/aloop ./etc/init.d/autoap \
+    $(find opt/aloop/test -type f -name '*.sh' 2>/dev/null | sed 's|^|./|') )
+gzip -f "$NBOVL_TAR"
+mv "$NBOVL_TAR.gz" "$BOOT/aloop.apkovl.tar.gz"
+NB_LASTMODE=$(tar -tzvf "$BOOT/aloop.apkovl.tar.gz" 2>/dev/null | grep 'opt/aloop/aloop$' | tail -1 | cut -c1-10)
+if [ "$NB_LASTMODE" = "-rwxr-xr-x" ]; then
+  echo "[netboot] overlay: added eth0 dhcp + networking service [aloop binary confirmed +x after repack]"
+else
+  echo "[netboot] ERROR: aloop binary lost its +x bit during the netboot overlay repack (last entry mode: $NB_LASTMODE) — aloop service will crash-loop"
+fi
 
 # --- 4. Netboot-specific cmdline: HTTP-served Alpine root over the network -------
 # WITNESSED on a real Pi 4 (docs/NETBOOT.md): the stock diskless cmdline expects a

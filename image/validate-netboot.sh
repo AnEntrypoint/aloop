@@ -84,6 +84,20 @@ if [ -f "$DIR/aloop.apkovl.tar.gz" ]; then
   echo "$INV" | grep -q 'effects/home/.*\.lv2' \
     && ok "apkovl: home-FX LV2 present" \
     || echo "  WARN apkovl has NO home-FX LV2 (layout-only build — set LV2_DIR)"
+  # Unlike the binary/LV2 (legitimately optional for a layout-only build), the
+  # vendored runtime libs are ALWAYS required if the binary is present — WITNESSED
+  # live on a real Pi 4 that aloop fails to start without them (telemetry never
+  # came up after a full successful boot) because the device's only reachable apk
+  # repo has no alsa-lib/lilv packages to `apk add` at boot. A hard FAIL, not a
+  # WARN, when the binary is bundled but the libs aren't.
+  if echo "$INV" | grep -q 'opt/aloop/aloop$'; then
+    for lib in usr/lib/libasound.so.2 usr/lib/liblilv-0.so.0 usr/lib/libserd-0.so.0 \
+               usr/lib/libsord-0.so.0 usr/lib/libsratom-0.so.0 usr/lib/libzix-0.so.0 \
+               usr/lib/libstdc++.so.6 usr/lib/libgcc_s.so.1; do
+      echo "$INV" | grep -q "$lib" && ok "apkovl: $lib" \
+        || bad "apkovl missing $lib — aloop binary is present but WILL FAIL TO START (no alsa-lib/lilv/libstdc++ on device)"
+    done
+  fi
 else
   bad "aloop.apkovl.tar.gz missing from the netboot root — the device would boot with no identity"
 fi
