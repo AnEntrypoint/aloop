@@ -62,7 +62,8 @@
   witness: 'src/host/lv2_host.cpp:255-259 runOne now calls findDescriptor(p.soHandle, p.lilvPlugin ? p.uri : std::string()) matching instantiate/connectPorts, replacing the earlier getDesc(0) call'
 - id: lv2-ci-build-verify-lilv-fix
   subject: Push the lv2_host.cpp/.h lilv port-wiring fix and witness build-binary CI (the only environment with lilv-dev + lv2-dev installed, per .github/workflows/build-binary.yml) actually compiles it clean -- this Windows dev host has no musl/Alpine toolchain to compile locally, so CI green is the real verification, not a local build.
-  status: pending
+  status: completed
+  witness: gh run watch 29261633722 (build-binary) = success in 3m30s on Alpine aarch64 musl container with lilv-dev+lv2-dev installed; build-image (29261633761, 29261881177) also green for the same head_sha fc681ac. The lilv-based port-wiring fix compiles clean in the real target toolchain.
 - id: lv2-stackdump-gitignore-cleanup
   subject: Generalized bash.exe.stackdump gitignore entry to *.stackdump (a new sh.exe.stackdump appeared this session from an MSYS2 shell crash, uncovered by the exact-filename-only pattern) and deleted both stray stackdump files from the working tree -- transient host-tooling crash debris, not repo state.
   status: completed
