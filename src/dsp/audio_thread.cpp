@@ -435,7 +435,21 @@ static void* worker(void*) {
 #endif
 
             snd_pcm_sframes_t w = snd_pcm_writei(play, buf.data(), N);
-            if (w < 0) { g_telem.xruns++; snd_pcm_recover(play, (int)w, 1); }
+            if (w < 0) {
+                g_telem.xruns++;
+                static uint64_t logCount = 0;
+                if (logCount < 20) {
+                    fprintf(stderr, "[audio] playback writei error: %ld (%s)\n", (long)w, snd_strerror((int)w));
+                    logCount++;
+                }
+                snd_pcm_recover(play, (int)w, 1);
+            } else if (w < N) {
+                static uint64_t shortCount = 0;
+                if (shortCount < 20) {
+                    fprintf(stderr, "[audio] playback short write: wrote %ld of %d frames\n", (long)w, N);
+                    shortCount++;
+                }
+            }
         }
         snd_pcm_close(cap); snd_pcm_close(play);
     }
