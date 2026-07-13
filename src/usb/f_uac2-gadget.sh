@@ -39,6 +39,18 @@ echo 0x3   > functions/uac2.0/c_chmask   # capture channel mask (stereo wire)
 echo 0x3   > functions/uac2.0/p_chmask   # playback channel mask (stereo wire)
 echo 2     > functions/uac2.0/c_ssize    # sample size bytes (s16 = 2)
 echo 2     > functions/uac2.0/p_ssize
+# req_number = the f_uac2 driver's own isochronous USB request queue depth
+# (separate from ALSA's PCM buffer_size/period_size). WITNESSED live: the
+# kernel default of 2 silently capped ALSA's negotiated buffer_size at 256
+# frames no matter what audio_thread.cpp's hw_params asked for, which meant
+# hundreds of xruns/sec once the ALSA period was tightened to match
+# block_size (aloop.conf audio_device fix). Raising it to 4 gives the
+# gadget's own USB transfer queue the same headroom the ALSA-side buffer_size
+# fix intended, so the two actually add up instead of one silently
+# overriding the other.
+if [ -e functions/uac2.0/req_number ]; then
+  echo 4   > functions/uac2.0/req_number
+fi
 
 mkdir -p configs/c.1/strings/0x409
 echo "aloop UAC2" > configs/c.1/strings/0x409/configuration
