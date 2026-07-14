@@ -160,11 +160,6 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             if (lenSamples > kMaxLoopSamples) lenSamples = kMaxLoopSamples;
             m_masterLenSamples = lenSamples;
             ps.setByName("cmd/master_len", (float)m_masterLenSamples);
-            // TEMPORARY diagnostic (tracked for removal): live capture for
-            // the "second clear-and-restart cycle produces blank loops"
-            // investigation.
-            fprintf(stderr, "[diag2] FIRST-establish looper=%d now_ms=%u recordStart=%u elapsedMs=%u finalLen=%ld\n",
-                    looper, now_ms, m_recordStartMs[looper], elapsedMs, m_masterLenSamples);
             // Propagate the newly-established phrase to every looper (this
             // one included) so a second, third, ... looper recorded next
             // joins the SAME shared grid, matching looper's single
@@ -310,14 +305,6 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps) {
         if (now_ms - m_looperHoldStart[looper] < kHoldEraseMs) continue;
         // Long-hold -> erase (apcKey25Notes.cpp: a >=1s hold clears the looper
         // regardless of state; also cancels a just-armed press-record).
-        // TEMPORARY diagnostic (tracked for removal): confirming/refuting the
-        // hypothesis that this erase-on-long-hold path is firing from an
-        // unintentionally-long single-pad hold during rapid repeated presses
-        // (not a genuine clear-all), for the "second clear-and-restart cycle
-        // produces blank loops" investigation.
-        fprintf(stderr, "[diag3] pollHolds ERASE-FIRE looper=%d now_ms=%u holdStart=%u heldMs=%u masterLen(before)=%ld wasRecording=%d wasHasContent=%d\n",
-                looper, now_ms, m_looperHoldStart[looper], now_ms - m_looperHoldStart[looper],
-                m_masterLenSamples, (int)m_looperRecording[looper], (int)m_looperHasContent[looper]);
         setLooper(ps, looper, "erase", 1.0f);
         if (m_looperRecording[looper]) {
             setLooper(ps, looper, "rec", 0.0f);   // cancel the in-progress take, don't leave rec stuck at 1
@@ -411,10 +398,6 @@ void ApcGrid::onStopImmediate(ParamStore& ps) {
     }
 }
 void ApcGrid::onClearAll(bool held, ParamStore& ps) {
-    // TEMPORARY diagnostic (tracked for removal): live capture for the
-    // "second clear-and-restart cycle produces blank loops" investigation.
-    fprintf(stderr, "[diag2] onClearAll held=%d masterLen(before)=%ld cmd/master_len=%.0f cmd/clearall=%.2f\n",
-            (int)held, m_masterLenSamples, ps.get("cmd/master_len", -1.0f), ps.get("cmd/clearall", -1.0f));
     // LOOP_COMMAND_CLEAR_ALL (apcKey25Notes.cpp:175). `cmd/clearall` is a
     // HELD momentary value (audio_thread.cpp's `wipe = max(clearAll, eraseN)`
     // gate zeroes the loop ring every block clear is held) -- it must be

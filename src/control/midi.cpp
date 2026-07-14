@@ -255,14 +255,29 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
             // shift+PLAY has nothing to reroute TO yet and is left unbound
             // rather than silently doing the wrong thing.
             if (type == 0x90 && d2 > 0 && d1 == 0x51 && grid.shiftHeld()) { grid.onStopImmediate(ps); continue; }
-            // PLAY (note 0x5B/91) unshifted = CLEAR_ALL. Previously routed
-            // ONLY through controls.conf's flat note91->cmd/clearall binding,
-            // which ApcGrid never observed -- its own shadow state never got
-            // reset on clear, breaking every subsequent recording attempt
+            // PLAY (note 0x5B/91) = CLEAR_ALL. Previously routed ONLY through
+            // controls.conf's flat note91->cmd/clearall binding, which
+            // ApcGrid never observed -- its own shadow state never got reset
+            // on clear, breaking every subsequent recording attempt
             // (WITNESSED live: "doing a new set didn't work" after clearing).
             // Now intercepted here so ApcGrid::onClearAll can reset its state
             // in the same call that wipes the DSP-side content.
-            if (d1 == 0x5B && !grid.shiftHeld()) {
+            //
+            // WITNESSED bug (2nd generation): this used to be gated on
+            // `!grid.shiftHeld()`, matching looper's documented shift+PLAY =
+            // loop-immediate intent -- but loop-immediate is NOT wired (no
+            // addressable read head, ADR-010), so a PLAY press that happened
+            // to land while SHIFT was still held (e.g. mid-release of an
+            // adjacent gesture) fell through this whole channel-0 block
+            // entirely and hit controls.conf's flat map, which (before that
+            // line was removed) set cmd/clearall directly without ever
+            // calling onClearAll -- silently desyncing ApcGrid's shadow
+            // state from the DSP's actual (wiped) content, producing a
+            // "blank recording" on the very next press with no observable
+            // clear-all event in ApcGrid's own log. CLEAR_ALL must always be
+            // reachable regardless of shift state until loop-immediate is
+            // actually implemented.
+            if (d1 == 0x5B) {
                 if (type == 0x90 && d2 > 0) { grid.onClearAll(true, ps); continue; }
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onClearAll(false, ps); continue; }
             }
