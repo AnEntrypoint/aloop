@@ -18,10 +18,11 @@
 
 #include <cstdint>
 #include <array>
+#include "apc_grid.h"   // kApcRows/kApcCols + ApcGrid's full definition -- refresh() is a
+                        // template defined here, so it needs both visible at the point of
+                        // instantiation (in midi.cpp), not just a forward declaration.
 
 namespace aloop {
-
-class ApcGrid;
 
 // AKAI APC-series LED velocity constants (looper apcKey25.h:20-26 / midiMap.h:249-255).
 enum ApcLedVel : uint8_t {
