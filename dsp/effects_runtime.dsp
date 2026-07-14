@@ -30,4 +30,15 @@ reverbStage = component("effects/home/faust/reverb.dsp")[ REVAMT=REVAMT; TIME=TI
 microStage  = component("effects/home/faust/microrepeat.dsp")[ DIV=DIV; MLB=MLB; ];
 pitchStage  = component("effects/home/faust/pitch.dsp")[ SEMIS=SEMIS; FORMANT=FORMANT; ENGAGED=ENGAGED; ];
 
-process = pitchStage : delayStage : reverbStage : microStage : filterStage;
+// Second output: the microrepeat stage's OWN output (post-glitch, pre-filter),
+// a native tap so audio_thread.cpp can fold the STUTTERED signal back into
+// next block's input -- the same one-block-lag native-mix technique used for
+// the SHIFT-fold (aloop.dsp), applied here so glitch content becomes
+// recordable into a new loop, matching ../looper's real design where
+// microrepeat mutates the FULL mix (input+loops) before the NEXT block's
+// record tap sees it (loopMachine.cpp:806-833's "that stutter becomes BOTH
+// the audible output and the record source"). Filters stay downstream
+// (unchanged) since looper's filters also run post-microrepeat but their
+// output isn't looped back into the input -- only the pre-filter/post-glitch
+// signal is what "affects playback of loops and input" means.
+process = pitchStage : delayStage : reverbStage : microStage <: (filterStage, _);

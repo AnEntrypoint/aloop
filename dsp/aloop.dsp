@@ -33,14 +33,29 @@ loop = component("loop.dsp");
 // stays the A/B reference, this is the runtime variant).
 fx   = component("effects_runtime.dsp");
 
+// MONITORFOLD (bound by ApcGrid::onShiftPress/Release to fx/monitorfold, held
+// while SHIFT is down): must complementarily GATE the dry-summed loopSum
+// contribution here (1-monitorFold), matching looper's m_loopOutputGain =
+// 1-foldEnd (loopMachine.cpp:730) -- WITNESSED live: without this gate, a
+// held loop's audio reaches the final output TWICE while SHIFT is held: once
+// via the direct dry+loopSum sum below (always active, since aloop.dsp
+// itself no longer knows about fold state) AND once via the native
+// prevLoopSum fold-in (audio_thread.cpp), which re-enters through `loop` as
+// a new `dry` signal next block and gets summed in again here -- reported
+// as "shift... doubling the audio". si.smoo matches looper's MONITOR_GATE_STEP
+// ramp shape (a continuous exponential approach vs a fixed per-block linear
+// step, functionally equivalent for a hold/release gesture).
+monitorFold = hslider("MONITORFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
+
 // `loop`'s two outputs (dry, loopSum) are consumed by `mixAndFx`, which sums
-// them for the live-heard signal (through `fx`) while ALSO passing loopSum
-// through UNCHANGED as this program's SECOND output -- a raw audio tap read
-// back natively via AloopLoopDsp's fouts[1] in audio_thread.cpp, so the
-// native monitor-fold mix (see top-of-file comment) can fold the loop's OWN
-// raw output into next block's input, matching looper's m_input_buffer +=
-// m_output_buffer*fg (loopMachine.cpp:738) -- folding the RAW loop output,
-// not the fully-effected wet signal (which would compound effects every
-// block the fold is held, a real difference from looper this avoids).
-mixAndFx(dry, loopSum) = (dry+loopSum : fx), loopSum;
+// dry with the COMPLEMENTARILY-GATED loopSum for the live-heard signal
+// (through `fx`) while ALSO passing the raw (ungated) loopSum through as
+// this program's SECOND output -- a raw audio tap read back natively via
+// AloopLoopDsp's fouts[1] in audio_thread.cpp, so the native monitor-fold mix
+// (see top-of-file comment) can fold the loop's OWN raw output into next
+// block's input, matching looper's m_input_buffer += m_output_buffer*fg
+// (loopMachine.cpp:738) -- folding the RAW loop output, not the
+// fully-effected wet signal (which would compound effects every block the
+// fold is held, a real difference from looper this avoids).
+mixAndFx(dry, loopSum) = (dry + loopSum*(1.0-monitorFold) : fx), loopSum;
 process(in) = in : loop : mixAndFx;

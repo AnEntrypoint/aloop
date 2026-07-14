@@ -35,8 +35,26 @@ sliceLen    = min(MR_MAX, sliceLenRaw);
 
 active = (DIV != 0) & (MLB >= 16);
 
-// Sample counter since start (0,1,2,...). Used to know capture vs replay phase.
-sampleIdx = (+(1) ~ _) - 1;   // 0,1,2,... (start at 0)
+// WITNESSED live: sampleIdx counting from PROGRAM START (not from when
+// active last became true) meant that by the time a user engages glitch
+// minutes into a real session, sampleIdx is already far past any realistic
+// sliceLen -- `capturing` (the brief capture-fresh-content window) could
+// essentially NEVER trigger, so the ring was read from (rwtable's
+// zero-initialized/stale memory) without ever having been written this
+// engage. As `wet` ramped toward 1 (mrProcess below), the output converged
+// on that silent/stale `rep`, i.e. glitch engaging made ALL audio
+// disappear -- exactly the reported "glitch currently takes away loop
+// audio, all audio disappears". Fixed: track samples-since-LAST-ENGAGE
+// (reset to 0 on active's rising edge) instead of samples-since-program-
+// start, so `capturing` reliably covers the first sliceLen samples of
+// EVERY fresh engage, not just one that happens to occur in the program's
+// first sliceLen samples ever.
+activePrev = active : mem;
+engageEdge = active & (activePrev < 0.5);   // active this sample, NOT active last sample
+sampleIdx = counter ~ _
+with {
+    counter(prev) = ba.if(engageEdge, 0, prev + 1);
+};
 
 // Capture phase: the first `sliceLen` samples record live into the ring.
 capturing = active & (sampleIdx < sliceLen);
