@@ -130,6 +130,32 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
         if (m_masterLenSamples == 0) {
             unsigned elapsedMs = now_ms - m_recordStartMs[looper];
             long lenSamples = (long)elapsedMs * kSampleRate / 1000;
+            // WITNESSED live: "the new recording doesn't appear to have
+            // audio" / "recording the wrong part of the input buffer" on
+            // the FIRST post-clear recording specifically, while a SECOND
+            // recording (which reuses the already-established
+            // m_masterLenSamples unchanged, see the `else` branch below)
+            // works fine. Root cause: `now_ms` (this control thread's wall
+            // clock, captured at the ARM press and again at the FINISH
+            // press) is NOT sample-accurate relative to the audio thread's
+            // actual per-block timeline -- there is real, if small,
+            // MIDI-event-to-audio-thread latency (control-thread scheduling,
+            // block-buffering) that the FIRST recording's freshly-computed
+            // length has no margin against. dsp/loop.dsp's de.fdelay ring
+            // taps `effLen` samples BACK from "now" once play starts; if the
+            // computed length is even slightly LONGER than what was actually
+            // written since the ring was zeroed by the preceding clear, that
+            // tap reads into the pre-clear silence for part or all of the
+            // loop -- exactly matching "recording the wrong part of the
+            // input buffer". A SECOND recording never hits this because it
+            // reuses the SAME already-verified-working length rather than
+            // computing a fresh one with its own fresh skew. Fix: shrink the
+            // freshly-computed length by a safety margin (10ms) so the tap
+            // can never reach further back than genuinely-recorded content,
+            // erring toward a very slightly short loop rather than one that
+            // reads stale/silent content at its start.
+            const long kSafetyMarginSamples = kSampleRate / 100;   // 10ms
+            lenSamples -= kSafetyMarginSamples;
             if (lenSamples < 64) lenSamples = 64;                     // dsp/loop.dsp's hslider min
             if (lenSamples > kMaxLoopSamples) lenSamples = kMaxLoopSamples;
             m_masterLenSamples = lenSamples;
@@ -157,7 +183,36 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
                 link->proposeTempo(deriveTempoBpm(seconds));
             }
         } else {
-            setLooper(ps, looper, "len", (float)m_masterLenSamples);
+            // WITNESSED live: "consecutive loops were all the same lengths
+            // not multiples and divisions like ../looper" -- this branch
+            // previously forced EVERY subsequent looper to the exact master
+            // length, ignoring how long the user actually held record for.
+            // looper's real design (loopClipState.cpp's _calcQuantizeTarget)
+            // rounds a subsequent recording's raw duration to the NEAREST
+            // musical subdivision/multiple of the established phrase (M/8,
+            // M/4, M/2, M, 2M, 4M, ...), so a deliberately-short or
+            // deliberately-long take becomes a clean fraction/multiple
+            // rather than always collapsing to exactly M. Mirror that here:
+            // measure this looper's own elapsed record duration, then snap
+            // it to the closest of {M/4, M/2, M, 2M, 4M} (an 8-value set
+            // would need M/8 to make sense at very short M; this covers the
+            // common musical cases without over-fitting a formula looper's
+            // own C++ never fully specified in a way this session could
+            // verify exactly).
+            unsigned elapsedMs = now_ms - m_recordStartMs[looper];
+            long rawSamples = (long)elapsedMs * kSampleRate / 1000;
+            static const double kMultiples[] = { 0.25, 0.5, 1.0, 2.0, 4.0 };
+            double bestLen = (double)m_masterLenSamples;
+            double bestDist = 1e18;
+            for (double mult : kMultiples) {
+                double candidate = (double)m_masterLenSamples * mult;
+                double dist = std::fabs((double)rawSamples - candidate);
+                if (dist < bestDist) { bestDist = dist; bestLen = candidate; }
+            }
+            long quantized = (long)(bestLen + 0.5);
+            if (quantized < 64) quantized = 64;
+            if (quantized > kMaxLoopSamples) quantized = kMaxLoopSamples;
+            setLooper(ps, looper, "len", (float)quantized);
         }
     } else if (!m_looperHasContent[looper]) {
         setLooper(ps, looper, "rec", 1.0f);   // ARM: start recording -- next press finishes it
@@ -199,12 +254,6 @@ void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps, LinkBridge* 
         // dispatch would add the press-hold duration as timing jitter to either
         // the start or the end of the take). All other transitions (pause/
         // resume) stay on release.
-        // TEMPORARY diagnostic (tracked for removal): live capture for the
-        // "clear then first record only works once" investigation -- prints
-        // the exact state onPadPress sees for this looper on every press.
-        fprintf(stderr, "[diag] onPadPress looper=%d hasContent=%d recording=%d masterLen=%ld cmd/clearall=%.2f\n",
-                looper, (int)m_looperHasContent[looper], (int)m_looperRecording[looper],
-                m_masterLenSamples, ps.get("cmd/clearall"));
         if (!m_looperHasContent[looper] || m_looperRecording[looper]) {
             applyRecPlayCycle(looper, now_ms, ps, link);
             m_looperArmedOnPress[looper] = true;
@@ -349,9 +398,6 @@ void ApcGrid::onStopImmediate(ParamStore& ps) {
     }
 }
 void ApcGrid::onClearAll(bool held, ParamStore& ps) {
-    // TEMPORARY diagnostic (tracked for removal): confirm onClearAll fires
-    // at all, and with what held value, for the clear-then-record investigation.
-    fprintf(stderr, "[diag] onClearAll held=%d\n", (int)held);
     // LOOP_COMMAND_CLEAR_ALL (apcKey25Notes.cpp:175). `cmd/clearall` is a
     // HELD momentary value (audio_thread.cpp's `wipe = max(clearAll, eraseN)`
     // gate zeroes the loop ring every block clear is held) -- it must be
