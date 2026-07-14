@@ -6,18 +6,26 @@
 // Signal: input -> loop.dsp (20 independent record/play loopers, no overdub) -> the dubfx
 // effect chain (pitch/delay/reverb/microrepeat/filters) -> output.
 //
+// SHIFT-held monitor-fold moved OUT of this Faust graph and into
+// audio_thread.cpp's worker() (native, block-rate): folding loopSum into `fx`'s
+// input HERE (same-block, live-only) could never be recorded, since loop.dsp's
+// record path runs BEFORE this fold -- a Faust `~`-recursion fix for that was
+// tried and WITNESSED to silently break basic dry passthrough live on real
+// hardware (git history: 90083c4 -> 3b8bd5e revert). The native fix instead
+// feeds the PREVIOUS block's RAW loop-engine output (this program's second
+// output, below) back into `fin` (the engine's own input) before
+// faustHome.compute() runs, so THIS Faust graph stays exactly as
+// simple/proven as before -- loop.dsp's record path sees the fold because
+// it's baked into the input signal itself, one block later, matching
+// looper's real one-block-lag fold (loopMachine.cpp:709-741) exactly.
+//
 // Composing this way means the ENTIRE home audio path is one Faust compile — the
 // maintainability win: change a knob mapping or a stage in Faust, rebuild, done.
 // No hand-written C++ DSP anywhere in the home stack.
 
 import("stdfaust.lib");
 
-// The loop engine (20 independent record/play loopers, no overdub). Outputs
-// (dry, loopSum) separately — see loop.dsp — so the SHIFT-held monitor-fold
-// below can route the loop sum into the effect input while complementarily
-// suppressing the dry loop contribution, matching looper's loopMachine.cpp:
-// 709-730 fold/dry crossfade (folded loops are heard once, through the
-// effects, with no loudness jump; released, they resume normal dry output).
+// The loop engine (20 independent record/play loopers, no overdub).
 loop = component("loop.dsp");
 // The RUNTIME effects chain — the verified dubfx stages, but with the params as
 // live UI controls (dsp/effects_runtime.dsp) so the remappable control map can
@@ -25,22 +33,14 @@ loop = component("loop.dsp");
 // stays the A/B reference, this is the runtime variant).
 fx   = component("effects_runtime.dsp");
 
-// MONITORFOLD (bound by ApcGrid::onShiftPress/Release to fx/monitorfold, held
-// while SHIFT is down): 0 = normal (loops dry, no fold), 1 = fold loops into
-// the effect input. si.smoo is Faust's standard one-pole smoother, giving the
-// same click-free ramp looper's MONITOR_GATE_STEP (1/16 per block) achieves by
-// a different means -- a continuous exponential approach instead of a fixed
-// per-block linear step, functionally equivalent for a hold/release gesture.
-monitorFold = hslider("MONITORFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
-
-// Home stack: `loop` is called ONCE (it is stateful -- a feedback ring per
-// looper -- so two separate calls would desync into two independent
-// instances) and its two outputs (dry, loopSum) are consumed by a single
-// downstream block using Faust's `_,_` fan-out over both signals at once.
-// Fold loopSum into the effect input (mirrors loopMachine.cpp:738's
-// m_input_buffer += loopOut*fg) while complementarily gating the dry loop
-// contribution into the final mix (m_loopOutputGain = 1-fold); fx runs on the
-// folded signal; the gated dry loop sums back in afterward, matching looper's
-// final mix.
-foldMix(dry, loopSum) = (dry + loopSum*monitorFold : fx) + loopSum*(1.0-monitorFold);
-process = loop : foldMix;
+// `loop`'s two outputs (dry, loopSum) are consumed by `mixAndFx`, which sums
+// them for the live-heard signal (through `fx`) while ALSO passing loopSum
+// through UNCHANGED as this program's SECOND output -- a raw audio tap read
+// back natively via AloopLoopDsp's fouts[1] in audio_thread.cpp, so the
+// native monitor-fold mix (see top-of-file comment) can fold the loop's OWN
+// raw output into next block's input, matching looper's m_input_buffer +=
+// m_output_buffer*fg (loopMachine.cpp:738) -- folding the RAW loop output,
+// not the fully-effected wet signal (which would compound effects every
+// block the fold is held, a real difference from looper this avoids).
+mixAndFx(dry, loopSum) = (dry+loopSum : fx), loopSum;
+process(in) = in : loop : mixAndFx;

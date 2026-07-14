@@ -139,7 +139,10 @@ static std::string targetToZone(const std::string& target) {
     if (target == "fx/time")    return "TIME";
     if (target == "fx/formant") return "FORMANT";
     if (target == "fx/pitch")   return "SEMIS";
-    if (target == "fx/monitorfold") return "MONITORFOLD";
+    // fx/monitorfold has NO Faust zone anymore -- the SHIFT-held fold is a
+    // native block-rate mix (see the prevLoopSum/foldGain code in worker()
+    // and aloop.dsp's top-of-file comment for why), so it's read directly via
+    // g_params->get("fx/monitorfold") rather than pushed into any Faust zone.
     return "";   // commands (cmd/*) and fx/pitchbend*, fx/microrepeat_div are handled separately, not a plain 1:1 Faust zone
 }
 
@@ -197,6 +200,20 @@ static void* worker(void*) {
     std::vector<int32_t> buf((size_t)N * wireCh, 0);       // instrument device (S32_LE)
     std::vector<int16_t> otgBuf((size_t)N * wireCh, 0);    // OTG gadget mirror (S16_LE)
     std::vector<float> fin((size_t)N, 0.0f), fout((size_t)N, 0.0f);  // mono DSP buffers
+    // Previous block's RAW loop-engine output (before fx), for the SHIFT-held
+    // monitor-fold (native mix, not a Faust graph cycle -- a Faust-level
+    // attempt at this via the `~` recursion operator was tried and WITNESSED
+    // to silently break basic dry passthrough live on hardware; reverted, see
+    // git history commit 90083c4 -> 3b8bd5e). Mirrors looper's real
+    // one-block-lag fold exactly (loopMachine.cpp:709-741:
+    // m_input_buffer[i] += m_output_buffer[i]*fg, where m_output_buffer is
+    // the loop's RAW played-back content, not the fully-effected wet mix --
+    // folding the wet signal back in would compound effects every block the
+    // fold is held). Feeding `prevLoopSum` into `fin` BEFORE
+    // faustHome.compute() means loop.dsp's record path (which runs first
+    // inside the Faust graph) sees the folded signal, without needing any
+    // Faust-side recursion at all.
+    std::vector<float> prevLoopSum((size_t)N, 0.0f);
 
     // Instantiate the Faust home stack (loop engine + effects). Its compute()
     // runs the whole home DSP per block — the loop record/play + the effects.
@@ -220,7 +237,13 @@ static void* worker(void*) {
     faustHome.init((int)g_cfg.sampleRate);
     FaustUI fui; faustHome.buildUserInterface(&fui);
     float* fins[1]  = { fin.data() };
-    float* fouts[1] = { fout.data() };
+    // aloop.dsp's process() now outputs 2 signals: (wet mix through fx,
+    // rawLoopSum) -- the second is the loop engine's OWN raw output (before
+    // fx), a native tap so the SHIFT-held monitor-fold can fold the loop's
+    // raw content into next block's input without compounding effects every
+    // block it's held (see aloop.dsp's top-of-file comment).
+    std::vector<float> rawLoopSum((size_t)N, 0.0f);
+    float* fouts[2] = { fout.data(), rawLoopSum.data() };
 #endif
 
 #ifdef ALOOP_HAVE_FAUST_LOOP
@@ -476,9 +499,10 @@ static void* worker(void*) {
                 }
             }
             // monitorMode telemetry (apcKey25.cpp:361's p.monitorMode = m_shift):
-            // read back the same MONITORFOLD zone ApcGrid::onShiftPress/Release
-            // drives, so a dev host can observe SHIFT/monitor-fold state live.
-            g_telem.monitorMode = fui.get("MONITORFOLD") > 0.5f;
+            // read directly from ParamStore now (no more MONITORFOLD Faust
+            // zone -- the fold is a native block-rate mix, see prevLoopSum
+            // above) so a dev host can still observe SHIFT/monitor-fold state live.
+            g_telem.monitorMode = g_params && g_params->get("fx/monitorfold") > 0.5f;
             // Varispeed Link sync: when synced, set every looper's loop length from
             // the Link tempo (a musical phrase = a whole number of beats). A tempo
             // change resizes the loops so they stay locked to the session — the
@@ -559,6 +583,26 @@ static void* worker(void*) {
             g_sampler->captureBlock(samplerBuf.data(), N);
             g_sampler->renderInto(samplerBuf.data(), N);
             for (int i = 0; i < N; i++) fin[i] = (float)samplerBuf[(size_t)i] / 32768.0f;
+            // SHIFT-held monitor-fold (native mix, see prevLoopSum's declaration
+            // comment above for why this isn't done as a Faust graph cycle):
+            // fold the PREVIOUS block's RAW loop-engine output into this
+            // block's input BEFORE faustHome.compute() runs, so loop.dsp's
+            // record path (which runs first inside that call) sees the
+            // folded signal -- matching looper's m_input_buffer += fold
+            // mutation persisting into every subsequent block. Also mirrors
+            // looper's per-sample-interpolated ramp (MONITOR_GATE_STEP=1/16
+            // per block) with a simple one-pole smoother toward the held/
+            // released target, avoiding a hard step at the fold boundary.
+            if (g_params) {
+                static float foldGain = 0.0f;
+                float foldTarget = g_params->get("fx/monitorfold") > 0.5f ? 1.0f : 0.0f;
+                const float kFoldStep = 1.0f / 16.0f;   // reach target over ~16 blocks, matching looper's own step
+                for (int i = 0; i < N; i++) {
+                    if (foldGain < foldTarget)      { foldGain += kFoldStep / N; if (foldGain > foldTarget) foldGain = foldTarget; }
+                    else if (foldGain > foldTarget) { foldGain -= kFoldStep / N; if (foldGain < foldTarget) foldGain = foldTarget; }
+                    fin[i] += prevLoopSum[i] * foldGain;
+                }
+            }
             // Time the DSP work vs the block budget → home-core busy % telemetry.
             timespec t0, t1;
             clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -567,6 +611,13 @@ static void* worker(void*) {
             // core, in the same block — zero added latency, no graph (ADR-002).
             // process() runs the plugin chain in place; passthrough if none loaded.
             userFx.process(fout.data(), N);
+            // Snapshot this block's RAW loop output (rawLoopSum, aloop.dsp's
+            // second process() output) for NEXT block's fold-in (see
+            // prevLoopSum's declaration comment) -- deliberately NOT fout
+            // (the fx-processed signal), so folded loop content doesn't
+            // accumulate a compounding extra pass through the effects chain
+            // every block the fold is held.
+            prevLoopSum = rawLoopSum;
             clock_gettime(CLOCK_MONOTONIC, &t1);
             // busy fraction = work / block-period. Smoothed (EWMA) so the readout is
             // stable. Stored on the home-FX core index; a spike toward 100% warns of
