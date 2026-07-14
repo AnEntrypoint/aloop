@@ -31,7 +31,9 @@ const path = require('path');
 const dgram = require('dgram');
 const http = require('http');
 const https = require('https');
-const { execFileSync } = require('child_process');
+const { execFileSync, execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
 
 function arg(name, def) { const i = process.argv.indexOf(name); return i > 0 && process.argv[i + 1] ? process.argv[i + 1] : def; }
 
@@ -325,10 +327,29 @@ async function checkAndUpdate() {
     ];
     const bashExe = gitBashCandidates.find(p => fs.existsSync(p)) || 'bash';
     const buildScript = path.join(__dirname, 'build-netboot.sh').replace(/\\/g, '/');
-    execFileSync(bashExe, [buildScript], {
+    // WITNESSED live: a SYNCHRONOUS execFileSync rebuild call freezes the
+    // ENTIRE Node event loop for as long as it runs — no more DHCP/TFTP/HTTP
+    // serving, no more checkAndUpdate ticks, nothing, even on a successful
+    // rebuild that just takes a while (tar/gzip a real apkovl is not
+    // instant). Worse, with no timeout, a genuinely stuck child (a hung
+    // apk-fetch, a hung subprocess waiting on stdin) freezes the server
+    // indefinitely with zero error, zero log line — indistinguishable from
+    // "still working" until someone checks wall-clock time against the last
+    // log line (exactly what happened here). Unlike looper's own
+    // checkAndUpdate (a simple download+unzip+file-copy, no long subprocess
+    // at all), aloop's rebuild genuinely shells out to a multi-step bash
+    // script — so run it ASYNC (execFile, awaited) so the event loop keeps
+    // serving DHCP/TFTP/HTTP throughout, AND cap it with an explicit
+    // timeout so a stuck child is killed and the catch below logs a real
+    // error and retries next tick — matching looper's "any failure is
+    // caught, next tick tries again" self-healing design.
+    const REBUILD_TIMEOUT_MS = 5 * 60 * 1000;
+    await execFileAsync(bashExe, [buildScript], {
       cwd: path.join(__dirname, '..'),
       env: Object.assign({}, process.env, { OUT: ROOT, ALOOP_BIN: aloopBin, LV2_DIR: lv2Dir, NETBOOT_SERVER: NETBOOT_SERVER }),
-      stdio: 'pipe'
+      timeout: REBUILD_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+      maxBuffer: 64 * 1024 * 1024
     });
     currentSha = sha; fs.writeFileSync(SHA_FILE, sha);
     console.log('[update] netboot root rebuilt with the new build; sending REBOOT so the Pi re-fetches it');
