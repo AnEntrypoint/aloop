@@ -98,6 +98,9 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
         m_looperHasContent[looper] = true;
         m_looperPlaying[looper] = true;
         setLooper(ps, looper, "play", 1.0f);
+        // TEMPORARY diagnostic (tracked for removal): see ARM's matching diag4.
+        fprintf(stderr, "[diag4] FINISH looper=%d now_ms=%u recordStart=%u elapsedMs=%u masterLen(before)=%ld\n",
+                looper, now_ms, m_recordStartMs[looper], now_ms - m_recordStartMs[looper], m_masterLenSamples);
         // WITNESSED live + confirmed by cross-codebase research against
         // ../looper (loopClip.cpp:64-66,219,243): looper's masterLoopBlocks
         // (the shared phrase length ALL loopers quantize to) is established
@@ -218,6 +221,12 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
         setLooper(ps, looper, "rec", 1.0f);   // ARM: start recording -- next press finishes it
         m_looperRecording[looper] = true;
         m_recordStartMs[looper] = now_ms;
+        // TEMPORARY diagnostic (tracked for removal): re-investigating
+        // "second clear-and-restart cycle produces blank loops" after the
+        // controls.conf/shift-fallthrough fix did NOT resolve it -- tracing
+        // every ARM to see whether rec is genuinely being set to 1 each cycle.
+        fprintf(stderr, "[diag4] ARM looper=%d now_ms=%u masterLen=%ld cmd_masterlen=%.0f\n",
+                looper, now_ms, m_masterLenSamples, ps.get("cmd/master_len", -1.0f));
     } else if (m_looperPlaying[looper]) {
         setLooper(ps, looper, "play", 0.0f);
         m_looperPlaying[looper] = false;
@@ -405,6 +414,12 @@ void ApcGrid::onClearAll(bool held, ParamStore& ps) {
     // every block forever. The release call (held=false) only clears the
     // Faust-side hold; local shadow-state reset happens once, on press.
     ps.setByName("cmd/clearall", held ? 1.0f : 0.0f);
+    // TEMPORARY diagnostic (tracked for removal): see apply RecPlayCycle's
+    // matching diag4 -- tracing the full clear-all lifecycle to find why a
+    // second clear-and-restart cycle still produces a blank recording after
+    // the controls.conf/shift-fallthrough fix.
+    fprintf(stderr, "[diag4] onClearAll held=%d masterLen(before)=%ld cmd_masterlen=%.0f\n",
+            (int)held, m_masterLenSamples, ps.get("cmd/master_len", -1.0f));
     if (!held) return;
     // Wipe the DSP-side content of every looper AND reset every bit of local
     // shadow state this thread tracks, so a subsequent press correctly
