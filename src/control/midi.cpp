@@ -229,7 +229,27 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio) {
                 if (type == 0x90 && d2 > 0) { grid.onPadPress((int)d1, now, ps); continue; }
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onPadRelease((int)d1, now, ps); continue; }
             }
+            // SHIFT-gated transport button reroute (apcKey25Notes.cpp:170-175):
+            // STOP_ALL (note 0x51/81) unshifted = quantized stop (aloop: the
+            // existing cmd/stopall flat binding below); shift+STOP_ALL =
+            // IMMEDIATE stop that ALSO aborts any in-progress recording
+            // (looper's LOOP_COMMAND_STOP_IMMEDIATE) -- previously aloop had
+            // no shift branch at all on this button, so "shift button
+            // rerouting didnt work" for transport controls specifically.
+            // PLAY (note 0x5B/91) unshifted = clear-all (existing cmd/clearall
+            // flat binding); shift+PLAY = LOOP_IMMEDIATE, which aloop's Faust
+            // feedback-delay engine has no addressable read head for (ADR-010/
+            // docs/COMMAND-SURFACE.md, a deliberate model difference) -- so
+            // shift+PLAY has nothing to reroute TO yet and is left unbound
+            // rather than silently doing the wrong thing.
+            if (type == 0x90 && d2 > 0 && d1 == 0x51 && grid.shiftHeld()) { grid.onStopImmediate(ps); continue; }
         }
+
+        // channel 1 (keybed): looper's apcKey25.cpp:103-125 -- any keybed key
+        // press engages live-pitch at that key's own semitone offset. Was
+        // completely unhandled (aloop only ever inspected channel 0),
+        // directly explaining "keys didnt arm transpose".
+        if (channel == 1 && type == 0x90 && d2 > 0) { grid.onKeybedNoteOn((int)d1, ps); continue; }
 
         // --- everything else (filters, transport buttons, speed) via the flat remap ---
         uint32_t key = 0; float val = 0;

@@ -395,7 +395,16 @@ static void* worker(void*) {
                 // 1) = active; released = neutral. Double wins if both are somehow
                 // held. These labels are engine-global in loop.dsp (not under a
                 // looper group), so set() resolves them by their plain name.
-                fui.set("clear", g_params->get("cmd/clearall") > 0.5f ? 1.0f : 0.0f);
+                bool clearAllHeld = g_params->get("cmd/clearall") > 0.5f;
+                fui.set("clear", clearAllHeld ? 1.0f : 0.0f);
+                // CLEAR_ALL also resets the locally-established phrase length
+                // (cmd/master_len, set by apc_grid.cpp's applyRecPlayCycle) so
+                // the NEXT standalone recording re-establishes a fresh phrase
+                // from scratch -- matches looper's LOOP_COMMAND_CLEAR_ALL
+                // resetting masterLoopBlocks to 0 (loopMachine.cpp:325-330,
+                // 411-412) so a cleared rig's first new loop defines a new
+                // grid rather than inheriting the previous session's length.
+                if (clearAllHeld) g_params->setByName("cmd/master_len", 0.0f);
                 float speed = 1.0f;
                 if (g_params->get("cmd/halfspeed")   > 0.5f) speed = 0.5f;
                 if (g_params->get("cmd/doublespeed") > 0.5f) speed = 2.0f;
@@ -473,8 +482,22 @@ static void* worker(void*) {
                     // same phrase length expressed in DSP blocks, so a repeat slice
                     // (lenSamples/DIV) stays grid-aligned with the loop.
                     fui.set("MLB", (float)(lenSamples / N));
-                } else {
-                    fui.set("MLB", 0.0f);   // unsynced: microrepeat stays disabled (DIV!=0 & MLB>=16 gate)
+                } else if (g_params) {
+                    // WITNESSED live + confirmed via cross-codebase research
+                    // against ../looper (loopClip.cpp:64-66,219,243): looper's
+                    // masterLoopBlocks/microrepeat grid NEVER requires an
+                    // Ableton Link session -- it's established locally from
+                    // the first recorded loop's own duration. Forcing MLB=0
+                    // here whenever Link isn't synced left microrepeat/glitch
+                    // completely inert on any standalone (no-Link) session --
+                    // exactly the reported "glitch buttons didn't work ...
+                    // nothing happened". apc_grid.cpp's applyRecPlayCycle now
+                    // publishes the locally-established phrase length to
+                    // "cmd/master_len" (0 = none established yet, matching
+                    // looper's masterLoopBlocks==0 empty-rig case) -- use it
+                    // here as the MLB source when Link isn't the driver.
+                    float masterLen = g_params->get("cmd/master_len", 0.0f);
+                    fui.set("MLB", masterLen > 0.0f ? (masterLen / (float)N) : 0.0f);
                 }
             }
             // Deinterleave the stereo wire -> mono DSP input: average the wire

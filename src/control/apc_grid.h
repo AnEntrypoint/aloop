@@ -18,6 +18,8 @@ constexpr int kApcCols = 8;
 constexpr int kLooperCount = 20;
 constexpr int kPresetCount = 10;
 constexpr unsigned kHoldEraseMs = 1000;   // apcKey25.h APC_HOLD_ERASE_MS
+constexpr int kSampleRate = 48000;        // dsp/loop.dsp's SR -- fixed throughout aloop, no runtime config path yet
+constexpr int kMaxLoopSamples = 48000 * 60;  // dsp/loop.dsp's MAXLEN -- the delay ring's hard ceiling
 constexpr int kApcBtnShift = 0x62;         // apcKey25.h APC_BTN_SHIFT (98) -- channel 0 only, see onShiftPress
 
 // row*8+col grid index -> looper index (cols 2-5) or -1 (apcKey25Notes.cpp _looperFromPad)
@@ -76,6 +78,22 @@ public:
     void onLiveEngageToggle(ParamStore& ps);
     bool liveEngaged() const { return m_liveEngaged; }
 
+    // Keybed (channel 1) note press: previously UNHANDLED entirely -- aloop's
+    // midi.cpp only ever inspected channel 0, so a keybed key had NO path to
+    // engage live-pitch at all. Confirmed via cross-codebase research against
+    // ../looper (apcKey25.cpp:103-125): "any keybed key press unconditionally
+    // sets m_liveEngaged=true and derives a semitone offset from the key" --
+    // this is looper's PRIMARY way live-pitch actually gets engaged/played in
+    // practice (the note-64 button is more of a manual override), so its
+    // absence directly explains "keys didnt arm transpose".
+    void onKeybedNoteOn(int note, ParamStore& ps);
+
+    // SHIFT+STOP_ALL (note 0x51/81, channel 0): looper's
+    // LOOP_COMMAND_STOP_IMMEDIATE (apcKey25Notes.cpp:171) -- stops ALL
+    // playback AND aborts any in-progress recording (unshifted STOP_ALL only
+    // stops playback, matching audio_thread.cpp's existing cmd/stopall).
+    void onStopImmediate(ParamStore& ps);
+
     // Microrepeat latch notes 82-86 (channel 0 only); div in {1,2,4,8,16}, 0=off.
     void onMicrorepeatOn(int note, ParamStore& ps);
     void onMicrorepeatOff(int note, ParamStore& ps);
@@ -117,6 +135,7 @@ private:
     bool m_looperPlaying[kLooperCount] = {};      // local shadow: last rec/play state we sent
     bool m_looperHasContent[kLooperCount] = {};   // local shadow: has this looper recorded anything
     bool m_looperRecording[kLooperCount] = {};    // true from arm-press until the finish-press (../looper: TRACK_STATE_RECORDING)
+    unsigned m_recordStartMs[kLooperCount] = {};  // wall-clock ms at the ARM press, for computing actual recorded duration at finish
 
     bool m_presetHeld[kPresetCount] = {};
     unsigned m_presetHoldStart[kPresetCount] = {};
@@ -127,8 +146,19 @@ private:
     uint8_t m_microRepeatDiv = 0;
     bool m_shift = false;
     bool m_liveEngaged = false;   // master toggle for live pitch (note 64), apcKey25.cpp m_liveEngaged
+    // Local master-phrase length in samples, established from the FIRST
+    // looper's own recorded duration (../looper loopClip.cpp:219-244:
+    // "ALWAYS defines the local master grid from its own recorded length,
+    // Link-synced or not") -- independent of any Ableton Link session, unlike
+    // audio_thread.cpp's Link-only length source. Published to ParamStore's
+    // "cmd/master_len" target so the audio thread can feed it into microrepeat's
+    // MLB zone when Link is not synced (previously: MLB was hard-forced to 0.0
+    // -- microrepeat entirely inert -- whenever no Link session was connected,
+    // even though looper's real hardware needs no Link at all for glitch/microrepeat).
+    // 0 = no master phrase established yet (mirrors looper's masterLoopBlocks==0).
+    long m_masterLenSamples = 0;
 
-    void applyRecPlayCycle(int looper, ParamStore& ps);
+    void applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps);
     void capturePreset(int p, ParamStore& ps);
     void applyPreset(int p, ParamStore& ps);
     void forgetLooperFromPresets(int looper);

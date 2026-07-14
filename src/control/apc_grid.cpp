@@ -32,12 +32,22 @@ void ApcGrid::bindAll(ParamStore& ps) {
             snprintf(name, sizeof name, "looper%d/%s", looper, field);
             ps.bind(name);
         }
+        // "len" bound separately with dsp/loop.dsp's actual hslider default
+        // (48000 = 1 second) -- matches the zero-default bug class fixed
+        // elsewhere (ParamStore::bind's own doc comment): any bound target
+        // whose Faust zone has a non-zero default must be seeded correctly,
+        // or it gets silently forced to 0 (here: a 0-length loop) every
+        // block from process start until applyRecPlayCycle's finish-press
+        // sets a real value.
+        snprintf(name, sizeof name, "looper%d/len", looper);
+        ps.bind(name, 48000.0f);
     }
     ps.bind("fx/pitchbend");
     ps.bind("fx/pitchbend_engaged");
     ps.bind("fx/microrepeat_div");
     ps.bind("fx/monitorfold");
     ps.bind("fx/formant");
+    ps.bind("cmd/master_len", 0.0f);   // local master-phrase length (samples), 0 = none established yet
 }
 
 static void setLooper(ParamStore& ps, int looper, const char* field, float v) {
@@ -46,7 +56,7 @@ static void setLooper(ParamStore& ps, int looper, const char* field, float v) {
     ps.setByName(name, v);
 }
 
-void ApcGrid::applyRecPlayCycle(int looper, ParamStore& ps) {
+void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps) {
     // Real 3-state cycle (apcKey25Notes.cpp:61-84):
     //   empty                 -> ARM: rec=1 (HELD -- stays 1 for the whole
     //                             recording pass, this press only starts it)
@@ -61,9 +71,54 @@ void ApcGrid::applyRecPlayCycle(int looper, ParamStore& ps) {
         m_looperHasContent[looper] = true;
         m_looperPlaying[looper] = true;
         setLooper(ps, looper, "play", 1.0f);
+        // WITNESSED live + confirmed by cross-codebase research against
+        // ../looper (loopClip.cpp:64-66,219,243): looper's masterLoopBlocks
+        // (the shared phrase length ALL loopers quantize to) is established
+        // from the FIRST recorded clip's own actual duration -- "ALWAYS
+        // defines the local master grid from its own recorded length,
+        // Link-synced or not." aloop had NO local equivalent: dsp/loop.dsp's
+        // de.fdelay ring length (`len`) was previously driven ONLY by
+        // audio_thread.cpp's Link-synced branch, meaning any standalone
+        // (no Link session) recording left `len` frozen at its Faust-compiled
+        // default (48000 = 1 second) regardless of actual record duration --
+        // directly causing "loop didn't set phrase" / "didn't play the whole
+        // recorded loop" (a 4s take truncated/looped at the stale 1s ring
+        // length). Fixed: the FIRST looper to finish recording on a clear rig
+        // establishes m_masterLenSamples from its own actual press-to-press
+        // duration (mirroring loopClip.cpp's masterLoopBlocks==0 seed check);
+        // every subsequent looper (recorded or not yet recorded) is set to
+        // that SAME shared length, matching looper's single shared phrase
+        // rather than each looper independently deriving its own duration.
+        // audio_thread.cpp's Link-synced branch still overrides/retunes this
+        // every block once a real Link session connects (mirroring looper's
+        // separate anyRecorded-gated Link rescale path) -- this is purely the
+        // standalone (no-Link) phrase-establishment fallback.
+        // Re-sync from the shared store first: audio_thread.cpp resets
+        // cmd/master_len to 0 on CLEAR_ALL (a command this thread doesn't
+        // otherwise observe), and a live Link session may also be actively
+        // retuning looper*/len independent of this thread -- reading back
+        // the authoritative shared value (rather than trusting only this
+        // thread's own last-written shadow) keeps both in agreement.
+        m_masterLenSamples = (long)ps.get("cmd/master_len", 0.0f);
+        if (m_masterLenSamples == 0) {
+            unsigned elapsedMs = now_ms - m_recordStartMs[looper];
+            long lenSamples = (long)elapsedMs * kSampleRate / 1000;
+            if (lenSamples < 64) lenSamples = 64;                     // dsp/loop.dsp's hslider min
+            if (lenSamples > kMaxLoopSamples) lenSamples = kMaxLoopSamples;
+            m_masterLenSamples = lenSamples;
+            ps.setByName("cmd/master_len", (float)m_masterLenSamples);
+            // Propagate the newly-established phrase to every looper (this
+            // one included) so a second, third, ... looper recorded next
+            // joins the SAME shared grid, matching looper's single
+            // masterLoopBlocks used by the whole rig, not a per-looper value.
+            for (int lp = 0; lp < kLooperCount; lp++) setLooper(ps, lp, "len", (float)m_masterLenSamples);
+        } else {
+            setLooper(ps, looper, "len", (float)m_masterLenSamples);
+        }
     } else if (!m_looperHasContent[looper]) {
         setLooper(ps, looper, "rec", 1.0f);   // ARM: start recording -- next press finishes it
         m_looperRecording[looper] = true;
+        m_recordStartMs[looper] = now_ms;
     } else if (m_looperPlaying[looper]) {
         setLooper(ps, looper, "play", 0.0f);
         m_looperPlaying[looper] = false;
@@ -101,7 +156,7 @@ void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps) {
         // the start or the end of the take). All other transitions (pause/
         // resume) stay on release.
         if (!m_looperHasContent[looper] || m_looperRecording[looper]) {
-            applyRecPlayCycle(looper, ps);
+            applyRecPlayCycle(looper, now_ms, ps);
             m_looperArmedOnPress[looper] = true;
         } else {
             m_looperArmedOnPress[looper] = false;
@@ -117,7 +172,7 @@ void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps) {
     }
 }
 
-void ApcGrid::onPadRelease(int note, unsigned /*now_ms*/, ParamStore& ps) {
+void ApcGrid::onPadRelease(int note, unsigned now_ms, ParamStore& ps) {
     int row = note / kApcCols, col = note % kApcCols;
 
     int looper = gridLooperIndex(row, col);
@@ -129,7 +184,7 @@ void ApcGrid::onPadRelease(int note, unsigned /*now_ms*/, ParamStore& ps) {
             return;
         }
         if (m_looperHeld[looper] && !m_looperErased[looper]) {
-            applyRecPlayCycle(looper, ps);
+            applyRecPlayCycle(looper, now_ms, ps);
         }
         m_looperHeld[looper] = false;
         return;
@@ -227,6 +282,30 @@ void ApcGrid::onLiveEngageToggle(ParamStore& ps) {
         ps.setByName("fx/pitchbend_engaged", 0.0f);
     }
 }
+void ApcGrid::onStopImmediate(ParamStore& ps) {
+    // apcKey25Notes.cpp:171's LOOP_COMMAND_STOP_IMMEDIATE: stop every
+    // playing looper AND abort any looper still mid-recording (unlike plain
+    // cmd/stopall, which only zeroes `play` and leaves an active `rec` alone
+    // -- see audio_thread.cpp's cmd/stopall handling).
+    for (int lp = 0; lp < kLooperCount; lp++) {
+        if (m_looperRecording[lp]) {
+            setLooper(ps, lp, "rec", 0.0f);
+            m_looperRecording[lp] = false;
+            // aborted before any content was captured -- this looper stays
+            // empty, matching looper's abort semantics (not "has content").
+        }
+        setLooper(ps, lp, "play", 0.0f);
+        m_looperPlaying[lp] = false;
+    }
+}
+void ApcGrid::onKeybedNoteOn(int note, ParamStore& ps) {
+    // apcKey25.cpp:122-123: any keybed key press engages live-pitch at that
+    // key's own semitone offset from middle C-ish (note 60), unconditionally.
+    m_liveEngaged = true;
+    float semis = (float)(note - 60);
+    ps.setByName("fx/pitchbend", semis);
+    ps.setByName("fx/pitchbend_engaged", 1.0f);
+}
 
 // --- microrepeat latch (notes 82-86) — apcKey25.cpp -------------------------
 void ApcGrid::onMicrorepeatOn(int note, ParamStore& ps) {
@@ -259,21 +338,20 @@ void ApcGrid::onShiftRelease(ParamStore& ps) {
     ps.setByName("fx/monitorfold", 0.0f);
 }
 
-// --- CC53 formant depth (apcKey25Filters.cpp:53-58) -------------------------
-// Deadzone around center (63/64, matching the mod-wheel deadzone convention
-// used elsewhere on this controller). effects_runtime.dsp's FORMANT hslider is
-// declared -3..3 (audio_thread.cpp targetToZone maps fx/formant straight onto
-// that zone, no rescale) so the achievable range IS ±3, not the raw CC's
-// theoretical ±1 normalized value scaled arbitrarily: unshifted reaches half
-// that (±1.5), SHIFT held reaches the full ±3 -- doubling the usable range
-// within the zone's own declared bounds, matching looper's SHIFT-expands
-// behavior without exceeding what FORMANT can actually represent.
+// --- CC53 formant depth (apcKey25Filters.cpp:59-71) -------------------------
+// WITNESSED via direct cross-codebase comparison against ../looper's real
+// values: the prior aloop constants were both off from looper's actual
+// numbers -- deadzone was 62-65 here vs looper's real 60-68, and the
+// unshifted range was 1.5 here vs looper's real 1.0 (looper: "Default range
+// ±1 (musical territory)... Hold SHIFT... to expand to ±3"). Corrected to
+// match exactly: deadzone 60-68, range ±1 unshifted / ±3 shifted, and the
+// normalization formula itself now matches looper's `((data2-64)/63.0)*range`
+// (not aloop's previous /63.5 centered-differently variant).
 void ApcGrid::onFormantCC(uint8_t data2, ParamStore& ps) {
-    const bool inDeadzone = (data2 >= 62 && data2 <= 65);
+    const bool inDeadzone = (data2 >= 60 && data2 <= 68);
     if (inDeadzone) { ps.setByName("fx/formant", 0.0f); return; }
-    const float norm = ((float)(int)data2 - 63.5f) / 63.5f;   // -1..1
-    const float maxDepth = m_shift ? 3.0f : 1.5f;              // SHIFT doubles the usable range within FORMANT's -3..3
-    float v = norm * maxDepth;
+    const float range = m_shift ? 3.0f : 1.0f;
+    float v = (((float)(int)data2 - 64.0f) / 63.0f) * range;
     if (v > 3.0f) v = 3.0f; else if (v < -3.0f) v = -3.0f;
     ps.setByName("fx/formant", v);
 }
