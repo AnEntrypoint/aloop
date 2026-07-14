@@ -199,6 +199,12 @@ void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps, LinkBridge* 
         // dispatch would add the press-hold duration as timing jitter to either
         // the start or the end of the take). All other transitions (pause/
         // resume) stay on release.
+        // TEMPORARY diagnostic (tracked for removal): live capture for the
+        // "clear then first record only works once" investigation -- prints
+        // the exact state onPadPress sees for this looper on every press.
+        fprintf(stderr, "[diag] onPadPress looper=%d hasContent=%d recording=%d masterLen=%ld cmd/clearall=%.2f\n",
+                looper, (int)m_looperHasContent[looper], (int)m_looperRecording[looper],
+                m_masterLenSamples, ps.get("cmd/clearall"));
         if (!m_looperHasContent[looper] || m_looperRecording[looper]) {
             applyRecPlayCycle(looper, now_ms, ps, link);
             m_looperArmedOnPress[looper] = true;
@@ -343,6 +349,9 @@ void ApcGrid::onStopImmediate(ParamStore& ps) {
     }
 }
 void ApcGrid::onClearAll(bool held, ParamStore& ps) {
+    // TEMPORARY diagnostic (tracked for removal): confirm onClearAll fires
+    // at all, and with what held value, for the clear-then-record investigation.
+    fprintf(stderr, "[diag] onClearAll held=%d\n", (int)held);
     // LOOP_COMMAND_CLEAR_ALL (apcKey25Notes.cpp:175). `cmd/clearall` is a
     // HELD momentary value (audio_thread.cpp's `wipe = max(clearAll, eraseN)`
     // gate zeroes the loop ring every block clear is held) -- it must be

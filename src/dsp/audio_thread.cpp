@@ -614,26 +614,26 @@ static void* worker(void*) {
                     fin[i] += prevLoopSum[i] * foldGain;
                 }
             }
-            // Glitch (microrepeat) recordability fold-in: REPLACE (not add)
-            // fin with the PRIOR block's post-glitch tap, but ONLY while
-            // microrepeat is actually latched (fx/microrepeat_div != 0) --
-            // gated exactly like the SHIFT-fold's own gate, for the same
-            // reason: microStage TRANSFORMS the signal it's given (mrProcess
-            // = live*(1-wet) + rep*wet -- output EQUALS input when
-            // wet=0/inactive), so an unconditional or additive fold-in would
-            // either double the signal (if added) or permanently stale-delay
-            // normal passthrough by one block even with glitch off entirely
-            // (if replaced unconditionally) -- both tried and rejected during
-            // this same fix. Gating on the div latch means: glitch OFF ->
-            // this block runs completely untouched by any of this (identical
-            // to before glitch recordability existed); glitch ON -> fin is
-            // replaced with the prior block's stuttered content, so THIS
-            // block's record path and loop engine see the stutter, matching
-            // looper's real design (loopMachine.cpp:806-833's "stutter
-            // becomes both the audible output and the record source").
-            if (g_params && g_params->get("fx/microrepeat_div") > 0.5f) {
-                for (int i = 0; i < N; i++) fin[i] = prevGlitchTap[i];
-            }
+            // Glitch (microrepeat) recordability fold-in was REVERTED here:
+            // WITNESSED live -- feeding prevGlitchTap back into fin every
+            // block while active created a genuine one-block audio feedback
+            // loop (microStage's own ring-replay output re-entering as next
+            // block's "live" input, re-processed by the SAME ring/capture
+            // logic every pass), producing a fast, aliased, high-pitched
+            // whine even on the COARSEST division (DIV=1) -- confirmed by
+            // the user as NOT a division-specific extreme case but a
+            // fundamental bug in this feedback shape. The live/audible glitch
+            // itself (fx's own single-pass microStage, unaffected by this
+            // reverted code) was independently confirmed working correctly.
+            // Making glitch content genuinely recordable needs a different
+            // mechanism than "replace next block's input with this block's
+            // processed output" -- deferred pending a redesign that doesn't
+            // reintroduce this feedback shape (e.g. tapping the ring's OWN
+            // captured content directly for the record path, rather than
+            // re-driving the live microStage instance with its own output).
+            // rawGlitchTap/prevGlitchTap remain wired (Faust tap, C++
+            // buffers) for that future redesign; this block intentionally
+            // left inert.
             // Time the DSP work vs the block budget → home-core busy % telemetry.
             timespec t0, t1;
             clock_gettime(CLOCK_MONOTONIC, &t0);
