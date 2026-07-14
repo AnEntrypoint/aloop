@@ -293,9 +293,17 @@ function sendPiReboot() {
   const msg = Buffer.from('REBOOT:' + PI_TOKEN);
   sock.send(msg, 4446, PI_HOST, err => { sock.close(); console.log(err ? '[update] REBOOT send failed: ' + err.message : '[update] REBOOT sent to ' + PI_HOST + ':4446'); });
 }
+let updateInFlight = false;
 async function checkAndUpdate() {
   if (!AUTO_UPDATE) return;
   if (!GITHUB_TOKEN) { console.error('[update] no GITHUB_TOKEN/ALOOP_GITHUB_TOKEN/--token set — aloop/aloop is PRIVATE, auto-update cannot list runs or download artifacts without one. Set the env var or pass --token, or set ALOOP_NO_AUTO_UPDATE=1 to silence this.'); return; }
+  // WITNESSED live: making the rebuild async (so it no longer blocks the
+  // event loop, see the execFileAsync comment below) means the 30s
+  // setInterval tick can now fire again WHILE a rebuild from a prior tick is
+  // still running — without a guard this spawns a second (and third...)
+  // concurrent build-netboot.sh writing the SAME output directory,
+  // corrupting the in-progress tar/apkovl assembly. One rebuild at a time.
+  if (updateInFlight) { console.log('[update] rebuild already in progress, skipping this tick'); return; }
   try {
     if (Date.now() < rateLimitedUntil) { console.log('[update] rate-limited, skipping this tick'); return; }
     const [binRun, lv2Run] = await Promise.all([latestGreenRun('build-binary.yml'), latestGreenRun('build-lv2.yml')]);
@@ -344,13 +352,18 @@ async function checkAndUpdate() {
     // error and retries next tick — matching looper's "any failure is
     // caught, next tick tries again" self-healing design.
     const REBUILD_TIMEOUT_MS = 5 * 60 * 1000;
-    await execFileAsync(bashExe, [buildScript], {
-      cwd: path.join(__dirname, '..'),
-      env: Object.assign({}, process.env, { OUT: ROOT, ALOOP_BIN: aloopBin, LV2_DIR: lv2Dir, NETBOOT_SERVER: NETBOOT_SERVER }),
-      timeout: REBUILD_TIMEOUT_MS,
-      killSignal: 'SIGKILL',
-      maxBuffer: 64 * 1024 * 1024
-    });
+    updateInFlight = true;
+    try {
+      await execFileAsync(bashExe, [buildScript], {
+        cwd: path.join(__dirname, '..'),
+        env: Object.assign({}, process.env, { OUT: ROOT, ALOOP_BIN: aloopBin, LV2_DIR: lv2Dir, NETBOOT_SERVER: NETBOOT_SERVER }),
+        timeout: REBUILD_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+        maxBuffer: 64 * 1024 * 1024
+      });
+    } finally {
+      updateInFlight = false;
+    }
     currentSha = sha; fs.writeFileSync(SHA_FILE, sha);
     console.log('[update] netboot root rebuilt with the new build; sending REBOOT so the Pi re-fetches it');
     sendPiReboot();
