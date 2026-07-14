@@ -21,8 +21,10 @@
 
 #include "apc_grid.h"
 #include "../dsp/sampler/sampler.h"
+#include "../link/link_bridge.h"
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 
 namespace aloop {
 
@@ -57,7 +59,31 @@ static void setLooper(ParamStore& ps, int looper, const char* field, float v) {
     ps.setByName(name, v);
 }
 
-void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps) {
+// Derive a tempo (BPM) from a recorded phrase's actual duration, choosing the
+// number of beats-per-phrase that lands the result NEAREST 120 BPM -- mirrors
+// looper's own (never-fully-wired) intended design, documented in its PRD
+// history: "bpm = 60*beats_in_clip / clip_seconds where beats chosen to land
+// tempo nearest 120." A 4-beat bar is tried first (the common case, matching
+// audio_thread.cpp's own beatsPerBar=4.0 assumption for Link-driven length),
+// but other small beat-counts (1,2,8,16) are also tried and whichever gets
+// closest to 120 BPM wins -- so a very short "one hit" loop doesn't get
+// forced into an absurd 4-beat interpretation (e.g. 500ms/4beats = 480bpm)
+// when interpreting it as a single beat (500ms/1beat = 120bpm exactly) is
+// obviously the musically-sensible reading.
+static double deriveTempoBpm(double seconds) {
+    if (seconds <= 0.0) return 120.0;
+    static const int kCandidates[] = {1, 2, 4, 8, 16};
+    double bestBpm = 120.0;
+    double bestDist = 1e18;
+    for (int beats : kCandidates) {
+        double bpm = 60.0 * beats / seconds;
+        double dist = std::fabs(bpm - 120.0);
+        if (dist < bestDist) { bestDist = dist; bestBpm = bpm; }
+    }
+    return bestBpm;
+}
+
+void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, LinkBridge* link) {
     // Real 3-state cycle (apcKey25Notes.cpp:61-84):
     //   empty                 -> ARM: rec=1 (HELD -- stays 1 for the whole
     //                             recording pass, this press only starts it)
@@ -113,6 +139,23 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps) {
             // joins the SAME shared grid, matching looper's single
             // masterLoopBlocks used by the whole rig, not a per-looper value.
             for (int lp = 0; lp < kLooperCount; lp++) setLooper(ps, lp, "len", (float)m_masterLenSamples);
+            // TWO-WAY LINK INTEGRATION: the first recorded loop PROPOSES its
+            // own tempo to the Link session, so Link becomes the shared
+            // tempo authority for the whole group from this point on --
+            // previously aloop only ever READ Link's tempo (LinkBridge::
+            // proposeTempo existed but was never called from anywhere,
+            // genuinely dead code). Mirrors looper's own intended-but-
+            // never-fully-wired design (linkSetBPM, PRD history: "bpm =
+            // 60*beats_in_clip/clip_seconds"). Once proposed, Link's own
+            // tempo becomes authoritative going forward: audio_thread.cpp's
+            // Link-synced branch will pick up this exact BPM on its very
+            // next read and start retiming everything (including THIS
+            // looper) from Link rather than the local cmd/master_len
+            // fallback -- a real closed loop, not a one-shot announcement.
+            if (link) {
+                double seconds = (double)m_masterLenSamples / (double)kSampleRate;
+                link->proposeTempo(deriveTempoBpm(seconds));
+            }
         } else {
             setLooper(ps, looper, "len", (float)m_masterLenSamples);
         }
@@ -141,7 +184,7 @@ void ApcGrid::forgetLooperFromPresets(int looper) {
     }
 }
 
-void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps) {
+void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps, LinkBridge* link) {
     int row = note / kApcCols, col = note % kApcCols;
 
     int looper = gridLooperIndex(row, col);
@@ -157,7 +200,7 @@ void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps) {
         // the start or the end of the take). All other transitions (pause/
         // resume) stay on release.
         if (!m_looperHasContent[looper] || m_looperRecording[looper]) {
-            applyRecPlayCycle(looper, now_ms, ps);
+            applyRecPlayCycle(looper, now_ms, ps, link);
             m_looperArmedOnPress[looper] = true;
         } else {
             m_looperArmedOnPress[looper] = false;
@@ -173,7 +216,7 @@ void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps) {
     }
 }
 
-void ApcGrid::onPadRelease(int note, unsigned now_ms, ParamStore& ps) {
+void ApcGrid::onPadRelease(int note, unsigned now_ms, ParamStore& ps, LinkBridge* link) {
     int row = note / kApcCols, col = note % kApcCols;
 
     int looper = gridLooperIndex(row, col);
@@ -185,7 +228,7 @@ void ApcGrid::onPadRelease(int note, unsigned now_ms, ParamStore& ps) {
             return;
         }
         if (m_looperHeld[looper] && !m_looperErased[looper]) {
-            applyRecPlayCycle(looper, now_ms, ps);
+            applyRecPlayCycle(looper, now_ms, ps, link);
         }
         m_looperHeld[looper] = false;
         return;

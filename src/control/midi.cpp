@@ -11,6 +11,7 @@
 #include "apc_grid.h"
 #include "apc_leds.h"
 #include "../dsp/audio_thread.h"
+#include "../link/link_bridge.h"
 
 #include <cstdio>
 #include <cstdint>
@@ -49,7 +50,7 @@ static unsigned nowMs() {
     return (unsigned)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
 }
 
-void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio) {
+void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBridge* link) {
     // --- load the remappable control map ---
     std::unordered_map<uint32_t, std::string> map;
     const char* mapPath = "/etc/aloop-controls.conf";
@@ -238,8 +239,8 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio) {
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onSamplerBtn66Release(audio ? audio->sampler() : nullptr); continue; }
             }
             if (d1 < kApcRows * kApcCols) {                                            // 5x8 pad grid
-                if (type == 0x90 && d2 > 0) { grid.onPadPress((int)d1, now, ps); continue; }
-                if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onPadRelease((int)d1, now, ps); continue; }
+                if (type == 0x90 && d2 > 0) { grid.onPadPress((int)d1, now, ps, link); continue; }
+                if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onPadRelease((int)d1, now, ps, link); continue; }
             }
             // SHIFT-gated transport button reroute (apcKey25Notes.cpp:170-175):
             // STOP_ALL (note 0x51/81) unshifted = quantized stop (aloop: the

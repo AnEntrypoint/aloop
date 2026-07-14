@@ -14,6 +14,7 @@
 namespace aloop {
 
 class AudioThread;   // dsp/audio_thread.h -- level telemetry for the LED VU meter
+class LinkBridge;    // link/link_bridge.h -- two-way tempo: the first recorded loop proposes Link's tempo
 
 // Name-keyed control store. Targets are the control names the map binds to
 // ("looper3/rec", "fx/hp", "cmd/clearall", …). The MIDI thread writes values by
@@ -75,7 +76,11 @@ struct ParamStore {
 // (may be null) lets the LED refresh read live per-looper output levels for
 // the APC grid's VU-meter coloring; null just means level-based coloring
 // degrades to the has-content/playing/paused tiers without loudness detail.
-void runMidiLoop(ParamStore& ps, const char* device, class AudioThread* audio = nullptr);
+// `link` (may be null) lets the first recorded loop PROPOSE its own tempo to
+// the Link session (two-way integration -- previously Link was read-only:
+// aloop consumed Link's tempo/phase but nothing ever fed a locally-recorded
+// loop's tempo back to Link, unlike looper's intended linkSetBPM design).
+void runMidiLoop(ParamStore& ps, const char* device, class AudioThread* audio = nullptr, class LinkBridge* link = nullptr);
 
 } // namespace aloop
 #endif // ALOOP_MIDI_H

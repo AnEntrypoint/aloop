@@ -58,9 +58,12 @@ public:
 
 
     // A pad (note 0..39, channel 0) was pressed. Writes commands into `ps`.
-    void onPadPress(int note, unsigned now_ms, ParamStore& ps);
+    // `link` (may be null): the finish-recording transition proposes the
+    // just-established master phrase's tempo to the Link session (two-way
+    // integration -- see applyRecPlayCycle).
+    void onPadPress(int note, unsigned now_ms, ParamStore& ps, class LinkBridge* link = nullptr);
     // A pad (note 0..39, channel 0) was released. Writes commands into `ps`.
-    void onPadRelease(int note, unsigned now_ms, ParamStore& ps);
+    void onPadRelease(int note, unsigned now_ms, ParamStore& ps, class LinkBridge* link = nullptr);
     // Poll for long-holds that must fire without waiting for release (erase
     // trigger at >= kHoldEraseMs, and preset-capture at the same threshold).
     // Call once per control-thread tick (e.g. on every MIDI byte, cheap).
@@ -190,7 +193,7 @@ private:
     // 0 = no master phrase established yet (mirrors looper's masterLoopBlocks==0).
     long m_masterLenSamples = 0;
 
-    void applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps);
+    void applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, class LinkBridge* link);
     void capturePreset(int p, ParamStore& ps);
     void applyPreset(int p, ParamStore& ps);
     void forgetLooperFromPresets(int looper);

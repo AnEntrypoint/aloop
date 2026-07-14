@@ -104,7 +104,7 @@ int main(int argc, char** argv) {
     // It writes the shared param store; the audio thread reads it. Runs on the
     // control core alongside Link. A missing controller is fine (params hold).
     aloop::ParamStore params;
-    std::thread midiThread([&, dev = cfg.midiDevice]{ aloop::runMidiLoop(params, dev.c_str(), &audio); });
+    std::thread midiThread([&, dev = cfg.midiDevice]{ aloop::runMidiLoop(params, dev.c_str(), &audio, &link); });
     midiThread.detach();
 
     // Start the RT audio pipeline (opens the ALSA/f_uac2 PCM, spawns the pinned
