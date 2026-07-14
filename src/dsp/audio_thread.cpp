@@ -483,6 +483,7 @@ static void* worker(void*) {
             // the Link tempo (a musical phrase = a whole number of beats). A tempo
             // change resizes the loops so they stay locked to the session — the
             // same behavior as the original looper's masterLoopBlocks recompute.
+            bool linkDrivingLength = false;
             if (g_link) {
                 LinkSnapshot ls = g_link->audioRead();
                 // publish the live Link state into the telemetry snapshot (atomic
@@ -490,6 +491,7 @@ static void* worker(void*) {
                 g_telem.linkSynced = ls.synced;
                 g_telem.bpm = ls.bpm;
                 if (ls.synced && ls.bpm > 1.0) {
+                    linkDrivingLength = true;
                     // one bar (4 beats) as the phrase, rounded to whole blocks.
                     double beatsPerBar = 4.0;
                     double samplesPerBeat = (g_cfg.sampleRate * 60.0) / ls.bpm;
@@ -503,23 +505,30 @@ static void* worker(void*) {
                     // same phrase length expressed in DSP blocks, so a repeat slice
                     // (lenSamples/DIV) stays grid-aligned with the loop.
                     fui.set("MLB", (float)(lenSamples / N));
-                } else if (g_params) {
-                    // WITNESSED live + confirmed via cross-codebase research
-                    // against ../looper (loopClip.cpp:64-66,219,243): looper's
-                    // masterLoopBlocks/microrepeat grid NEVER requires an
-                    // Ableton Link session -- it's established locally from
-                    // the first recorded loop's own duration. Forcing MLB=0
-                    // here whenever Link isn't synced left microrepeat/glitch
-                    // completely inert on any standalone (no-Link) session --
-                    // exactly the reported "glitch buttons didn't work ...
-                    // nothing happened". apc_grid.cpp's applyRecPlayCycle now
-                    // publishes the locally-established phrase length to
-                    // "cmd/master_len" (0 = none established yet, matching
-                    // looper's masterLoopBlocks==0 empty-rig case) -- use it
-                    // here as the MLB source when Link isn't the driver.
-                    float masterLen = g_params->get("cmd/master_len", 0.0f);
-                    fui.set("MLB", masterLen > 0.0f ? (masterLen / (float)N) : 0.0f);
                 }
+            }
+            if (!linkDrivingLength && g_params) {
+                // WITNESSED live + confirmed via cross-codebase research
+                // against ../looper (loopClip.cpp:64-66,219,243): looper's
+                // masterLoopBlocks/microrepeat grid NEVER requires an
+                // Ableton Link session -- it's established locally from
+                // the first recorded loop's own duration. Forcing MLB=0
+                // here whenever Link isn't synced (or absent entirely) left
+                // microrepeat/glitch completely inert on any standalone
+                // (no-Link) session -- exactly the reported "glitch buttons
+                // didn't work ... nothing happened". WITNESSED via
+                // cross-codebase research (a second pass, after the first
+                // fix): the original fix nested this fallback INSIDE
+                // `if (g_link)`, so it never ran at all when g_link itself
+                // was null (Link object never constructed/unavailable), not
+                // just when it existed-but-unsynced -- moved out to run
+                // unconditionally whenever Link isn't the active length
+                // driver, covering both cases. apc_grid.cpp's
+                // applyRecPlayCycle publishes the locally-established phrase
+                // length to "cmd/master_len" (0 = none established yet,
+                // matching looper's masterLoopBlocks==0 empty-rig case).
+                float masterLen = g_params->get("cmd/master_len", 0.0f);
+                fui.set("MLB", masterLen > 0.0f ? (masterLen / (float)N) : 0.0f);
             }
             // Deinterleave the stereo wire -> mono DSP input: average the wire
             // channels (mono content is identical L/R; a stereo source is summed to
