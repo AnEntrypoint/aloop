@@ -65,26 +65,34 @@ void Telemetry::publish() {
     // the 20 loopers + the vols array, so a controller can reflect looper state.
     uint32_t recBits = 0, playBits = 0;
     char vols[20 * 5 + 2]; int vp = 0; vols[vp++] = '[';
+    char levels[20 * 7 + 2]; int lvp = 0; levels[lvp++] = '[';
     for (int i = 0; i < AudioThread::Telemetry::kLoopers; i++) {
         if (t.looperRec[i])  recBits  |= (1u << i);
         if (t.looperPlay[i]) playBits |= (1u << i);
         vp += snprintf(vols + vp, sizeof vols - vp, i ? ",%.2f" : "%.2f", t.looperVol[i]);
+        // TEMPORARY diagnostic (tracked for removal): per-looper live output
+        // level, for the "second clear-and-restart cycle produces blank
+        // loops" investigation -- confirms/refutes whether the RECORDED
+        // content is genuinely silent vs. audible-but-not-heard for another
+        // reason (routing, volume, playback gating).
+        lvp += snprintf(levels + lvp, sizeof levels - lvp, i ? ",%.4f" : "%.4f", t.looperLevel[i]);
     }
     vols[vp++] = ']'; vols[vp] = 0;
+    levels[lvp++] = ']'; levels[lvp] = 0;
 
     char json[768];
     int n = snprintf(json, sizeof json,
         "{\"core_busy\":[%.0f,%.0f,%.0f,%.0f],\"xruns\":%llu,"
         "\"link\":{\"synced\":%s,\"bpm\":%.1f},\"wifi\":\"%s\",\"monitor_mode\":%s,"
         "\"audio_peak\":{\"in\":%.4f,\"out\":%.4f},"
-        "\"loopers\":{\"rec\":%u,\"play\":%u,\"vol\":%s}}",
+        "\"loopers\":{\"rec\":%u,\"play\":%u,\"vol\":%s,\"level\":%s}}",
         t.coreBusyPct[0], t.coreBusyPct[1], t.coreBusyPct[2], t.coreBusyPct[3],
         (unsigned long long)t.xruns,
         t.linkSynced ? "true" : "false", t.bpm,
         t.apMode ? "ap" : "sta",
         t.monitorMode ? "true" : "false",
         t.inPeak, t.outPeak,
-        recBits, playBits, vols);
+        recBits, playBits, vols, levels);
 
     // Write the status file for shell/curl inspection.
     FILE* f = fopen("/run/aloop/status.json", "w");
