@@ -245,19 +245,6 @@ static void* worker(void*) {
     AloopLoopDsp& faustHome = *faustHomePtr;
     faustHome.init((int)g_cfg.sampleRate);
     FaustUI fui; faustHome.buildUserInterface(&fui);
-    // TEMPORARY diagnostic (tracked for removal): investigating "varispeed
-    // buttons don't seem to speed it up or slow it down" -- dump every zone
-    // whose full path contains "speed" or "clear" to confirm whether
-    // dsp/loop.dsp's file-scope speedMul/clearAll (referenced inside
-    // oneLooper, which is itself instantiated 20x via par(i,...)) compile
-    // down to ONE shared zone (as intended/documented in COMMAND-SURFACE.md)
-    // or 20 separate per-looper zones (which would mean fui.set("speed", ...)
-    // only ever reaches looper 0's copy via FaustUI::set's first-match
-    // suffix search, silently leaving loopers 1-19 unaffected).
-    for (auto& kv : fui.zones) {
-        if (kv.first.find("speed") != std::string::npos || kv.first.find("clear") != std::string::npos)
-            fprintf(stderr, "[diag-speed] zone: %s\n", kv.first.c_str());
-    }
     // aloop.dsp's process() now takes 2 inputs: (in, glitchIn) -- glitchIn is
     // the previous block's post-glitch tap, routed to loop.dsp's DEDICATED
     // record-only input (see loop.dsp's oneLooper + aloop.dsp's top-of-file

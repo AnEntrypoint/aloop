@@ -40,8 +40,34 @@ NLOOPERS = 20;            // 20 independent loopers (the hardware setup)
 // … "looper19/rec"). Record replaces the loop; else it holds — NO overdub.
 // Global controls (shared across all loopers): clear wipes every loop; speedMul
 // scales the effective loop length for the momentary half/double-speed commands.
-clearAll = button("clear");
-speedMul = hslider("speed", 1.0, 0.25, 4.0, 0.001);   // 0.5 = half, 2.0 = double
+//
+// ROOT CAUSE FIXED HERE: these MUST be computed ONCE, outside the par(i,
+// NLOOPERS, vgroup(...)) instantiation of oneLooper below, and threaded IN as
+// ordinary function parameters -- NOT referenced by bare name from inside
+// oneLooper's own body. WITNESSED via a native startup diagnostic (dumping
+// every FaustUI zone containing "speed"/"clear"): declaring clearAll/speedMul
+// at file scope but only ever REFERENCING them (not passing them as
+// parameters) inside oneLooper, which par(...) instantiates 20 times each
+// wrapped in its own vgroup("looper%2i"), does NOT produce one shared zone --
+// Faust has no notion of "the same UI element" reused across separate
+// expression instances; each textual button()/hslider() occurrence is its
+// own box, so the vgroup wrapping produced 20 SEPARATE zones ("looper
+// 0/clear" .. "looper19/clear", "looper 0/speed" .. "looper19/speed").
+// audio_thread.cpp's fui.set("clear", ...) / fui.set("speed", ...) (a bare,
+// unqualified name) resolved via FaustUI::set's first-match suffix search,
+// which only ever found ONE of the 20 duplicated zones -- so a "half/double
+// speed" button press only ever changed ONE looper's playback rate (silently
+// inaudible unless that one specific looper happened to be playing), and
+// cmd/clearall's DSP-side wipe only ever hit ONE looper's ring (the C++ side
+// had to separately erase every looper by its own unambiguous "looperN/erase"
+// name to compensate -- see apc_grid.cpp's onClearAll). Passing clearAll/
+// speedMul as parameters (computed once, above/outside the par) means every
+// oneLooper instance receives the SAME already-evaluated signal, with no
+// per-instance re-declaration -- exactly one real UI zone each, addressable
+// by its plain top-level name, matching docs/COMMAND-SURFACE.md's documented
+// "engine-global" intent.
+clearAllGlobal = button("clear");
+speedMulGlobal = hslider("speed", 1.0, 0.25, 4.0, 0.001);   // 0.5 = half, 2.0 = double
 
 // glitchIn: previous block's post-glitch (microrepeat) tap, native one-block-lag
 // fold-in (see audio_thread.cpp's prevGlitchTap + dsp/aloop.dsp's top-of-file
@@ -51,7 +77,7 @@ speedMul = hslider("speed", 1.0, 0.25, 4.0, 0.001);   // 0.5 = half, 2.0 = doubl
 // feedback whine, see audio_thread.cpp's "REVERTED here" comment). Routed
 // ONLY into the record capture term below, so glitch content becomes
 // recordable into a new loop without ever being reprocessed by microStage.
-oneLooper(in, glitchIn) = out : attachLevel
+oneLooper(in, glitchIn, clearAll, speedMul) = out : attachLevel
 with {
     recN  = button("rec");
     playN = checkbox("play");
@@ -112,6 +138,11 @@ with {
 // tap (see oneLooper's comment) -- it never appears in the dry-thru output
 // (only `in` does), so the glitch content is recordable but never re-enters
 // the live/dry path (which would flow back into `fx`/microStage next block).
-loopEngine(in, glitchIn) = in, (par(i, NLOOPERS, vgroup("looper%2i", oneLooper(in, glitchIn))) :> _);
+// clearAllGlobal/speedMulGlobal are evaluated ONCE here, OUTSIDE any vgroup,
+// then passed as ordinary parameters into every oneLooper instance -- this is
+// what actually makes them single shared zones (see oneLooper's comment above
+// for why referencing them by bare name from INSIDE the vgroup-wrapped par
+// failed to do this).
+loopEngine(in, glitchIn) = in, (par(i, NLOOPERS, vgroup("looper%2i", oneLooper(in, glitchIn, clearAllGlobal, speedMulGlobal))) :> _);
 
 process(in, glitchIn) = loopEngine(in, glitchIn);   // (dry, loopSum) — two outputs, see aloop.dsp's fold mix

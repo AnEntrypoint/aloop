@@ -471,14 +471,19 @@ void ApcGrid::onClearAll(bool held, ParamStore& ps) {
         // every looper's play gate here, matching what m_looperPlaying=false
         // claims is already true.
         setLooper(ps, lp, "play", 0.0f);
-        // Release any pending per-looper erase gate immediately -- clear-all's
-        // own cmd/clearall release (below, on note-off) already covers wiping
-        // this block; leaving a stale release timer around is harmless but
-        // pointless, so clear it explicitly for a clean shadow-state reset.
-        if (m_looperEraseReleaseAt[lp] != 0) {
-            setLooper(ps, lp, "erase", 0.0f);
-            m_looperEraseReleaseAt[lp] = 0;
-        }
+        // ROOT CAUSE FOUND + FIXED at the DSP level (dsp/loop.dsp): the
+        // "clear"/"speed" engine-global controls were previously referenced
+        // by bare name INSIDE oneLooper, which par(i, NLOOPERS, vgroup(...))
+        // instantiates 20 times -- Faust compiled each reference as its OWN
+        // primitive per vgroup instance, producing 20 SEPARATE zones
+        // ("looper 0/clear" .. "looper19/clear") instead of one shared zone,
+        // so cmd/clearall's bare fui.set("clear", ...) only ever reached ONE
+        // of them. Fixed by hoisting clearAllGlobal/speedMulGlobal OUTSIDE
+        // the par/vgroup and threading them into oneLooper as ordinary
+        // parameters (dsp/loop.dsp) -- "clear" (and "speed") are now genuine
+        // single zones, so cmd/clearall's existing fui.set("clear", ...) in
+        // audio_thread.cpp now correctly wipes every looper's ring in one
+        // write, with no C++-side per-looper compensation needed here.
     }
     for (int p = 0; p < kPresetCount; p++) {
         m_presetHeld[p] = false;
