@@ -459,16 +459,7 @@ static void* worker(void*) {
                 // resetting masterLoopBlocks to 0 (loopMachine.cpp:325-330,
                 // 411-412) so a cleared rig's first new loop defines a new
                 // grid rather than inheriting the previous session's length.
-                if (clearAllHeld) {
-                    g_params->setByName("cmd/master_len", 0.0f);
-                    // TEMPORARY diagnostic (tracked for removal): re-investigating
-                    // "second clear-and-restart cycle produces blank loops" --
-                    // confirm the audio thread genuinely sees clearAllHeld and for
-                    // how many consecutive blocks (rate-limited to avoid flooding).
-                    static uint64_t clearBlockCount = 0;
-                    if (clearBlockCount++ % 8 == 0)
-                        fprintf(stderr, "[diag5] audio_thread clearAllHeld block=%llu\n", (unsigned long long)clearBlockCount);
-                }
+                if (clearAllHeld) g_params->setByName("cmd/master_len", 0.0f);
                 float speed = 1.0f;
                 if (g_params->get("cmd/halfspeed")   > 0.5f) speed = 0.5f;
                 if (g_params->get("cmd/doublespeed") > 0.5f) speed = 2.0f;

@@ -98,9 +98,6 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
         m_looperHasContent[looper] = true;
         m_looperPlaying[looper] = true;
         setLooper(ps, looper, "play", 1.0f);
-        // TEMPORARY diagnostic (tracked for removal): see ARM's matching diag4.
-        fprintf(stderr, "[diag4] FINISH looper=%d now_ms=%u recordStart=%u elapsedMs=%u masterLen(before)=%ld\n",
-                looper, now_ms, m_recordStartMs[looper], now_ms - m_recordStartMs[looper], m_masterLenSamples);
         // WITNESSED live + confirmed by cross-codebase research against
         // ../looper (loopClip.cpp:64-66,219,243): looper's masterLoopBlocks
         // (the shared phrase length ALL loopers quantize to) is established
@@ -221,12 +218,6 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
         setLooper(ps, looper, "rec", 1.0f);   // ARM: start recording -- next press finishes it
         m_looperRecording[looper] = true;
         m_recordStartMs[looper] = now_ms;
-        // TEMPORARY diagnostic (tracked for removal): re-investigating
-        // "second clear-and-restart cycle produces blank loops" after the
-        // controls.conf/shift-fallthrough fix did NOT resolve it -- tracing
-        // every ARM to see whether rec is genuinely being set to 1 each cycle.
-        fprintf(stderr, "[diag4] ARM looper=%d now_ms=%u masterLen=%ld cmd_masterlen=%.0f\n",
-                looper, now_ms, m_masterLenSamples, ps.get("cmd/master_len", -1.0f));
     } else if (m_looperPlaying[looper]) {
         setLooper(ps, looper, "play", 0.0f);
         m_looperPlaying[looper] = false;
@@ -256,11 +247,6 @@ void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps, LinkBridge* 
         m_looperHeld[looper] = true;
         m_looperErased[looper] = false;
         m_looperHoldStart[looper] = now_ms;
-        // TEMPORARY diagnostic (tracked for removal): see diag6/diag4 -- exact
-        // press timestamp to correlate hold duration against pollHolds' erase
-        // threshold for the "spurious re-ARM with no clear-all" investigation.
-        fprintf(stderr, "[diag6] PRESS looper=%d now_ms=%u hasContent=%d recording=%d\n",
-                looper, now_ms, (int)m_looperHasContent[looper], (int)m_looperRecording[looper]);
         // Press-time-critical arm/finish, mirroring apcKey25Notes.cpp: an empty
         // pad arms record on PRESS (not release), and a CURRENTLY RECORDING pad
         // finishes recording on PRESS too (both are "the exact press instant
@@ -290,9 +276,6 @@ void ApcGrid::onPadRelease(int note, unsigned now_ms, ParamStore& ps, LinkBridge
 
     int looper = gridLooperIndex(row, col);
     if (looper >= 0) {
-        // TEMPORARY diagnostic (tracked for removal): see PRESS's matching diag6.
-        fprintf(stderr, "[diag6] RELEASE looper=%d now_ms=%u heldMs=%u armedOnPress=%d erased=%d\n",
-                looper, now_ms, now_ms - m_looperHoldStart[looper], (int)m_looperArmedOnPress[looper], (int)m_looperErased[looper]);
         if (m_looperArmedOnPress[looper]) {
             // Already armed on press for an empty pad — don't double-fire the tap.
             m_looperArmedOnPress[looper] = false;
@@ -317,20 +300,50 @@ void ApcGrid::onPadRelease(int note, unsigned now_ms, ParamStore& ps, LinkBridge
 }
 
 void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps) {
+    // Release any pending erase gate whose delay has elapsed (see the
+    // erase-fire branch below for why this can't be an immediate set-then-
+    // clear in the same call).
+    for (int looper = 0; looper < kLooperCount; looper++) {
+        if (m_looperEraseReleaseAt[looper] != 0 && now_ms >= m_looperEraseReleaseAt[looper]) {
+            setLooper(ps, looper, "erase", 0.0f);
+            m_looperEraseReleaseAt[looper] = 0;
+        }
+    }
     for (int looper = 0; looper < kLooperCount; looper++) {
         if (!m_looperHeld[looper] || m_looperErased[looper]) continue;
         if (now_ms - m_looperHoldStart[looper] < kHoldEraseMs) continue;
         // Long-hold -> erase (apcKey25Notes.cpp: a >=1s hold clears the looper
         // regardless of state; also cancels a just-armed press-record).
-        // TEMPORARY diagnostic (tracked for removal): confirmed via diag4 that
-        // repeated rapid taps on the SAME pad, with no clear-all in between,
-        // still produce a spurious re-ARM (m_looperHasContent flips back to
-        // false) -- this erase path is the only other writer of
-        // m_looperHasContent=false, so tracing every fire here to confirm
-        // whether a single held-too-long tap (>=1s) is the actual trigger.
-        fprintf(stderr, "[diag6] pollHolds ERASE-FIRE looper=%d now_ms=%u heldMs=%u\n",
-                looper, now_ms, now_ms - m_looperHoldStart[looper]);
+        //
+        // ROOT CAUSE FOUND (via the new MIDI-injection harness, test/hardware/
+        // midi-inject.js, scripting this exact sequence with no human at the
+        // hardware): this call set "erase" to 1.0 and NEVER released it back
+        // to 0 -- the only other writer of looperN/erase is this same line,
+        // fired once. dsp/loop.dsp's `wipe = max(clearAll, eraseN)` gates
+        // `hold` EVERY block (`hold = delayed * (1-recN) * (1-wipe)`), so once
+        // eraseN stuck at 1 forever, this looper's delay-ring recirculation
+        // was permanently zeroed -- recording still worked (`record = in*recN`
+        // is unaffected by wipe), but playback was silently wiped every
+        // single block from then on, matching exactly what was reported:
+        // "after clearing it, the second round didn't play after recording"
+        // (and, earlier this session, the "blank recording" reports -- not
+        // blank at record time, wiped in every subsequent block afterward).
+        // Fix: release erase back to 0 after a short real delay, the same
+        // momentary held/release shape onClearAll already uses for
+        // cmd/clearall (there, note-on sets it, a LATER note-off from the
+        // user's own release releases it -- real wall-clock time passes in
+        // between, guaranteeing the audio thread's block-rate reads actually
+        // observe erase=1 for a while first). Setting it to 1 then
+        // immediately back to 0 in the same call would race the audio
+        // thread's plain-atomic read with no ordering guarantee -- it could
+        // read 0 and never see the wipe at all. Instead: set it now, and
+        // record a release deadline pollHolds itself checks on a later tick
+        // (it already runs every ~100ms regardless of MIDI traffic) so at
+        // least one real control-thread tick's worth of DSP blocks
+        // (thousands, at 48kHz/64-sample blocks) genuinely see wipe=1 before
+        // it's released.
         setLooper(ps, looper, "erase", 1.0f);
+        m_looperEraseReleaseAt[looper] = now_ms + 50;   // ~50ms is many DSP blocks; short enough no user notices a delay
         if (m_looperRecording[looper]) {
             setLooper(ps, looper, "rec", 0.0f);   // cancel the in-progress take, don't leave rec stuck at 1
             m_looperRecording[looper] = false;
@@ -430,12 +443,6 @@ void ApcGrid::onClearAll(bool held, ParamStore& ps) {
     // every block forever. The release call (held=false) only clears the
     // Faust-side hold; local shadow-state reset happens once, on press.
     ps.setByName("cmd/clearall", held ? 1.0f : 0.0f);
-    // TEMPORARY diagnostic (tracked for removal): see apply RecPlayCycle's
-    // matching diag4 -- tracing the full clear-all lifecycle to find why a
-    // second clear-and-restart cycle still produces a blank recording after
-    // the controls.conf/shift-fallthrough fix.
-    fprintf(stderr, "[diag4] onClearAll held=%d masterLen(before)=%ld cmd_masterlen=%.0f\n",
-            (int)held, m_masterLenSamples, ps.get("cmd/master_len", -1.0f));
     if (!held) return;
     // Wipe the DSP-side content of every looper AND reset every bit of local
     // shadow state this thread tracks, so a subsequent press correctly
@@ -449,6 +456,14 @@ void ApcGrid::onClearAll(bool held, ParamStore& ps) {
         m_looperHasContent[lp] = false;
         m_looperRecording[lp] = false;
         m_recordStartMs[lp] = 0;
+        // Release any pending per-looper erase gate immediately -- clear-all's
+        // own cmd/clearall release (below, on note-off) already covers wiping
+        // this block; leaving a stale release timer around is harmless but
+        // pointless, so clear it explicitly for a clean shadow-state reset.
+        if (m_looperEraseReleaseAt[lp] != 0) {
+            setLooper(ps, lp, "erase", 0.0f);
+            m_looperEraseReleaseAt[lp] = 0;
+        }
     }
     for (int p = 0; p < kPresetCount; p++) {
         m_presetHeld[p] = false;
