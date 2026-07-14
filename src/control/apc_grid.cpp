@@ -256,6 +256,11 @@ void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps, LinkBridge* 
         m_looperHeld[looper] = true;
         m_looperErased[looper] = false;
         m_looperHoldStart[looper] = now_ms;
+        // TEMPORARY diagnostic (tracked for removal): see diag6/diag4 -- exact
+        // press timestamp to correlate hold duration against pollHolds' erase
+        // threshold for the "spurious re-ARM with no clear-all" investigation.
+        fprintf(stderr, "[diag6] PRESS looper=%d now_ms=%u hasContent=%d recording=%d\n",
+                looper, now_ms, (int)m_looperHasContent[looper], (int)m_looperRecording[looper]);
         // Press-time-critical arm/finish, mirroring apcKey25Notes.cpp: an empty
         // pad arms record on PRESS (not release), and a CURRENTLY RECORDING pad
         // finishes recording on PRESS too (both are "the exact press instant
@@ -285,6 +290,9 @@ void ApcGrid::onPadRelease(int note, unsigned now_ms, ParamStore& ps, LinkBridge
 
     int looper = gridLooperIndex(row, col);
     if (looper >= 0) {
+        // TEMPORARY diagnostic (tracked for removal): see PRESS's matching diag6.
+        fprintf(stderr, "[diag6] RELEASE looper=%d now_ms=%u heldMs=%u armedOnPress=%d erased=%d\n",
+                looper, now_ms, now_ms - m_looperHoldStart[looper], (int)m_looperArmedOnPress[looper], (int)m_looperErased[looper]);
         if (m_looperArmedOnPress[looper]) {
             // Already armed on press for an empty pad — don't double-fire the tap.
             m_looperArmedOnPress[looper] = false;
@@ -314,6 +322,14 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps) {
         if (now_ms - m_looperHoldStart[looper] < kHoldEraseMs) continue;
         // Long-hold -> erase (apcKey25Notes.cpp: a >=1s hold clears the looper
         // regardless of state; also cancels a just-armed press-record).
+        // TEMPORARY diagnostic (tracked for removal): confirmed via diag4 that
+        // repeated rapid taps on the SAME pad, with no clear-all in between,
+        // still produce a spurious re-ARM (m_looperHasContent flips back to
+        // false) -- this erase path is the only other writer of
+        // m_looperHasContent=false, so tracing every fire here to confirm
+        // whether a single held-too-long tap (>=1s) is the actual trigger.
+        fprintf(stderr, "[diag6] pollHolds ERASE-FIRE looper=%d now_ms=%u heldMs=%u\n",
+                looper, now_ms, now_ms - m_looperHoldStart[looper]);
         setLooper(ps, looper, "erase", 1.0f);
         if (m_looperRecording[looper]) {
             setLooper(ps, looper, "rec", 0.0f);   // cancel the in-progress take, don't leave rec stuck at 1
