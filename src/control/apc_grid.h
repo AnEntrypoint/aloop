@@ -85,6 +85,19 @@ public:
     // can't be expressed as a static 1:1 binding.
     void onFormantCC(uint8_t data2, ParamStore& ps);
 
+    // Read-only state accessors for the LED module (apc_leds.h) — it needs the
+    // same per-pad classification ApcGrid already tracks (has this looper
+    // recorded anything, is it playing, is a preset slot used) to compute
+    // colors, without duplicating that state. Looper's own apcKey25.cpp reads
+    // its OWN member fields directly for the same reason (LED code and input
+    // dispatch share one class there); this keeps the split we already have
+    // between ApcGrid (input+state) and a new ApcLeds (output) while still
+    // letting ApcLeds see the state it needs.
+    bool looperHasContent(int looper) const { return m_looperHasContent[looper]; }
+    bool looperPlaying(int looper) const { return m_looperPlaying[looper]; }
+    bool presetUsed(int preset) const { return m_presetUsed[preset]; }
+    uint8_t microrepeatDiv() const { return m_microRepeatDiv; }
+
 private:
     bool m_looperHeld[kLooperCount] = {};
     unsigned m_looperHoldStart[kLooperCount] = {};

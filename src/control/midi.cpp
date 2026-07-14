@@ -9,6 +9,7 @@
 
 #include "midi.h"
 #include "apc_grid.h"
+#include "apc_leds.h"
 
 #include <cstdio>
 #include <cstdint>
@@ -101,14 +102,34 @@ void runMidiLoop(ParamStore& ps, const char* device) {
     ApcGrid::bindAll(ps);
 
 #ifdef ALOOP_HAVE_ALSA
+    // Open BOTH directions on the same device: the APC Key25's USB MIDI is one
+    // bidirectional endpoint (../looper usbMidi.cpp sends LED updates back out
+    // the SAME connection input arrives on, via SendPlainMIDI — no separate
+    // MIDI OUT device exists). `out` may legitimately fail to open even when
+    // `in` succeeds (a non-APC controller with no LEDs, or a device that only
+    // exposes a capture-only rawmidi substream) — LED output is best-effort:
+    // aloop still functions fully for control (the actual bug this whole
+    // module exists to fix was buttons doing nothing INTERNALLY, which is a
+    // separate, now-fixed issue; missing LEDs on non-APC hardware is expected,
+    // not an error).
     snd_rawmidi_t* in = nullptr;
+    snd_rawmidi_t* out = nullptr;
     char devbuf[16] = {0};
+    // snd_rawmidi_open(&in, &out, ...) only succeeds if BOTH substreams open —
+    // a device with a capture-only rawmidi substream (no OUT at all) would
+    // fail the combined call even though the input-only open (the previous,
+    // working behavior) would have succeeded. Try combined first (gets LEDs
+    // when available); on failure retry input-only so a device that just
+    // lacks MIDI OUT doesn't lose CONTROL entirely for the sake of LEDs.
     if (device && strcmp(device, "auto")) {
         // explicit device given (config/arg) — use it verbatim.
         snprintf(devbuf, sizeof devbuf, "%s", device);
-        if (snd_rawmidi_open(&in, nullptr, devbuf, SND_RAWMIDI_SYNC) < 0) {
-            fprintf(stderr, "[midi] no controller at %s — params hold\n", devbuf);
-            return;
+        if (snd_rawmidi_open(&in, &out, devbuf, SND_RAWMIDI_SYNC) < 0) {
+            in = nullptr; out = nullptr;
+            if (snd_rawmidi_open(&in, nullptr, devbuf, SND_RAWMIDI_SYNC) < 0) {
+                fprintf(stderr, "[midi] no controller at %s — params hold\n", devbuf);
+                return;
+            }
         }
     } else {
         // auto: SCAN for the first rawmidi input. The USB MIDI controller's ALSA
@@ -116,6 +137,8 @@ void runMidiLoop(ParamStore& ps, const char* device) {
         // cards), so we probe hw:0..7,0,0 rather than assume card 1.
         for (int card = 0; card < 8 && !in; card++) {
             snprintf(devbuf, sizeof devbuf, "hw:%d,0,0", card);
+            if (snd_rawmidi_open(&in, &out, devbuf, SND_RAWMIDI_SYNC) == 0) break;
+            in = nullptr; out = nullptr;
             if (snd_rawmidi_open(&in, nullptr, devbuf, SND_RAWMIDI_SYNC) == 0) break;
             in = nullptr;
         }
@@ -124,8 +147,15 @@ void runMidiLoop(ParamStore& ps, const char* device) {
             return;
         }
     }
-    fprintf(stderr, "[midi] reading %s (remappable control map + APC grid engine)\n", devbuf);
+    fprintf(stderr, "[midi] reading %s (remappable control map + APC grid engine)%s\n",
+            devbuf, out ? " + LED output" : " (no MIDI OUT on this device — no LED feedback)");
     ApcGrid grid;
+    ApcLeds leds;
+    auto ledWrite = [&](int note, uint8_t vel) -> bool {
+        if (!out) return false;
+        uint8_t msg[3] = { 0x90, (uint8_t)note, vel };   // Note On, channel 0 (looper: usbMidi.cpp)
+        return snd_rawmidi_write(out, msg, 3) == 3;
+    };
     // Hold-duration polling (erase >=1s, preset capture >=1s) must run on a
     // WALL-CLOCK tick, not on MIDI-message arrival — a held pad with no other
     // MIDI traffic in flight would otherwise never resolve (snd_rawmidi_read is
@@ -139,8 +169,18 @@ void runMidiLoop(ParamStore& ps, const char* device) {
     uint8_t st = 0, d1 = 0, d2 = 0; int phase = 0; uint8_t b;
     for (;;) {
         int pr = (nfds > 0) ? poll(pfds.data(), (nfds_t)nfds, 100) : 100;
-        if (pr == 0) { grid.pollHolds(nowMs(), ps); continue; }   // timeout: no MIDI, just poll holds
-        if (pr < 0) { grid.pollHolds(nowMs(), ps); continue; }    // interrupted/error: keep polling holds, retry read
+        if (pr == 0) {
+            unsigned n = nowMs();
+            grid.pollHolds(n, ps);   // timeout: no MIDI, just poll holds
+            leds.refresh(n, grid, ps.get("fx/pitchbend_engaged") > 0.5f, ledWrite);
+            continue;
+        }
+        if (pr < 0) {
+            unsigned n = nowMs();
+            grid.pollHolds(n, ps);   // interrupted/error: keep polling holds, retry read
+            leds.refresh(n, grid, ps.get("fx/pitchbend_engaged") > 0.5f, ledWrite);
+            continue;
+        }
         if (snd_rawmidi_read(in, &b, 1) != 1) break;
         // Diagnostic: only log NOTE-related messages (0x8x/0x9x status), so CC
         // traffic from working knobs doesn't drown out the button-press bytes
@@ -160,6 +200,7 @@ void runMidiLoop(ParamStore& ps, const char* device) {
         if ((type == 0x80 || type == 0x90) && noteLogCount < 500)
             fprintf(stderr, "[midi] note decoded: st=0x%02x type=0x%02x ch=%d d1=%d d2=%d\n", st, type, channel, d1, d2);
         grid.pollHolds(now, ps);   // also check on every real event, for prompt response
+        leds.refresh(now, grid, ps.get("fx/pitchbend_engaged") > 0.5f, ledWrite);   // self-throttled to ~30Hz internally
 
         // --- real APC Key25 hardware surface (apcKey25.cpp/apcKey25Notes.cpp), channel 0 only ---
         if (channel == 0) {
@@ -193,6 +234,7 @@ void runMidiLoop(ParamStore& ps, const char* device) {
         if (it != map.end()) ps.setByName(it->second, val);   // apply per the MAP
     }
     snd_rawmidi_close(in);
+    if (out) snd_rawmidi_close(out);
 #else
     (void)ps;
 #endif

@@ -29,6 +29,7 @@ set(DSP_SOURCES
   control/telemetry.cpp   # the diagnosability surface
   control/midi.cpp        # ALSA rawmidi + the control mapping
   control/apc_grid.cpp    # APC Key25 grid/tap-hold/preset/live-pitch/microrepeat engine
+  control/apc_leds.cpp    # APC Key25 LED output (grid/preset/transport/live-pitch colors)
   control/remote_control.cpp  # remote reboot + log-tail (udp/4446, token-authenticated)
   main.cpp                # the wiring
 )
