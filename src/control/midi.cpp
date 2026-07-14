@@ -28,6 +28,11 @@
 #define ALOOP_HAVE_ALSA 1
 #endif
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include <fcntl.h>
+
 namespace aloop {
 
 // Parse "cc51" / "note20" / "cc51.2" into (isNote, number, channel or -1).
@@ -165,27 +170,106 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
     // is likewise driven from the audio thread's periodic tick, not from MIDI
     // events — audio.cpp:423). Use poll() on the rawmidi fd(s) with a 100ms
     // timeout so pollHolds() runs regularly even with the port idle.
-    int nfds = snd_rawmidi_poll_descriptors_count(in);
-    std::vector<struct pollfd> pfds((size_t)(nfds > 0 ? nfds : 1));
-    if (nfds > 0) snd_rawmidi_poll_descriptors(in, pfds.data(), (unsigned)nfds);
+    // Synthetic-input injection socket (TCP :9401, localhost+LAN): accepts
+    // raw MIDI bytes and feeds them into the EXACT SAME byte-parsing state
+    // machine below as real hardware input. Built to close a real gap found
+    // in this project's own history: every hardware-input bug (APC grid
+    // buttons, the blank-loop-after-erase investigation) could only be
+    // reproduced by asking a human to physically press pads on the real
+    // controller, because there was no way to inject a synthetic
+    // note-on/note-off byte sequence into this exact dispatch path -- a raw
+    // write() to the ALSA rawmidi device node itself does NOT work as an
+    // injection channel (WITNESSED: it targets the USB MIDI OUT endpoint
+    // toward the physical controller, and blocks/hangs with no receiver;
+    // confirmed live via `timeout 3 sh -c "printf ... > /dev/snd/midiC1D0"`
+    // hanging until killed). TCP (not a Unix socket) specifically because
+    // this device's shell has no `nc -U`/`socat` to bridge stdin to a Unix
+    // socket, and the workstation already reaches the device directly over
+    // the LAN for SSH -- a plain TCP connect needs no on-device relay tool
+    // at all, just `node test/hardware/midi-inject.js <host> <bytes...>`.
+    // This socket joins THIS thread's poll() set alongside the real rawmidi
+    // fd; any byte read from it is parsed by the identical state machine
+    // (st/d1/d2/phase) real MIDI bytes go through, so a scripted
+    // reproduction is indistinguishable from a real button press to every
+    // downstream consumer (ApcGrid, the LED refresh, telemetry).
+    // Best-effort: a bind/listen failure here must never prevent real MIDI
+    // control from working, so failures just leave injection unavailable.
+    int injectListenFd = -1, injectConnFd = -1;
+    {
+        int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+        if (fd >= 0) {
+            int yes = 1;
+            setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes);
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_addr.s_addr = htonl(INADDR_ANY);
+            addr.sin_port = htons(9401);
+            if (bind(fd, (sockaddr*)&addr, sizeof addr) == 0 && listen(fd, 1) == 0) {
+                injectListenFd = fd;
+                fprintf(stderr, "[midi] injection socket listening on tcp/9401 (synthetic MIDI bytes for scripted reproduction)\n");
+            } else {
+                close(fd);
+            }
+        }
+    }
+    // Fixed pollfd layout: [0..nfds) = real rawmidi fds, [nfds] = injection
+    // listen socket (always present if it opened; harmlessly polls -1
+    // otherwise, which poll() ignores), [nfds+1] = the current injection
+    // connection (-1/ignored when no client is connected).
+    int realNfds = snd_rawmidi_poll_descriptors_count(in);
+    int nfds = realNfds > 0 ? realNfds : 1;
+    const int kListenSlot = nfds;
+    const int kConnSlot = nfds + 1;
+    std::vector<struct pollfd> pfds((size_t)(nfds + 2));
+    if (realNfds > 0) {
+        snd_rawmidi_poll_descriptors(in, pfds.data(), (unsigned)realNfds);
+    } else {
+        pfds[0].fd = -1;   // no real descriptor available -- poll() ignores fd<0 entries
+        pfds[0].events = 0;
+    }
     uint8_t st = 0, d1 = 0, d2 = 0; int phase = 0; uint8_t b;
     for (;;) {
-        int pr = (nfds > 0) ? poll(pfds.data(), (nfds_t)nfds, 100) : 100;
-        if (pr == 0) {
-            unsigned n = nowMs();
-            grid.pollHolds(n, ps);   // timeout: no MIDI, just poll holds
-            auto t = audio ? audio->snapshotTelemetry() : AudioThread::Telemetry{};
-            leds.refresh(n, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr);
-            continue;
+        pfds[(size_t)kListenSlot].fd = injectListenFd;
+        pfds[(size_t)kListenSlot].events = POLLIN;
+        pfds[(size_t)kConnSlot].fd = injectConnFd;
+        pfds[(size_t)kConnSlot].events = POLLIN;
+        int pr = poll(pfds.data(), (nfds_t)pfds.size(), 100);
+        if (pr > 0 && injectListenFd >= 0 && (pfds[(size_t)kListenSlot].revents & POLLIN)) {
+            int c = accept(injectListenFd, nullptr, nullptr);
+            if (c >= 0) {
+                if (injectConnFd >= 0) close(injectConnFd);   // one injector at a time
+                injectConnFd = c;
+            }
         }
-        if (pr < 0) {
-            unsigned n = nowMs();
-            grid.pollHolds(n, ps);   // interrupted/error: keep polling holds, retry read
-            auto t = audio ? audio->snapshotTelemetry() : AudioThread::Telemetry{};
-            leds.refresh(n, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr);
-            continue;
+        bool gotInjectedByte = false;
+        if (pr > 0 && injectConnFd >= 0 && (pfds[(size_t)kConnSlot].revents & (POLLIN | POLLHUP))) {
+            uint8_t ib;
+            ssize_t rr = read(injectConnFd, &ib, 1);
+            if (rr == 1) { b = ib; gotInjectedByte = true; }
+            else { close(injectConnFd); injectConnFd = -1; }
         }
-        if (snd_rawmidi_read(in, &b, 1) != 1) break;
+        bool realReady = false;
+        for (int i = 0; i < nfds; i++) if (pfds[(size_t)i].revents & POLLIN) { realReady = true; break; }
+        if (!gotInjectedByte) {
+            if (pr == 0) {
+                unsigned n = nowMs();
+                grid.pollHolds(n, ps);   // timeout: no MIDI, just poll holds
+                auto t = audio ? audio->snapshotTelemetry() : AudioThread::Telemetry{};
+                leds.refresh(n, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr);
+                continue;
+            }
+            if (pr < 0) {
+                unsigned n = nowMs();
+                grid.pollHolds(n, ps);   // interrupted/error: keep polling holds, retry read
+                auto t = audio ? audio->snapshotTelemetry() : AudioThread::Telemetry{};
+                leds.refresh(n, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr);
+                continue;
+            }
+            if (!realReady) continue;   // only the listen socket (or nothing) was ready
+            if (snd_rawmidi_read(in, &b, 1) != 1) break;
+        }
+        // `b` now holds either a real rawmidi byte or an injected synthetic
+        // byte -- both flow through the identical parse/dispatch below.
         // Diagnostic: only log NOTE-related messages (0x8x/0x9x status), so CC
         // traffic from working knobs doesn't drown out the button-press bytes
         // we actually need to see. Capped generously since note events are rare
