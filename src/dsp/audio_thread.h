@@ -94,6 +94,13 @@ public:
         double   bpm = 0.0;
         bool     apMode = false;    // hosting AP vs joined STA
         bool     monitorMode = false;   // SHIFT held (apcKey25.cpp:361's p.monitorMode) -- loops folded into effects
+        // Peak level of the last block's capture input and post-effects output
+        // (0..1, absolute value of the float sample) -- lets a UDP query answer
+        // "is real signal reaching the DSP at all" and "is anything coming out
+        // the other side" without needing an external ALSA mixer tool on a
+        // minimal Alpine image (no amixer package in the local netboot repo).
+        float    inPeak = 0.0f;
+        float    outPeak = 0.0f;
         // Per-looper state — the Linux-native equivalent of the hardware's
         // GET_STATE 0x30 dump (which of the 20 loopers are recording/playing and
         // their levels). Read from the Faust zones each block; served on udp/4445.

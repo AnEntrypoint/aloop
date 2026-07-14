@@ -485,11 +485,15 @@ static void* worker(void*) {
             // using the s16 divisor here was the earlier "loud static" bug: it
             // treated 32-bit samples as if they were 16-bit magnitude, producing
             // values ~65536x too large before Faust even saw them.
+            float inPeak = 0.0f;
             for (int i = 0; i < N; i++) {
                 float acc = 0.0f;
                 for (int c = 0; c < wireCh; c++) acc += (float)buf[(size_t)i * wireCh + c];
                 fin[i] = (acc / wireCh) / 2147483648.0f;
+                float a = fin[i] < 0 ? -fin[i] : fin[i];
+                if (a > inPeak) inPeak = a;
             }
+            g_telem.inPeak = inPeak;
             // Time the DSP work vs the block budget → home-core busy % telemetry.
             timespec t0, t1;
             clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -516,6 +520,7 @@ static void* worker(void*) {
             // configfs c_ssize/p_ssize=2) have genuinely different wire formats —
             // see the capture-side comment above for why a shared 16-bit buffer
             // caused loud static once the instrument device was opened at all.
+            float outPeak = 0.0f;
             for (int i = 0; i < N; i++) {
                 float v32 = fout[i] * 2147483648.0f;
                 int32_t s32 = (int32_t)(v32 > 2147483647.0f ? 2147483647 : (v32 < -2147483648.0f ? -2147483648.0f : v32));
@@ -525,7 +530,10 @@ static void* worker(void*) {
                     buf[(size_t)i * wireCh + c] = s32;
                     otgBuf[(size_t)i * wireCh + c] = s16;
                 }
+                float a = fout[i] < 0 ? -fout[i] : fout[i];
+                if (a > outPeak) outPeak = a;
             }
+            g_telem.outPeak = outPeak;
 #endif
 
             snd_pcm_sframes_t w = snd_pcm_writei(play, buf.data(), N);
