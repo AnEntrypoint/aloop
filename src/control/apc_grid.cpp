@@ -352,6 +352,7 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps) {
         m_looperArmedOnPress[looper] = false;
         m_looperHasContent[looper] = false;
         m_looperPlaying[looper] = false;
+        setLooper(ps, looper, "play", 0.0f);   // stop the Faust play gate too, not just the shadow (see onClearAll's matching fix)
         forgetLooperFromPresets(looper);
     }
     for (int p = 0; p < kPresetCount; p++) {
@@ -456,6 +457,20 @@ void ApcGrid::onClearAll(bool held, ParamStore& ps) {
         m_looperHasContent[lp] = false;
         m_looperRecording[lp] = false;
         m_recordStartMs[lp] = 0;
+        // WITNESSED live (real-audio test, after the erase-gate release fix
+        // landed): "clearing doesn't stop them" -- this loop only ever reset
+        // the C++ SHADOW state (m_looperPlaying=false) and never told the
+        // Faust DSP to actually stop: dsp/loop.dsp's `out = loopSig * playN *
+        // volN` keeps outputting whatever loopSig currently holds gated by
+        // playN, and playN (the "play" checkbox control) was never zeroed
+        // here. clearAll wipes the RING CONTENT (hold *= (1-wipe)), but that
+        // only silences the ring's own recirculated content -- it does
+        // nothing to stop the looper's play gate itself, so anything already
+        // mid-recirculation (or a play=1 looper about to resume once wipe
+        // releases) kept audibly playing through the clear. Explicitly stop
+        // every looper's play gate here, matching what m_looperPlaying=false
+        // claims is already true.
+        setLooper(ps, lp, "play", 0.0f);
         // Release any pending per-looper erase gate immediately -- clear-all's
         // own cmd/clearall release (below, on note-off) already covers wiping
         // this block; leaving a stale release timer around is harmless but
