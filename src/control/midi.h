@@ -13,6 +13,8 @@
 
 namespace aloop {
 
+class AudioThread;   // dsp/audio_thread.h -- level telemetry for the LED VU meter
+
 // Name-keyed control store. Targets are the control names the map binds to
 // ("looper3/rec", "fx/hp", "cmd/clearall", …). The MIDI thread writes values by
 // name; the audio thread reads by name to set the matching Faust control zone.
@@ -69,8 +71,11 @@ struct ParamStore {
 };
 
 // Blocking control-thread loop: load the remappable map, read ALSA rawmidi, apply
-// each event per the map into `ps`. `device` = "auto" or an ALSA name.
-void runMidiLoop(ParamStore& ps, const char* device);
+// each event per the map into `ps`. `device` = "auto" or an ALSA name. `audio`
+// (may be null) lets the LED refresh read live per-looper output levels for
+// the APC grid's VU-meter coloring; null just means level-based coloring
+// degrades to the has-content/playing/paused tiers without loudness detail.
+void runMidiLoop(ParamStore& ps, const char* device, class AudioThread* audio = nullptr);
 
 } // namespace aloop
 #endif // ALOOP_MIDI_H

@@ -108,6 +108,10 @@ public:
         bool     looperRec[kLoopers]  = {};   // 1 = recording (rec button held)
         bool     looperPlay[kLoopers] = {};   // 1 = playing (play checkbox on)
         float    looperVol[kLoopers]  = {};   // 0..1 output level
+        float    looperLevel[kLoopers] = {};  // 0..1 live output peak (dsp/loop.dsp's "level" hbargraph,
+                                               // ba.slidingMax envelope) -- drives the APC grid's real
+                                               // 3-tier VU-meter LED coloring (apc_leds.cpp), matching
+                                               // looper's vuLow/vuMid/vuHigh peak-based PLAY color tiers.
     };
     Telemetry snapshotTelemetry() const;
 

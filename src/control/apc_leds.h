@@ -52,8 +52,15 @@ public:
     // so this module doesn't need to know about snd_rawmidi_t directly — kept
     // decoupled from ALSA specifics the same way ApcGrid stays decoupled from
     // rawmidi read framing.
+    // `looperLevels` (may be null): 20-element array of per-looper live output
+    // peak (0..1, dsp/loop.dsp's "level" hbargraph via AudioThread::Telemetry)
+    // -- drives the 3-tier VU-meter PLAY coloring, matching looper's
+    // vuLow/vuMid/vuHigh peak-based tiers. Passed as a raw pointer rather than
+    // an AudioThread reference to keep this module decoupled from the audio
+    // subsystem, same as it's decoupled from ALSA specifics via WriteFn. Null
+    // degrades PLAY color to a flat GREEN (the pre-metering behavior).
     template <typename WriteFn>
-    void refresh(unsigned now_ms, const ApcGrid& grid, bool liveEngaged, WriteFn&& write) {
+    void refresh(unsigned now_ms, const ApcGrid& grid, bool liveEngaged, WriteFn&& write, const float* looperLevels = nullptr) {
         // Boot delay: looper waits APC_LED_BOOT_DELAY_MS (2000ms) after boot
         // before the first LED write, so the APC has fully enumerated/settled
         // (apcKey25.h:29, apcKey25.cpp:470-473). Without it, LED writes sent
@@ -69,7 +76,7 @@ public:
         for (int row = 0; row < kApcRows; row++) {
             for (int col = 0; col < kApcCols; col++) {
                 int note = row * kApcCols + col;
-                sendCoalesced(note, gridColor(row, col, grid), write);
+                sendCoalesced(note, gridColor(row, col, grid, looperLevels), write);
             }
         }
         sendCoalesced(kApcBtnPlay, grid.shiftHeld() ? kLedYellow : kLedOff, write);
@@ -98,7 +105,7 @@ private:
         // (matches looper's "commit to cache only on successful send").
     }
 
-    uint8_t gridColor(int row, int col, const ApcGrid& grid) const;
+    uint8_t gridColor(int row, int col, const ApcGrid& grid, const float* looperLevels) const;
 };
 
 } // namespace aloop

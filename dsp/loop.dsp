@@ -43,7 +43,7 @@ NLOOPERS = 20;            // 20 independent loopers (the hardware setup)
 clearAll = button("clear");
 speedMul = hslider("speed", 1.0, 0.25, 4.0, 0.001);   // 0.5 = half, 2.0 = double
 
-oneLooper(in) = loopSig * playN * volN
+oneLooper(in) = out : attachLevel
 with {
     recN  = button("rec");
     playN = checkbox("play");
@@ -64,6 +64,25 @@ with {
         hold    = delayed * (1.0 - recN) * (1.0 - wipe);
     };
     loopSig = step ~ _;
+    out = loopSig * playN * volN;
+    // LEVEL meter: an hbargraph UI OUTPUT (never fui.set() from ParamStore --
+    // read-only via fui.get(), same pattern as the existing rec/play/vol
+    // telemetry reads in audio_thread.cpp), fed via Faust's attach() idiom so
+    // the meter signal rides along the real audio signal without adding a
+    // second audible output channel. Raw abs-peak magnitude in the looper's
+    // own [0,1] float range (not dB, not looper's raw s32 scale) -- matching
+    // looper's vuLow/vuMid/vuHigh thresholds means the C++ side documents its
+    // own equivalent thresholds in aloop's normalized range (see apc_leds.cpp).
+    // ba.slidingMax gives a fast-rise/slow-decay envelope (a real "peak
+    // meter" shape rather than a raw instantaneous sample, which would
+    // flicker the LED color every block) over a ~4096-sample (~85ms @48kHz)
+    // window.
+    levelMeter = hbargraph("level", 0.0, 1.0);
+    // ba.slidingMax(n, maxN): sliding window max over the last n samples,
+    // maxN is the compile-time buffer-size bound (n <= maxN). Window ~4096
+    // samples (~85ms @48kHz), bound equal to the window since it's a fixed
+    // compile-time constant here, not runtime-variable.
+    attachLevel(x) = attach(x, abs(x) : ba.slidingMax(4096, 4096) : levelMeter);
 };
 
 // The engine outputs (dry-thru, loop-sum) SEPARATELY rather than pre-summed, so

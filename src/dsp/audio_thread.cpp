@@ -442,6 +442,7 @@ static void* worker(void*) {
                     snprintf(z, sizeof z, "looper%2d/rec",  lp); g_telem.looperRec[lp]  = fui.get(z) > 0.5f;
                     snprintf(z, sizeof z, "looper%2d/play", lp); g_telem.looperPlay[lp] = fui.get(z) > 0.5f;
                     snprintf(z, sizeof z, "looper%2d/vol",  lp); g_telem.looperVol[lp]  = fui.get(z, 1.0f);
+                    snprintf(z, sizeof z, "looper%2d/level", lp); g_telem.looperLevel[lp] = fui.get(z, 0.0f);
                 }
             }
             // monitorMode telemetry (apcKey25.cpp:361's p.monitorMode = m_shift):

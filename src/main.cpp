@@ -92,16 +92,23 @@ int main(int argc, char** argv) {
     aloop::LinkBridge link;
     link.start((double)cfg.sampleRate, /*enabled=*/true);
 
+    // aloop::AudioThread is declared before the MIDI thread launches (but
+    // started after) so runMidiLoop can hold a pointer to it for reading live
+    // per-looper level telemetry (LED VU-meter coloring) — snapshotTelemetry()
+    // is safe to call before start() (returns the default-constructed
+    // all-zero Telemetry), so there's no ordering hazard even though the MIDI
+    // thread may begin running before audio.start() completes below.
+    aloop::AudioThread audio;
+
     // MIDI control on its own thread (the control surface — the APC knobs/commands).
     // It writes the shared param store; the audio thread reads it. Runs on the
     // control core alongside Link. A missing controller is fine (params hold).
     aloop::ParamStore params;
-    std::thread midiThread([&, dev = cfg.midiDevice]{ aloop::runMidiLoop(params, dev.c_str()); });
+    std::thread midiThread([&, dev = cfg.midiDevice]{ aloop::runMidiLoop(params, dev.c_str(), &audio); });
     midiThread.detach();
 
     // Start the RT audio pipeline (opens the ALSA/f_uac2 PCM, spawns the pinned
     // SCHED_FIFO worker that runs DSP -> host.runBlock() -> PCM each block).
-    aloop::AudioThread audio;
     if (!audio.start(cfg, &params, &link)) {   // audio reads the control store + Link (varispeed)
         fprintf(stderr, "[aloop] fatal: could not start audio pipeline\n");
         return 1;
