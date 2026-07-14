@@ -43,11 +43,6 @@ NLOOPERS = 20;            // 20 independent loopers (the hardware setup)
 clearAll = button("clear");
 speedMul = hslider("speed", 1.0, 0.25, 4.0, 0.001);   // 0.5 = half, 2.0 = double
 
-// `in` is now the FULLY-PROCESSED (fold+effects) signal fed by aloop.dsp's
-// preLoop, not raw dry input -- so this record path captures exactly what
-// looper's cbWriteBlock does (the wet block, after every effect stage has
-// already mutated it). See aloop.dsp's top-of-file comment for the full
-// re-architecture rationale.
 oneLooper(in) = out : attachLevel
 with {
     recN  = button("rec");
