@@ -172,13 +172,13 @@ void runMidiLoop(ParamStore& ps, const char* device) {
         if (pr == 0) {
             unsigned n = nowMs();
             grid.pollHolds(n, ps);   // timeout: no MIDI, just poll holds
-            leds.refresh(n, grid, ps.get("fx/pitchbend_engaged") > 0.5f, ledWrite);
+            leds.refresh(n, grid, grid.liveEngaged(), ledWrite);
             continue;
         }
         if (pr < 0) {
             unsigned n = nowMs();
             grid.pollHolds(n, ps);   // interrupted/error: keep polling holds, retry read
-            leds.refresh(n, grid, ps.get("fx/pitchbend_engaged") > 0.5f, ledWrite);
+            leds.refresh(n, grid, grid.liveEngaged(), ledWrite);
             continue;
         }
         if (snd_rawmidi_read(in, &b, 1) != 1) break;
@@ -200,7 +200,7 @@ void runMidiLoop(ParamStore& ps, const char* device) {
         if ((type == 0x80 || type == 0x90) && noteLogCount < 500)
             fprintf(stderr, "[midi] note decoded: st=0x%02x type=0x%02x ch=%d d1=%d d2=%d\n", st, type, channel, d1, d2);
         grid.pollHolds(now, ps);   // also check on every real event, for prompt response
-        leds.refresh(now, grid, ps.get("fx/pitchbend_engaged") > 0.5f, ledWrite);   // self-throttled to ~30Hz internally
+        leds.refresh(now, grid, grid.liveEngaged(), ledWrite);   // self-throttled to ~30Hz internally
 
         // --- real APC Key25 hardware surface (apcKey25.cpp/apcKey25Notes.cpp), channel 0 only ---
         if (channel == 0) {
@@ -211,6 +211,7 @@ void runMidiLoop(ParamStore& ps, const char* device) {
                 if (type == 0x90 && d2 > 0) { grid.onShiftPress(ps); continue; }
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onShiftRelease(ps); continue; }
             }
+            if (d1 == kApcLiveLedNote && type == 0x90 && d2 > 0) { grid.onLiveEngageToggle(ps); continue; }  // note 64: live-pitch master engage toggle ("transpose on/off")
             if (type == 0xB0 && d1 == 1)  { grid.onModWheel(d2, ps); continue; }       // CC1 mod-wheel live-pitch
             if (type == 0xB0 && d1 == 52) { grid.onAbsolutePitch(d2, ps); continue; }  // CC52 absolute live-pitch
             if (type == 0xB0 && d1 == 53) { grid.onFormantCC(d2, ps); continue; }      // CC53 formant (deadzone + SHIFT range)

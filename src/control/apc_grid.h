@@ -66,6 +66,16 @@ public:
     void onModWheel(uint8_t data2, ParamStore& ps);     // CC1
     void onAbsolutePitch(uint8_t data2, ParamStore& ps); // CC52
 
+    // Live-pitch master engage toggle (note 0x40/64, channel 0). Previously
+    // UNHANDLED entirely -- fell through to the flat controls.conf map (no
+    // binding for note64 exists there either) and was silently dropped. This
+    // is the button the user calls "transpose on/off" (apcKey25.cpp:97-102's
+    // m_liveEngaged): a master enable gating onModWheel/onAbsolutePitch --
+    // when off, live pitch stays disengaged regardless of mod-wheel/CC52
+    // position (looper: !m_liveEngaged forces m_livePitchSemitones=0).
+    void onLiveEngageToggle(ParamStore& ps);
+    bool liveEngaged() const { return m_liveEngaged; }
+
     // Microrepeat latch notes 82-86 (channel 0 only); div in {1,2,4,8,16}, 0=off.
     void onMicrorepeatOn(int note, ParamStore& ps);
     void onMicrorepeatOff(int note, ParamStore& ps);
@@ -95,6 +105,7 @@ public:
     // letting ApcLeds see the state it needs.
     bool looperHasContent(int looper) const { return m_looperHasContent[looper]; }
     bool looperPlaying(int looper) const { return m_looperPlaying[looper]; }
+    bool looperRecording(int looper) const { return m_looperRecording[looper]; }
     bool presetUsed(int preset) const { return m_presetUsed[preset]; }
     uint8_t microrepeatDiv() const { return m_microRepeatDiv; }
 
@@ -105,6 +116,7 @@ private:
     bool m_looperArmedOnPress[kLooperCount] = {}; // suppress the release tap (armed on press)
     bool m_looperPlaying[kLooperCount] = {};      // local shadow: last rec/play state we sent
     bool m_looperHasContent[kLooperCount] = {};   // local shadow: has this looper recorded anything
+    bool m_looperRecording[kLooperCount] = {};    // true from arm-press until the finish-press (../looper: TRACK_STATE_RECORDING)
 
     bool m_presetHeld[kPresetCount] = {};
     unsigned m_presetHoldStart[kPresetCount] = {};
@@ -114,6 +126,7 @@ private:
 
     uint8_t m_microRepeatDiv = 0;
     bool m_shift = false;
+    bool m_liveEngaged = false;   // master toggle for live pitch (note 64), apcKey25.cpp m_liveEngaged
 
     void applyRecPlayCycle(int looper, ParamStore& ps);
     void capturePreset(int p, ParamStore& ps);

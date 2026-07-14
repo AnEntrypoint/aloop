@@ -1,16 +1,23 @@
 // aloop APC Key25 grid engine — ported from looper's apcKey25Notes.cpp state
 // machine (grid math, tap-vs-hold, presets) onto aloop's ParamStore.
 //
-// aloop has NO overdub and NO addressable read head (docs/COMMAND-SURFACE.md),
-// so the per-looper state cycle is simplified from looper's 4-state machine
-// (empty->record, recording->play, playing->pause, paused->play) to the two
-// zones aloop's Faust engine actually exposes: `rec` (button, replaces the
-// loop) and `play` (checkbox, gates output). This module tracks a local
-// shadow of "has content" / "is playing" (written whenever WE send a command)
-// so tap can still cycle rec->play->pause->play without reading back audio
-// state cross-thread — the same shape looper's publicTrack read serves, but
-// sourced locally since aloop's control thread doesn't have a state channel
-// into the audio thread's Faust zones.
+// Per-looper press cycle mirrors looper's real state machine exactly
+// (apcKey25Notes.cpp:43-84 _onPadPress): empty -> ARM (rec=1, held for the
+// whole recording pass) -> FINISH (rec=0, play=1, starts playback of what was
+// just captured) -> pause (play=0) -> resume (play=1) -> ... WITNESSED BUG
+// this replaced: an earlier version set rec=1 AND play=1 in the SAME press,
+// with nothing ever resetting rec back to 0 anywhere in the codebase — since
+// `rec` is a persistent ParamStore value (not a momentary Faust-native
+// button() the widget itself releases), it stayed 1 forever, meaning the
+// Faust looper (dsp/loop.dsp: record = in*recN) NEVER stopped re-recording
+// live input over the loop on every single block, so nothing ever actually
+// played back a fixed take — the user's reported "loops don't play, they
+// just stay paused" (recording forever look identical to "not playing" from
+// the outside). This module tracks a local shadow of record/content/playing
+// state (written whenever WE send a command) so tap can cycle correctly
+// without reading back audio state cross-thread — the same shape looper's
+// publicTrack read serves, but sourced locally since aloop's control thread
+// doesn't have a state channel into the audio thread's Faust zones.
 
 #include "apc_grid.h"
 #include <cstdio>
@@ -40,18 +47,23 @@ static void setLooper(ParamStore& ps, int looper, const char* field, float v) {
 }
 
 void ApcGrid::applyRecPlayCycle(int looper, ParamStore& ps) {
-    // Mirrors apcKey25Notes.cpp's press-cycle, collapsed onto aloop's two zones
-    // (rec = one-shot "replace the loop", play = held gate):
-    //   no content            -> rec (arm/replace), mark has-content, playing
+    // Real 3-state cycle (apcKey25Notes.cpp:61-84):
+    //   empty                 -> ARM: rec=1 (HELD -- stays 1 for the whole
+    //                             recording pass, this press only starts it)
+    //   currently recording    -> FINISH: rec=0 (stop overwriting the loop,
+    //                             matching looper's TRACK cmd), play=1 (start
+    //                             playback of what was just captured)
     //   has content, playing  -> play=0 (pause)
     //   has content, paused   -> play=1 (resume)
-    if (!m_looperHasContent[looper]) {
-        setLooper(ps, looper, "rec", 1.0f);
-        // rec is a momentary button on real hardware/Faust (button() auto-releases
-        // per block); the "held" value only needs to reach the audio thread once.
+    if (m_looperRecording[looper]) {
+        setLooper(ps, looper, "rec", 0.0f);   // FINISH: stop recording (was stuck at 1 forever pre-fix)
+        m_looperRecording[looper] = false;
         m_looperHasContent[looper] = true;
         m_looperPlaying[looper] = true;
         setLooper(ps, looper, "play", 1.0f);
+    } else if (!m_looperHasContent[looper]) {
+        setLooper(ps, looper, "rec", 1.0f);   // ARM: start recording -- next press finishes it
+        m_looperRecording[looper] = true;
     } else if (m_looperPlaying[looper]) {
         setLooper(ps, looper, "play", 0.0f);
         m_looperPlaying[looper] = false;
@@ -82,10 +94,13 @@ void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps) {
         m_looperErased[looper] = false;
         m_looperHoldStart[looper] = now_ms;
         // Press-time-critical arm/finish, mirroring apcKey25Notes.cpp: an empty
-        // pad arms record on PRESS (not release) so the take starts on the exact
-        // press instant, matching looper's "catch the moment record is pressed"
-        // rationale. All other transitions (pause/resume) stay on release.
-        if (!m_looperHasContent[looper]) {
+        // pad arms record on PRESS (not release), and a CURRENTLY RECORDING pad
+        // finishes recording on PRESS too (both are "the exact press instant
+        // must land precisely" cases per looper's comments -- release-triggered
+        // dispatch would add the press-hold duration as timing jitter to either
+        // the start or the end of the take). All other transitions (pause/
+        // resume) stay on release.
+        if (!m_looperHasContent[looper] || m_looperRecording[looper]) {
             applyRecPlayCycle(looper, ps);
             m_looperArmedOnPress[looper] = true;
         } else {
@@ -137,6 +152,10 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps) {
         // Long-hold -> erase (apcKey25Notes.cpp: a >=1s hold clears the looper
         // regardless of state; also cancels a just-armed press-record).
         setLooper(ps, looper, "erase", 1.0f);
+        if (m_looperRecording[looper]) {
+            setLooper(ps, looper, "rec", 0.0f);   // cancel the in-progress take, don't leave rec stuck at 1
+            m_looperRecording[looper] = false;
+        }
         m_looperErased[looper] = true;
         m_looperArmedOnPress[looper] = false;
         m_looperHasContent[looper] = false;
@@ -182,6 +201,7 @@ void ApcGrid::applyPreset(int p, ParamStore& ps) {
 // dsp/aloop.dsp's SEMIS/ENGAGED zones via the control map (fx/pitchbend ->
 // pitchStage's live-offset input) — see PRD row wiring notes.
 void ApcGrid::onModWheel(uint8_t data2, ParamStore& ps) {
+    if (!m_liveEngaged) { ps.setByName("fx/pitchbend_engaged", 0.0f); ps.setByName("fx/pitchbend", 0.0f); return; }
     bool inDeadzone = (data2 >= 59 && data2 <= 69);
     if (inDeadzone) {
         ps.setByName("fx/pitchbend_engaged", 0.0f);
@@ -193,9 +213,19 @@ void ApcGrid::onModWheel(uint8_t data2, ParamStore& ps) {
     }
 }
 void ApcGrid::onAbsolutePitch(uint8_t data2, ParamStore& ps) {
+    if (!m_liveEngaged) { ps.setByName("fx/pitchbend_engaged", 0.0f); ps.setByName("fx/pitchbend", 0.0f); return; }
     float semis = (data2 / 127.0f) * 24.0f - 12.0f;
     ps.setByName("fx/pitchbend", semis);
     ps.setByName("fx/pitchbend_engaged", 1.0f);
+}
+void ApcGrid::onLiveEngageToggle(ParamStore& ps) {
+    // apcKey25.cpp:97-102: toggle, and disengaging immediately zeros the
+    // pitch offset rather than waiting for the next mod-wheel/CC52 event.
+    m_liveEngaged = !m_liveEngaged;
+    if (!m_liveEngaged) {
+        ps.setByName("fx/pitchbend", 0.0f);
+        ps.setByName("fx/pitchbend_engaged", 0.0f);
+    }
 }
 
 // --- microrepeat latch (notes 82-86) — apcKey25.cpp -------------------------

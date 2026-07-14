@@ -14,6 +14,7 @@ namespace aloop {
 uint8_t ApcLeds::gridColor(int row, int col, const ApcGrid& grid) const {
     int looper = gridLooperIndex(row, col);
     if (looper >= 0) {
+        if (grid.looperRecording(looper))   return kLedRedBlink;     // MFS_LOOPER_RECORDING
         if (!grid.looperHasContent(looper)) return kLedOff;          // MFS_LOOPER_EMPTY
         if (grid.looperPlaying(looper))     return kLedGreen;        // MFS_LOOPER_PLAY_LOW (narrowed, see above)
         return kLedYellowBlink;                                      // MFS_LOOPER_PAUSED (has content, stopped)
