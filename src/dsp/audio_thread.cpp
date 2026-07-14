@@ -11,6 +11,7 @@
 #include "../host/lv2_host.h"
 #include "../control/midi.h"
 #include "../link/link_bridge.h"
+#include "sampler/sampler.h"
 
 #include <pthread.h>
 #include <sched.h>
@@ -104,6 +105,14 @@ AudioThread::Telemetry g_telem{};
 AudioConfig g_cfg;
 ParamStore* g_params = nullptr;   // shared control store (from MIDI); read each block
 LinkBridge* g_link = nullptr;     // Ableton Link (tempo/phase); read each block for varispeed sync
+// The sampler (src/dsp/sampler/sampler.h, a direct port of ../looper's
+// patches/sampler.h): owns its own lock-free event ring, so the MIDI/control
+// thread can push events into it via this pointer without touching ParamStore
+// at all -- matching looper's own ISR-pushes/audio-thread-drains split.
+// Constructed once inside worker() (its buffers are ~1MB+, too large to be a
+// stack-local for the same reason AloopLoopDsp was moved to the heap -- see
+// ADR-013) and published here for the MIDI thread to reach.
+aloop::Sampler* g_sampler = nullptr;
 
 // Map a control-map TARGET name ("looper3/rec", "fx/hp") to the Faust zone label
 // the home stack exposes. Loopers use a 2-digit index (looper03/rec); effects use
@@ -212,6 +221,18 @@ static void* worker(void*) {
     FaustUI fui; faustHome.buildUserInterface(&fui);
     float* fins[1]  = { fin.data() };
     float* fouts[1] = { fout.data() };
+#endif
+
+#ifdef ALOOP_HAVE_FAUST_LOOP
+    // Sampler (src/dsp/sampler/sampler.h): heap-allocated for the same reason
+    // as faustHome above (its per-key drum + chromatic buffers total ~5.3MB,
+    // large enough to be worth keeping off the thread stack even though it's
+    // well under the 320MB AloopLoopDsp threshold that made heap allocation
+    // mandatory there). Published via g_sampler so the MIDI/control thread's
+    // note-65/66/keybed dispatch (apc_grid.cpp) can push events into it.
+    auto samplerPtr = std::make_unique<Sampler>();
+    g_sampler = samplerPtr.get();
+    std::vector<int32_t> samplerBuf((size_t)N, 0);   // s32 scratch for captureBlock/renderInto
 #endif
 
     // The user's swappable effect(s): an in-process LV2 host loading any bundle
@@ -518,6 +539,17 @@ static void* worker(void*) {
                 if (a > inPeak) inPeak = a;
             }
             g_telem.inPeak = inPeak;
+            // Sampler mix-in (sampler.h's own load-bearing invariant, verbatim
+            // from ../looper): capture reads the DRY input snapshot BEFORE any
+            // voices are mixed in (so a sample recording never records itself
+            // or the loops), and the mixed-in result feeds the loop engine +
+            // effects chain same as fresh input would -- so a sample gets all
+            // effects and is recordable by a loop under SHIFT fold, matching
+            // looper's renderInto-before-the-chain ordering exactly.
+            for (int i = 0; i < N; i++) samplerBuf[(size_t)i] = (int32_t)(fin[i] * 32768.0f);
+            g_sampler->captureBlock(samplerBuf.data(), N);
+            g_sampler->renderInto(samplerBuf.data(), N);
+            for (int i = 0; i < N; i++) fin[i] = (float)samplerBuf[(size_t)i] / 32768.0f;
             // Time the DSP work vs the block budget → home-core busy % telemetry.
             timespec t0, t1;
             clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -612,6 +644,7 @@ void AudioThread::stop() {
 }
 
 AudioThread::Telemetry AudioThread::snapshotTelemetry() const { return g_telem; }
+Sampler* AudioThread::sampler() const { return g_sampler; }
 bool AudioThread::setRealtime(int core, int prio) { return setRealtimeSelf(core, prio); }
 void AudioThread::workerLoop() {}   // (the free function `worker` is the body)
 

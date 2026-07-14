@@ -13,6 +13,7 @@ namespace aloop {
 
 struct ParamStore;   // control values from MIDI (control/midi.h)
 class  LinkBridge;   // Ableton Link tempo/phase (link/link_bridge.h)
+class  Sampler;       // sampler subsystem (dsp/sampler/sampler.h)
 
 struct AudioConfig {
     int sampleRate = 48000;
@@ -114,6 +115,14 @@ public:
                                                // looper's vuLow/vuMid/vuHigh peak-based PLAY color tiers.
     };
     Telemetry snapshotTelemetry() const;
+
+    // Sampler subsystem (dsp/sampler/sampler.h): heap-allocated inside
+    // worker() once the thread starts, null until then (and always null in a
+    // no-Faust review build). ApcGrid's sampler-dispatch methods (note
+    // 65/66, channel-1 keybed routing) take this pointer so the MIDI thread
+    // can push events into it without a header dependency on the sampler's
+    // own event-ring layout.
+    Sampler* sampler() const;
 
 private:
     void workerLoop();              // the per-block RT loop

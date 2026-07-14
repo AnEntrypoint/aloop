@@ -225,6 +225,18 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio) {
                 if (type == 0x90 && d2 > 0) { grid.onMicrorepeatOn((int)d1, ps); continue; }
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onMicrorepeatOff((int)d1, ps); continue; }
             }
+            // Sampler record-arm buttons (apcKey25.cpp:157-168,198-208), built
+            // per explicit request -- previously entirely unimplemented
+            // (docs/DECISIONS.md ADR-012). 65 = chromatic record, 66 = arm
+            // drum-record-mode (gates channel-1 key routing below).
+            if (d1 == 65) {
+                if (type == 0x90 && d2 > 0) { grid.onSamplerBtn65Press(audio ? audio->sampler() : nullptr); continue; }
+                if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onSamplerBtn65Release(audio ? audio->sampler() : nullptr); continue; }
+            }
+            if (d1 == 66) {
+                if (type == 0x90 && d2 > 0) { grid.onSamplerBtn66Press(); continue; }
+                if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onSamplerBtn66Release(audio ? audio->sampler() : nullptr); continue; }
+            }
             if (d1 < kApcRows * kApcCols) {                                            // 5x8 pad grid
                 if (type == 0x90 && d2 > 0) { grid.onPadPress((int)d1, now, ps); continue; }
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onPadRelease((int)d1, now, ps); continue; }
@@ -236,20 +248,34 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio) {
             // (looper's LOOP_COMMAND_STOP_IMMEDIATE) -- previously aloop had
             // no shift branch at all on this button, so "shift button
             // rerouting didnt work" for transport controls specifically.
-            // PLAY (note 0x5B/91) unshifted = clear-all (existing cmd/clearall
-            // flat binding); shift+PLAY = LOOP_IMMEDIATE, which aloop's Faust
-            // feedback-delay engine has no addressable read head for (ADR-010/
+            // shift+PLAY = LOOP_IMMEDIATE, which aloop's Faust feedback-delay
+            // engine has no addressable read head for (ADR-010/
             // docs/COMMAND-SURFACE.md, a deliberate model difference) -- so
             // shift+PLAY has nothing to reroute TO yet and is left unbound
             // rather than silently doing the wrong thing.
             if (type == 0x90 && d2 > 0 && d1 == 0x51 && grid.shiftHeld()) { grid.onStopImmediate(ps); continue; }
+            // PLAY (note 0x5B/91) unshifted = CLEAR_ALL. Previously routed
+            // ONLY through controls.conf's flat note91->cmd/clearall binding,
+            // which ApcGrid never observed -- its own shadow state never got
+            // reset on clear, breaking every subsequent recording attempt
+            // (WITNESSED live: "doing a new set didn't work" after clearing).
+            // Now intercepted here so ApcGrid::onClearAll can reset its state
+            // in the same call that wipes the DSP-side content.
+            if (d1 == 0x5B && !grid.shiftHeld()) {
+                if (type == 0x90 && d2 > 0) { grid.onClearAll(true, ps); continue; }
+                if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onClearAll(false, ps); continue; }
+            }
         }
 
         // channel 1 (keybed): looper's apcKey25.cpp:103-125 -- any keybed key
-        // press engages live-pitch at that key's own semitone offset. Was
+        // press engages live-pitch at that key's own semitone offset (or
+        // triggers the sampler if it has content for that key). Was
         // completely unhandled (aloop only ever inspected channel 0),
         // directly explaining "keys didnt arm transpose".
-        if (channel == 1 && type == 0x90 && d2 > 0) { grid.onKeybedNoteOn((int)d1, ps); continue; }
+        if (channel == 1) {
+            if (type == 0x90 && d2 > 0) { grid.onKeybedNoteOn((int)d1, ps, audio ? audio->sampler() : nullptr); continue; }
+            if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onKeybedNoteOff((int)d1, audio ? audio->sampler() : nullptr); continue; }
+        }
 
         // --- everything else (filters, transport buttons, speed) via the flat remap ---
         uint32_t key = 0; float val = 0;

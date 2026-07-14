@@ -13,6 +13,8 @@
 
 namespace aloop {
 
+class Sampler;   // dsp/sampler/sampler.h -- forward-declared, ApcGrid only ever holds a pointer
+
 constexpr int kApcRows = 5;
 constexpr int kApcCols = 8;
 constexpr int kLooperCount = 20;
@@ -85,14 +87,43 @@ public:
     // sets m_liveEngaged=true and derives a semitone offset from the key" --
     // this is looper's PRIMARY way live-pitch actually gets engaged/played in
     // practice (the note-64 button is more of a manual override), so its
-    // absence directly explains "keys didnt arm transpose".
-    void onKeybedNoteOn(int note, ParamStore& ps);
+    // absence directly explains "keys didnt arm transpose". `sampler` (may be
+    // null) gates the routing exactly as looper does: a keybed key plays
+    // sampler content (chromatic pitched, or a drum one-shot if that key has
+    // its own loaded slot) when the sampler has content for it, otherwise
+    // falls through to live-pitch (apcKey25.cpp:110-125).
+    void onKeybedNoteOn(int note, ParamStore& ps, Sampler* sampler);
+    void onKeybedNoteOff(int note, Sampler* sampler);
+
+    // Sampler record-arm buttons (channel 0): note 65 held records ONE shared
+    // chromatic sample; note 66 held arms drum-record-mode (while held, each
+    // keybed key records into THAT key's own drum slot). Direct port of
+    // apcKey25.cpp:104-125,157-168 -- previously entirely unimplemented
+    // (docs/DECISIONS.md ADR-012), now built per explicit user request.
+    void onSamplerBtn65Press(Sampler* sampler);
+    void onSamplerBtn65Release(Sampler* sampler);
+    void onSamplerBtn66Press();
+    void onSamplerBtn66Release(Sampler* sampler);
+    bool drumRecordMode() const { return m_drumRecordMode; }
 
     // SHIFT+STOP_ALL (note 0x51/81, channel 0): looper's
     // LOOP_COMMAND_STOP_IMMEDIATE (apcKey25Notes.cpp:171) -- stops ALL
     // playback AND aborts any in-progress recording (unshifted STOP_ALL only
     // stops playback, matching audio_thread.cpp's existing cmd/stopall).
     void onStopImmediate(ParamStore& ps);
+
+    // PLAY button (note 0x5B/91, channel 0) unshifted = CLEAR_ALL
+    // (LOOP_COMMAND_CLEAR_ALL, apcKey25Notes.cpp:175). WITNESSED live: this
+    // was previously routed ONLY through config/controls.conf's flat
+    // note91->cmd/clearall binding, which ApcGrid never observes -- the DSP
+    // (dsp/loop.dsp's `clear` button) wipes every looper's content, but
+    // ApcGrid's own local shadow state (m_looperHasContent/Playing/Recording,
+    // m_masterLenSamples) kept believing every looper still had content from
+    // before the clear, so a fresh press after clearing went straight to the
+    // pause/resume branches of applyRecPlayCycle instead of re-arming record
+    // on what the DSP now considers empty loopers -- exactly the reported
+    // "doing a new set didn't work" after clear. Reset all shadow state here.
+    void onClearAll(bool held, ParamStore& ps);
 
     // Microrepeat latch notes 82-86 (channel 0 only); div in {1,2,4,8,16}, 0=off.
     void onMicrorepeatOn(int note, ParamStore& ps);
@@ -146,6 +177,7 @@ private:
     uint8_t m_microRepeatDiv = 0;
     bool m_shift = false;
     bool m_liveEngaged = false;   // master toggle for live pitch (note 64), apcKey25.cpp m_liveEngaged
+    bool m_drumRecordMode = false;   // note 66 held (apcKey25.cpp m_drumRecordMode)
     // Local master-phrase length in samples, established from the FIRST
     // looper's own recorded duration (../looper loopClip.cpp:219-244:
     // "ALWAYS defines the local master grid from its own recorded length,

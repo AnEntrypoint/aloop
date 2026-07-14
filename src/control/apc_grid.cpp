@@ -20,6 +20,7 @@
 // doesn't have a state channel into the audio thread's Faust zones.
 
 #include "apc_grid.h"
+#include "../dsp/sampler/sampler.h"
 #include <cstdio>
 #include <cstring>
 
@@ -298,13 +299,100 @@ void ApcGrid::onStopImmediate(ParamStore& ps) {
         m_looperPlaying[lp] = false;
     }
 }
-void ApcGrid::onKeybedNoteOn(int note, ParamStore& ps) {
+void ApcGrid::onClearAll(bool held, ParamStore& ps) {
+    // LOOP_COMMAND_CLEAR_ALL (apcKey25Notes.cpp:175). `cmd/clearall` is a
+    // HELD momentary value (audio_thread.cpp's `wipe = max(clearAll, eraseN)`
+    // gate zeroes the loop ring every block clear is held) -- it must be
+    // released on note-off, or every subsequent recording attempt gets wiped
+    // every block forever. The release call (held=false) only clears the
+    // Faust-side hold; local shadow-state reset happens once, on press.
+    ps.setByName("cmd/clearall", held ? 1.0f : 0.0f);
+    if (!held) return;
+    // Wipe the DSP-side content of every looper AND reset every bit of local
+    // shadow state this thread tracks, so a subsequent press correctly
+    // re-arms record on an empty looper instead of treating it as still
+    // having content from before the clear.
+    for (int lp = 0; lp < kLooperCount; lp++) {
+        m_looperHeld[lp] = false;
+        m_looperErased[lp] = false;
+        m_looperArmedOnPress[lp] = false;
+        m_looperPlaying[lp] = false;
+        m_looperHasContent[lp] = false;
+        m_looperRecording[lp] = false;
+        m_recordStartMs[lp] = 0;
+    }
+    for (int p = 0; p < kPresetCount; p++) {
+        m_presetHeld[p] = false;
+        m_presetCaptured[p] = false;
+        m_presetUsed[p] = false;
+        m_presetMask[p] = 0;
+    }
+    // Reset the shared phrase length too (audio_thread.cpp also resets its
+    // own copy of cmd/master_len when cmd/clearall is held, but resetting it
+    // here as well means a subsequent press in THIS thread sees 0 immediately
+    // rather than depending on a race with the audio thread's next block).
+    m_masterLenSamples = 0;
+    ps.setByName("cmd/master_len", 0.0f);
+}
+void ApcGrid::onKeybedNoteOn(int note, ParamStore& ps, Sampler* sampler) {
+    // apcKey25.cpp:103-125: the sampler takes the keys when it has content.
+    // In drum-record mode (button 66 held) a key press records into THAT
+    // key's drum slot. Otherwise, if a chromatic sample is loaded OR this key
+    // has its own drum slot, the key triggers sampler playback (live-pitch
+    // keyboard transpose is suppressed for that key; live pitch stays
+    // reachable via mod-wheel/CC52/note-64). With no sampler content, the key
+    // falls through to live-pitch exactly as before this feature was built.
+    if (sampler) {
+        int keyIdx = Sampler::keyIndex(note);
+        if (m_drumRecordMode) {
+            if (keyIdx >= 0) sampler->pushEvent(Sampler::EV_REC_START, keyIdx, 0);
+            return;
+        }
+        if (sampler->chromaticLoaded() || sampler->drumLoaded(keyIdx)) {
+            sampler->pushEvent(Sampler::EV_NOTE_ON, note, 127);
+            return;
+        }
+    }
     // apcKey25.cpp:122-123: any keybed key press engages live-pitch at that
     // key's own semitone offset from middle C-ish (note 60), unconditionally.
     m_liveEngaged = true;
     float semis = (float)(note - 60);
     ps.setByName("fx/pitchbend", semis);
     ps.setByName("fx/pitchbend_engaged", 1.0f);
+}
+void ApcGrid::onKeybedNoteOff(int note, Sampler* sampler) {
+    // apcKey25.cpp:211-228: mirror the note-on routing on release. The
+    // sampler NOTE_OFF is forwarded UNCONDITIONALLY (not gated on
+    // chromaticLoaded/drumLoaded) -- gating it could suppress the release if
+    // content changed between press and release, stranding a sustaining
+    // voice (the "auto-sustain" bug looper's own comment names explicitly).
+    if (!sampler) return;
+    if (m_drumRecordMode) {
+        int keyIdx = Sampler::keyIndex(note);
+        if (keyIdx >= 0) sampler->pushEvent(Sampler::EV_REC_STOP, 0, 0);
+        return;
+    }
+    sampler->pushEvent(Sampler::EV_NOTE_OFF, note, 0);
+}
+void ApcGrid::onSamplerBtn65Press(Sampler* sampler) {
+    // apcKey25.cpp:160-162: 65 HELD records the shared chromatic sample.
+    if (sampler) sampler->pushEvent(Sampler::EV_REC_START, -1, 0);
+}
+void ApcGrid::onSamplerBtn65Release(Sampler* sampler) {
+    // apcKey25.cpp:198-200: release stops + auto-trims.
+    if (sampler) sampler->pushEvent(Sampler::EV_REC_STOP, 0, 0);
+}
+void ApcGrid::onSamplerBtn66Press() {
+    // apcKey25.cpp:164-167: arm drum-record-mode (gates channel-1 key routing
+    // in onKeybedNoteOn/Off above); does not itself start any capture.
+    m_drumRecordMode = true;
+}
+void ApcGrid::onSamplerBtn66Release(Sampler* sampler) {
+    // apcKey25.cpp:202-208: disarm, AND stop any in-progress drum capture
+    // (idempotent if none) so releasing 66 before the key never leaves a
+    // record armed.
+    m_drumRecordMode = false;
+    if (sampler) sampler->pushEvent(Sampler::EV_REC_STOP, 0, 0);
 }
 
 // --- microrepeat latch (notes 82-86) — apcKey25.cpp -------------------------
