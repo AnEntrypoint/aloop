@@ -32,9 +32,27 @@ struct ParamStore {
     ParamStore() { for (auto& v : value) v.store(0.0f); }
 
     // Register a target name → a slot (idempotent). Called during map load.
-    void bind(const std::string& name) {
+    // `defaultVal` seeds the slot's initial value — CRITICAL for any target
+    // whose Faust zone has a non-zero compiled-in default (e.g. fx/lp's
+    // LPCUT defaults to 1.0 = fully open, fx/time's TIME defaults to 0.5).
+    // WITNESSED live: worker() pushes g_params->get(target) into the
+    // matching Faust zone EVERY block, unconditionally, starting from the
+    // very first block — before any MIDI event has ever touched that
+    // target. With the old blanket value{}=0.0f init, this meant every
+    // bound fx/* control silently OVERWROTE the Faust program's own default
+    // with 0.0 at startup: fx/lp forced LPCUT to 0.0 (fully closed low-pass
+    // = total silence) until the very first physical knob turn sent a real
+    // CC value — exactly matching the "no sound until I touched the
+    // lowpass knob" symptom. Binding with the correct default closes this
+    // gap for every future control, not just the one that happened to be
+    // reported.
+    void bind(const std::string& name, float defaultVal = 0.0f) {
         std::lock_guard<std::mutex> g(bindMtx);
-        if (slot.find(name) == slot.end() && count < MAX) slot[name] = count++;
+        if (slot.find(name) == slot.end() && count < MAX) {
+            int idx = count++;
+            slot[name] = idx;
+            value[idx].store(defaultVal, std::memory_order_relaxed);
+        }
     }
     // Write a value by target name (MIDI thread). No-op if unbound.
     void setByName(const std::string& name, float v) {

@@ -72,7 +72,26 @@ void runMidiLoop(ParamStore& ps, const char* device) {
 
     // Publish each binding's target into the store's name index so the audio
     // thread knows which Faust zones to set. (ParamStore holds a name→value map.)
-    for (auto& kv : map) ps.bind(kv.second);
+    // Seed each fx/* target with its Faust zone's OWN compiled-in default
+    // (dsp/effects_runtime.dsp) rather than a blanket 0.0 — see ParamStore::bind's
+    // comment for why: a bound target whose zone default is non-zero would
+    // otherwise be silently forced to 0.0 from the very first block, before any
+    // MIDI event ever touches it (WITNESSED: fx/lp forced LPCUT to 0.0 = total
+    // silence until the first physical knob turn). looper*/* and cmd/* targets
+    // correctly default to 0.0 (unarmed/released), so they need no entry here.
+    static const std::unordered_map<std::string, float> kFxDefaults = {
+        {"fx/hp",      0.0f},   // HPCUT  0.0 = bypass (dsp/effects_runtime.dsp)
+        {"fx/lpres",   0.0f},   // LPRES  0.0 = no resonance
+        {"fx/lp",      1.0f},   // LPCUT  1.0 = fully open (bypass) -- THE bug
+        {"fx/reverb",  0.0f},   // REVAMT 0.0 = dry
+        {"fx/delay",   0.0f},   // DELAYAMT 0.0 = dry
+        {"fx/time",    0.5f},   // TIME   0.5 = the Faust default
+        {"fx/pitch",   0.0f},   // SEMIS  0.0 = unity
+    };
+    for (auto& kv : map) {
+        auto d = kFxDefaults.find(kv.second);
+        ps.bind(kv.second, d != kFxDefaults.end() ? d->second : 0.0f);
+    }
     // ApcGrid's own targets (loopers, live-pitch, microrepeat, monitor-fold,
     // formant) are NOT in controls.conf's flat map -- pre-bind them here, once,
     // before any MIDI event can reach ApcGrid's dispatch methods. Those methods
