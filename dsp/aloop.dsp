@@ -22,6 +22,15 @@
 // Composing this way means the ENTIRE home audio path is one Faust compile — the
 // maintainability win: change a knob mapping or a stage in Faust, rebuild, done.
 // No hand-written C++ DSP anywhere in the home stack.
+//
+// GLITCH (microrepeat) RECORDABILITY: a prior attempt fed microStage's own
+// post-glitch tap (rawGlitchTap, below) back into `fin`/`in` next block, same
+// as the SHIFT-fold above -- WITNESSED to create a genuine one-block feedback
+// whine, because `in` flows through `fx` (hence microStage) AGAIN every block,
+// compounding. Fixed by giving `loop` a SECOND, dedicated, record-only input
+// (glitchIn) that only the record-capture term consumes (dsp/loop.dsp's
+// oneLooper) -- it never touches the dry/live path, so it cannot re-enter
+// `fx`/microStage on any later block. See audio_thread.cpp's prevGlitchTap.
 
 import("stdfaust.lib");
 
@@ -54,11 +63,13 @@ monitorFold = hslider("MONITORFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
 // (ungated) loopSum through -- three total program outputs, in this order:
 //   1. finalOut  -- the real audible/wire signal (fouts[0] in audio_thread.cpp)
 //   2. rawGlitchTap -- microStage's own post-glitch signal (fouts[1]), so
-//      audio_thread.cpp can fold the stutter back into next block's input,
-//      making glitch content recordable into a new loop and affecting
-//      already-playing loops the same way (matching loopMachine.cpp:806-833's
-//      "stutter becomes BOTH the audible output and the record source" --
-//      the SAME one-block-lag native-mix technique as the SHIFT-fold below).
+//      audio_thread.cpp can fold the stutter into next block's DEDICATED
+//      record-only glitchIn input (this program's second process() input,
+//      below), making glitch content recordable into a new loop without ever
+//      re-entering `fx`/microStage (matching loopMachine.cpp:806-833's
+//      "stutter becomes BOTH the audible output and the record source", but
+//      via a record-only tap rather than feeding back into `in`/dry -- see
+//      the GLITCH RECORDABILITY comment at the top of this file for why).
 //   3. rawLoopSum -- the loop engine's own output (fouts[2]), so the native
 //      SHIFT-fold mix (see top-of-file comment) can fold it into next
 //      block's input, matching looper's m_input_buffer += m_output_buffer*fg
@@ -70,4 +81,8 @@ with {
     filtOut = fxOuts : (_, !);
     rawGlitchTap = fxOuts : (!, _);
 };
-process(in) = in : loop : mixAndFx;
+// glitchIn: previous block's post-glitch tap (audio_thread.cpp's prevGlitchTap),
+// fed ONLY into loop's dedicated record-only input (see loop.dsp's oneLooper
+// comment) -- never mixed into `in`/dry, so it cannot re-enter `fx`/microStage
+// on this or any later block. Second process() input.
+process(in, glitchIn) = loop(in, glitchIn) : mixAndFx;

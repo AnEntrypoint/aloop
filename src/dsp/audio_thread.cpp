@@ -245,7 +245,11 @@ static void* worker(void*) {
     AloopLoopDsp& faustHome = *faustHomePtr;
     faustHome.init((int)g_cfg.sampleRate);
     FaustUI fui; faustHome.buildUserInterface(&fui);
-    float* fins[1]  = { fin.data() };
+    // aloop.dsp's process() now takes 2 inputs: (in, glitchIn) -- glitchIn is
+    // the previous block's post-glitch tap, routed to loop.dsp's DEDICATED
+    // record-only input (see loop.dsp's oneLooper + aloop.dsp's top-of-file
+    // GLITCH RECORDABILITY comment) so it can never re-enter `fx`/microStage.
+    float* fins[2]  = { fin.data(), prevGlitchTap.data() };
     // aloop.dsp's process() now outputs 3 signals: (wet mix, rawGlitchTap,
     // rawLoopSum) -- two native taps (the loop engine's own raw output, and
     // microrepeat's own post-glitch/pre-filter output) so the SHIFT-fold AND
@@ -614,26 +618,23 @@ static void* worker(void*) {
                     fin[i] += prevLoopSum[i] * foldGain;
                 }
             }
-            // Glitch (microrepeat) recordability fold-in was REVERTED here:
-            // WITNESSED live -- feeding prevGlitchTap back into fin every
-            // block while active created a genuine one-block audio feedback
-            // loop (microStage's own ring-replay output re-entering as next
-            // block's "live" input, re-processed by the SAME ring/capture
-            // logic every pass), producing a fast, aliased, high-pitched
-            // whine even on the COARSEST division (DIV=1) -- confirmed by
-            // the user as NOT a division-specific extreme case but a
-            // fundamental bug in this feedback shape. The live/audible glitch
-            // itself (fx's own single-pass microStage, unaffected by this
-            // reverted code) was independently confirmed working correctly.
-            // Making glitch content genuinely recordable needs a different
-            // mechanism than "replace next block's input with this block's
-            // processed output" -- deferred pending a redesign that doesn't
-            // reintroduce this feedback shape (e.g. tapping the ring's OWN
-            // captured content directly for the record path, rather than
-            // re-driving the live microStage instance with its own output).
-            // rawGlitchTap/prevGlitchTap remain wired (Faust tap, C++
-            // buffers) for that future redesign; this block intentionally
-            // left inert.
+            // Glitch (microrepeat) recordability: FIXED via a dedicated
+            // record-only Faust input instead of folding into `fin`.
+            // WITNESSED-BROKEN prior approach: feeding prevGlitchTap into
+            // `fin` made it become `dry` for `loop` next block, which then
+            // flows through `fx` (hence microStage) AGAIN every block --
+            // microStage re-processing its own ring-replay output every pass
+            // produced a fast, aliased, high-pitched whine even at the
+            // COARSEST division (DIV=1), confirmed NOT a division-specific
+            // edge case but structural. Fixed instead by giving loop.dsp's
+            // process() a SECOND input (glitchIn, see fins[1] above) that
+            // ONLY the record-capture term consumes (dsp/loop.dsp's
+            // oneLooper: record=(in+glitchIn)*recN) -- glitchIn never joins
+            // the dry/live path, so it can never flow back through
+            // `fx`/microStage on this or any later block. prevGlitchTap is
+            // passed directly as fins[1] to compute() below (no fin[i] +=
+            // needed, unlike the SHIFT-fold above, since it targets a
+            // separate Faust input, not `fin` itself).
             // Time the DSP work vs the block budget → home-core busy % telemetry.
             timespec t0, t1;
             clock_gettime(CLOCK_MONOTONIC, &t0);

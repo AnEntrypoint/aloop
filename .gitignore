@@ -16,6 +16,7 @@
 .gm/disciplines/codeinsight-manifest/
 .gm/disciplines/codeinsight-vec/
 .gm/_prompt.json
+.gm/.instructions-shipped-manifest.json
 
 # build artifacts
 build/

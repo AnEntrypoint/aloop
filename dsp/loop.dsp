@@ -43,7 +43,15 @@ NLOOPERS = 20;            // 20 independent loopers (the hardware setup)
 clearAll = button("clear");
 speedMul = hslider("speed", 1.0, 0.25, 4.0, 0.001);   // 0.5 = half, 2.0 = double
 
-oneLooper(in) = out : attachLevel
+// glitchIn: previous block's post-glitch (microrepeat) tap, native one-block-lag
+// fold-in (see audio_thread.cpp's prevGlitchTap + dsp/aloop.dsp's top-of-file
+// comment on why this is a DEDICATED record-only input rather than being
+// folded into `in`/`fin`: adding it to the engine's live/dry input would make
+// it flow into `fx` again next block (re-entering microStage → the WITNESSED
+// feedback whine, see audio_thread.cpp's "REVERTED here" comment). Routed
+// ONLY into the record capture term below, so glitch content becomes
+// recordable into a new loop without ever being reprocessed by microStage.
+oneLooper(in, glitchIn) = out : attachLevel
 with {
     recN  = button("rec");
     playN = checkbox("play");
@@ -59,7 +67,12 @@ with {
     step(loop) = record + hold
     with {
         delayed = de.fdelay(MAXLEN, effLen, loop);
-        record  = in * recN;                              // record: capture input
+        // record: capture the live input PLUS the previous block's glitch tap,
+        // so a loop armed while microrepeat is engaged captures the STUTTERED
+        // audio (matching looper's "stutter becomes ... the record source",
+        // loopMachine.cpp:806-833) without microStage ever seeing its own
+        // output again (glitchIn never touches `in`/dry, only this record sum).
+        record  = (in + glitchIn) * recN;
         // else hold/recirculate — UNLESS wiped, which zeroes the loop.
         hold    = delayed * (1.0 - recN) * (1.0 - wipe);
     };
@@ -95,6 +108,10 @@ with {
 // vgroup label "looper%2i" → Faust substitutes the par index, giving group names
 // "looper 0" … "looper19" (a space for single digits). The native shell's
 // targetToZone normalizes to this exact form so each looper is addressable.
-loopEngine = _ <: (_ , (par(i, NLOOPERS, vgroup("looper%2i", oneLooper)) :> _));
+// Second process() input (glitchIn) is broadcast to every looper's record-only
+// tap (see oneLooper's comment) -- it never appears in the dry-thru output
+// (only `in` does), so the glitch content is recordable but never re-enters
+// the live/dry path (which would flow back into `fx`/microStage next block).
+loopEngine(in, glitchIn) = in, (par(i, NLOOPERS, vgroup("looper%2i", oneLooper(in, glitchIn))) :> _);
 
-process(in) = loopEngine(in);   // (dry, loopSum) — two outputs, see aloop.dsp's fold mix
+process(in, glitchIn) = loopEngine(in, glitchIn);   // (dry, loopSum) — two outputs, see aloop.dsp's fold mix
