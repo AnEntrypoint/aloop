@@ -310,6 +310,14 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps) {
         if (now_ms - m_looperHoldStart[looper] < kHoldEraseMs) continue;
         // Long-hold -> erase (apcKey25Notes.cpp: a >=1s hold clears the looper
         // regardless of state; also cancels a just-armed press-record).
+        // TEMPORARY diagnostic (tracked for removal): confirming/refuting the
+        // hypothesis that this erase-on-long-hold path is firing from an
+        // unintentionally-long single-pad hold during rapid repeated presses
+        // (not a genuine clear-all), for the "second clear-and-restart cycle
+        // produces blank loops" investigation.
+        fprintf(stderr, "[diag3] pollHolds ERASE-FIRE looper=%d now_ms=%u holdStart=%u heldMs=%u masterLen(before)=%ld wasRecording=%d wasHasContent=%d\n",
+                looper, now_ms, m_looperHoldStart[looper], now_ms - m_looperHoldStart[looper],
+                m_masterLenSamples, (int)m_looperRecording[looper], (int)m_looperHasContent[looper]);
         setLooper(ps, looper, "erase", 1.0f);
         if (m_looperRecording[looper]) {
             setLooper(ps, looper, "rec", 0.0f);   // cancel the in-progress take, don't leave rec stuck at 1
