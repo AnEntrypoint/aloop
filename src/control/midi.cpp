@@ -123,6 +123,8 @@ void runMidiLoop(ParamStore& ps, const char* device) {
         if (pr == 0) { grid.pollHolds(nowMs(), ps); continue; }   // timeout: no MIDI, just poll holds
         if (pr < 0) { grid.pollHolds(nowMs(), ps); continue; }    // interrupted/error: keep polling holds, retry read
         if (snd_rawmidi_read(in, &b, 1) != 1) break;
+        static uint64_t rawLogCount = 0;
+        if (rawLogCount < 200) { fprintf(stderr, "[midi] raw byte: 0x%02x (phase=%d)\n", b, phase); rawLogCount++; }
         if (b & 0x80) { st = b; phase = 1; continue; }
         if (phase == 1) { d1 = b; phase = 2; continue; }
         // phase 2: full message
@@ -130,6 +132,7 @@ void runMidiLoop(ParamStore& ps, const char* device) {
         uint8_t type = st & 0xF0;
         uint8_t channel = st & 0x0F;
         unsigned now = nowMs();
+        if (rawLogCount < 200) fprintf(stderr, "[midi] decoded: st=0x%02x type=0x%02x ch=%d d1=%d d2=%d\n", st, type, channel, d1, d2);
         grid.pollHolds(now, ps);   // also check on every real event, for prompt response
 
         // --- real APC Key25 hardware surface (apcKey25.cpp/apcKey25Notes.cpp), channel 0 only ---
