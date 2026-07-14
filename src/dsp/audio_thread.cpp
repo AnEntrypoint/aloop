@@ -214,6 +214,15 @@ static void* worker(void*) {
     // inside the Faust graph) sees the folded signal, without needing any
     // Faust-side recursion at all.
     std::vector<float> prevLoopSum((size_t)N, 0.0f);
+    // Previous block's post-glitch (microrepeat), pre-filter tap -- same
+    // one-block-lag native-mix technique as prevLoopSum, applied so glitch
+    // content becomes recordable into a new loop AND affects already-playing
+    // loops on the next pass through (matching looper's "stutter becomes
+    // BOTH the audible output and the record source", loopMachine.cpp:806-833).
+    // Always folded in (not SHIFT-gated) since glitch is a momentary
+    // performance effect the user explicitly engages via its own latch
+    // button, unlike the fold which is deliberately SHIFT-held-only.
+    std::vector<float> prevGlitchTap((size_t)N, 0.0f);
 
     // Instantiate the Faust home stack (loop engine + effects). Its compute()
     // runs the whole home DSP per block — the loop record/play + the effects.
@@ -237,13 +246,15 @@ static void* worker(void*) {
     faustHome.init((int)g_cfg.sampleRate);
     FaustUI fui; faustHome.buildUserInterface(&fui);
     float* fins[1]  = { fin.data() };
-    // aloop.dsp's process() now outputs 2 signals: (wet mix through fx,
-    // rawLoopSum) -- the second is the loop engine's OWN raw output (before
-    // fx), a native tap so the SHIFT-held monitor-fold can fold the loop's
-    // raw content into next block's input without compounding effects every
-    // block it's held (see aloop.dsp's top-of-file comment).
+    // aloop.dsp's process() now outputs 3 signals: (wet mix, rawGlitchTap,
+    // rawLoopSum) -- two native taps (the loop engine's own raw output, and
+    // microrepeat's own post-glitch/pre-filter output) so the SHIFT-fold AND
+    // the glitch-recordability fold can each feed next block's input without
+    // compounding effects every block they're held (see aloop.dsp's
+    // top-of-file comment).
+    std::vector<float> rawGlitchTap((size_t)N, 0.0f);
     std::vector<float> rawLoopSum((size_t)N, 0.0f);
-    float* fouts[2] = { fout.data(), rawLoopSum.data() };
+    float* fouts[3] = { fout.data(), rawGlitchTap.data(), rawLoopSum.data() };
 #endif
 
 #ifdef ALOOP_HAVE_FAUST_LOOP
@@ -603,6 +614,26 @@ static void* worker(void*) {
                     fin[i] += prevLoopSum[i] * foldGain;
                 }
             }
+            // Glitch (microrepeat) recordability fold-in: REPLACE (not add)
+            // fin with the PRIOR block's post-glitch tap, but ONLY while
+            // microrepeat is actually latched (fx/microrepeat_div != 0) --
+            // gated exactly like the SHIFT-fold's own gate, for the same
+            // reason: microStage TRANSFORMS the signal it's given (mrProcess
+            // = live*(1-wet) + rep*wet -- output EQUALS input when
+            // wet=0/inactive), so an unconditional or additive fold-in would
+            // either double the signal (if added) or permanently stale-delay
+            // normal passthrough by one block even with glitch off entirely
+            // (if replaced unconditionally) -- both tried and rejected during
+            // this same fix. Gating on the div latch means: glitch OFF ->
+            // this block runs completely untouched by any of this (identical
+            // to before glitch recordability existed); glitch ON -> fin is
+            // replaced with the prior block's stuttered content, so THIS
+            // block's record path and loop engine see the stutter, matching
+            // looper's real design (loopMachine.cpp:806-833's "stutter
+            // becomes both the audible output and the record source").
+            if (g_params && g_params->get("fx/microrepeat_div") > 0.5f) {
+                for (int i = 0; i < N; i++) fin[i] = prevGlitchTap[i];
+            }
             // Time the DSP work vs the block budget → home-core busy % telemetry.
             timespec t0, t1;
             clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -618,6 +649,11 @@ static void* worker(void*) {
             // accumulate a compounding extra pass through the effects chain
             // every block the fold is held.
             prevLoopSum = rawLoopSum;
+            // Snapshot this block's post-glitch/pre-filter tap (rawGlitchTap,
+            // aloop.dsp's second process() output) for NEXT block's
+            // glitch-recordability fold-in (see prevGlitchTap's declaration
+            // comment above).
+            prevGlitchTap = rawGlitchTap;
             clock_gettime(CLOCK_MONOTONIC, &t1);
             // busy fraction = work / block-period. Smoothed (EWMA) so the readout is
             // stable. Stored on the home-FX core index; a spike toward 100% warns of

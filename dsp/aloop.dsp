@@ -49,13 +49,25 @@ monitorFold = hslider("MONITORFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
 
 // `loop`'s two outputs (dry, loopSum) are consumed by `mixAndFx`, which sums
 // dry with the COMPLEMENTARILY-GATED loopSum for the live-heard signal
-// (through `fx`) while ALSO passing the raw (ungated) loopSum through as
-// this program's SECOND output -- a raw audio tap read back natively via
-// AloopLoopDsp's fouts[1] in audio_thread.cpp, so the native monitor-fold mix
-// (see top-of-file comment) can fold the loop's OWN raw output into next
-// block's input, matching looper's m_input_buffer += m_output_buffer*fg
-// (loopMachine.cpp:738) -- folding the RAW loop output, not the
-// fully-effected wet signal (which would compound effects every block the
-// fold is held, a real difference from looper this avoids).
-mixAndFx(dry, loopSum) = (dry + loopSum*(1.0-monitorFold) : fx), loopSum;
+// (through `fx`, which itself now has 2 outputs: the final filtered mix, and
+// microStage's own post-glitch/pre-filter tap) while ALSO passing the raw
+// (ungated) loopSum through -- three total program outputs, in this order:
+//   1. finalOut  -- the real audible/wire signal (fouts[0] in audio_thread.cpp)
+//   2. rawGlitchTap -- microStage's own post-glitch signal (fouts[1]), so
+//      audio_thread.cpp can fold the stutter back into next block's input,
+//      making glitch content recordable into a new loop and affecting
+//      already-playing loops the same way (matching loopMachine.cpp:806-833's
+//      "stutter becomes BOTH the audible output and the record source" --
+//      the SAME one-block-lag native-mix technique as the SHIFT-fold below).
+//   3. rawLoopSum -- the loop engine's own output (fouts[2]), so the native
+//      SHIFT-fold mix (see top-of-file comment) can fold it into next
+//      block's input, matching looper's m_input_buffer += m_output_buffer*fg
+//      (loopMachine.cpp:738) -- the RAW loop output, not the fully-effected
+//      wet signal (which would compound effects every block the fold is held).
+mixAndFx(dry, loopSum) = filtOut, rawGlitchTap, loopSum
+with {
+    fxOuts = (dry + loopSum*(1.0-monitorFold)) : fx;
+    filtOut = fxOuts : (_, !);
+    rawGlitchTap = fxOuts : (!, _);
+};
 process(in) = in : loop : mixAndFx;
