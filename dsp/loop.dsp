@@ -112,7 +112,7 @@ NLOOPERS = 20;            // 20 independent loopers (the hardware setup)
 // post-glitch content (effects_runtime.dsp: microStage feeds both
 // filterStage and rawGlitchTap, so microStage's output is upstream of and
 // already baked into filtOut/recordTap).
-oneLooper(in, prevFiltIn, clearAll, effSpeed) = out : attachLevel
+oneLooper(in, prevFiltIn, clearAll, effSpeed, masterPhase) = out : attachLevel
 with {
     recN  = button("rec");
     playN = checkbox("play");
@@ -251,34 +251,57 @@ with {
     writeVal = prevFiltIn * recN * (1.0 - wipe);
     ring = rwtable(MAXLEN, 0.0, writeIdx, writeVal, readIdx0);
 
-    // ---- READ side: the NEW genuinely-independent fractional accumulator
-    // driving true varispeed (tape-style pitch+duration change together).
+    // ---- READ side: PHRASE-LOCK (user's standing requirement: "our loops
+    // must stay perfectly in phrase... the phrase should always be correct
+    // even if a repeat or varispeed was hit" / "there is no looper sync at
+    // all right now, they're independent"). ROOT CAUSE of the reported
+    // drift: readPos was a purely SELF-INTEGRATING accumulator with no tie
+    // back to any shared reference -- two loopers recorded at different
+    // times, or one that had a glitch/repeat/varispeed engagement nudge its
+    // own accumulator differently than another's, could drift apart from
+    // each other forever with nothing to ever resync them. FIX: derive
+    // position from `masterPhase` (a process()-level SIGNAL INPUT, see
+    // effSpeed's own comment for why -- native audio_thread.cpp computes a
+    // single sample-accurate, Link-phase-corrected counter ONCE per block
+    // and pushes it in as a plain wire, exactly like effSpeed/clearAll, so
+    // par() cannot duplicate it into 20 zones) plus a per-looper ANCHOR
+    // (recordStartPhaseOffset, latched at THIS looper's own finishEdge from
+    // masterPhase's value at that exact instant) -- mirrors ../looper's real
+    // design (Looper.h/loopClip.cpp/loopClipUpdate.cpp, confirmed via
+    // cross-codebase research this session): every clip's position is
+    // ((masterPhase - itsOwnRecordStartOffset) mod itsOwnLength), a PURE
+    // FUNCTION recomputed fresh, not an independently-integrated value --
+    // so two loopers anchored to the SAME masterPhase can never drift
+    // apart from each other regardless of how long they've been playing,
+    // glitch engagement, or repeat presses (none of which touch masterPhase
+    // or any looper's own offset).
+    recordStartPhaseOffsetStep(prev) = ba.if(finishEdge, masterPhase, prev);
+    recordStartPhaseOffset = recordStartPhaseOffsetStep ~ _;
+    wrapAbs(p, len) = p - floor(p / float(len)) * float(len);
+    absPos = wrapAbs(masterPhase - recordStartPhaseOffset, wrapLen);
     // effSpeed is a plain process()-level SIGNAL INPUT (see ROOT CAUSE
     // comment above oneLooper for why it must never be a UI hslider/button
-    // threaded through par() -- would be re-elaborated into 20 duplicate
-    // zones, exactly the varispeed/clear-all bug class already fixed once
-    // this session). Clamp to a sane nonzero range so a pathological
-    // Link-tempo ratio or manual speed can never stall (0) or explode
-    // (runaway) the read accumulator.
+    // threaded through par()). Clamp to a sane nonzero range so a
+    // pathological Link-tempo ratio or manual speed can never stall (0) or
+    // explode (runaway) the read accumulator.
     speedClamped = max(0.1, min(8.0, effSpeed));
-    // wrap into [0, wrapLen) using the CURRENT wrapLen every sample -- this
-    // handles both forward overflow (speed>1) and, defensively, negative
-    // values (never produced today since speedClamped>0, but keeps the wrap
-    // well-defined if that ever changes).
-    // readPos resets to 0 at BOTH armEdge and finishEdge. armEdge's reset
-    // matters only cosmetically (hold's own (1-recN) gate mutes readPos's
-    // output entirely while actively recording, so wherever it drifts
-    // during the take is inaudible) -- but finishEdge's reset is the one
-    // that actually matters: wrapLen has JUST been latched (see wrapLenStep
-    // above) from this exact take's real length, and readPos must start
-    // fresh at 0 relative to THAT new boundary the instant playback becomes
-    // audible (play=1 fires in this same native FINISH call), or it would
-    // resume from wherever it had drifted to while wrapping the OLD (now
-    // stale) wrapLen throughout the recording -- precisely the "half a loop
-    // once, then silence" symptom: a playback head picking up mid-drift
-    // through a boundary that no longer matches what was just written.
-    readPosStep(prev) = ba.if(armEdge | finishEdge, 0.0, wrapReadPos(prev + speedClamped))
-    with { wrapReadPos(p) = p - floor(p / float(wrapLen)) * float(wrapLen); };
+    // VARISPEED INTERACTION: at effSpeed==1.0 (normal playback, the common
+    // case), position is ALWAYS the pure masterPhase-relative formula above
+    // -- zero drift by construction, never self-integrated. Varispeed
+    // (effSpeed != 1.0) is a deliberate, momentary DEVIATION from the
+    // master's own rate (that is what varispeed means -- playing faster or
+    // slower than the shared clock) -- while engaged, this looper falls
+    // back to its own self-integrating accumulator (the only way to express
+    // "play at a different rate than the master"), but the INSTANT effSpeed
+    // returns to 1.0, it re-snaps to the pure absPos formula on the very
+    // next sample, killing any drift accumulated while varispeed was held --
+    // mirrors ../looper's own m_playPos, which is likewise kept synced to
+    // the master-derived position every block while rate==1 and only
+    // self-integrates during an actual rate change (loopClipUpdate.cpp,
+    // confirmed via cross-codebase research this session).
+    varispeedActive = (effSpeed < 0.999) | (effSpeed > 1.001);
+    readPosStep(prev) = ba.if(armEdge | finishEdge, absPos,
+                         ba.if(varispeedActive, wrapAbs(prev + speedClamped, wrapLen), absPos));
     // HISTORY (superseded, kept for context): this file previously carried
     // readposdiag/wraplendiag TEMPORARY diagnostic hbargraphs, added to
     // investigate "plays a part of the loop once, does not repeat" by
@@ -369,17 +392,23 @@ with {
 // what actually makes them single shared zones (see oneLooper's comment above
 // for why referencing them by bare name from INSIDE the vgroup-wrapped par
 // failed to do this).
-// clearAll/effSpeed are now genuine process() SIGNAL inputs (see the ROOT
-// CAUSE comment above oneLooper) -- plain wires, not UI-declared button()/
-// hslider() boxes, so par()'s per-instance code generation cannot duplicate
-// them into 20 separate zones. They are broadcast identically to every
-// oneLooper instance the same way prevFiltIn already is. effSpeed REPLACES
-// the old speedMul: it is audio_thread.cpp's precomputed product of the
-// manual half/double-speed multiplier AND the Link-tempo-driven ratio
+// clearAll/effSpeed/masterPhase are all genuine process() SIGNAL inputs (see
+// the ROOT CAUSE comment above oneLooper) -- plain wires, not UI-declared
+// button()/hslider() boxes, so par()'s per-instance code generation cannot
+// duplicate them into 20 separate zones. They are broadcast identically to
+// every oneLooper instance the same way prevFiltIn already is. effSpeed
+// REPLACES the old speedMul: it is audio_thread.cpp's precomputed product of
+// the manual half/double-speed multiplier AND the Link-tempo-driven ratio
 // (recordedBpm/currentLinkBpm), matching looper's
 // `effectiveRate = m_playRate * g_globalSpeedMul` exactly (see top-of-file
 // comment) -- one combined signal, since Faust's read accumulator only ever
-// needs the FINAL rate, not the two factors separately.
-loopEngine(in, prevFiltIn, clearAll, effSpeed) = in, (par(i, NLOOPERS, vgroup("looper%2i", oneLooper(in, prevFiltIn, clearAll, effSpeed))) :> _);
+// needs the FINAL rate, not the two factors separately. masterPhase is the
+// PHRASE-LOCK shared clock (see oneLooper's own comment on
+// recordStartPhaseOffset/absPos): audio_thread.cpp computes a single
+// sample-accurate, Link-phase-corrected counter once per block and pushes it
+// in here, so every looper anchors its own recordStartPhaseOffset to the
+// SAME reference and can never drift apart from another looper regardless
+// of glitch/repeat/varispeed engagement.
+loopEngine(in, prevFiltIn, clearAll, effSpeed, masterPhase) = in, (par(i, NLOOPERS, vgroup("looper%2i", oneLooper(in, prevFiltIn, clearAll, effSpeed, masterPhase))) :> _);
 
-process(in, prevFiltIn, clearAll, effSpeed) = loopEngine(in, prevFiltIn, clearAll, effSpeed);   // (dry, loopSum) — two outputs, see aloop.dsp's fold mix
+process(in, prevFiltIn, clearAll, effSpeed, masterPhase) = loopEngine(in, prevFiltIn, clearAll, effSpeed, masterPhase);   // (dry, loopSum) — two outputs, see aloop.dsp's fold mix

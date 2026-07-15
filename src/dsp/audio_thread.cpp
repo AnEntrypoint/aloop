@@ -23,6 +23,7 @@
 #include <vector>
 #include <memory>
 #include <algorithm>
+#include <cmath>
 
 // ALSA is present in the build container (see build-binary.yml). Guarded so the
 // design compiles for review even where ALSA headers are absent; the real device
@@ -312,7 +313,18 @@ static void* worker(void*) {
     // threading a 5th process() input.
     std::vector<float> clearBuf((size_t)N, 0.0f);
     std::vector<float> speedBuf((size_t)N, 1.0f);
-    float* fins[4]  = { fin.data(), prevFiltOut.data(), clearBuf.data(), speedBuf.data() };
+    // masterPhaseBuf: the PHRASE-LOCK shared clock (5th process() signal
+    // input, same block-constant-per-block technique as clearBuf/speedBuf).
+    // User's standing requirement: "our loops must stay perfectly in
+    // phrase... there is no looper sync at all right now, they're
+    // independent." Every looper's dsp/loop.dsp oneLooper anchors its own
+    // recordStartPhaseOffset to THIS shared value at its own finishEdge, so
+    // position becomes a pure function of (masterPhase - offset) rather than
+    // an independently-integrated accumulator -- two loopers anchored to the
+    // same masterPhase can never drift apart from each other. See the
+    // "Master phase clock" block below for how this value is computed.
+    std::vector<float> masterPhaseBuf((size_t)N, 0.0f);
+    float* fins[5]  = { fin.data(), prevFiltOut.data(), clearBuf.data(), speedBuf.data(), masterPhaseBuf.data() };
     // aloop.dsp's process() now outputs 4 signals: (wet mix, rawGlitchTap,
     // rawLoopSum, recordTap) -- native taps so the SHIFT-fold, the
     // glitch-loop-routing fold, AND the always-effected record path can each
@@ -696,6 +708,65 @@ static void* worker(void*) {
                 float effSpeed = g_manualSpeedMul * linkSpeedRatio;
                 std::fill(speedBuf.begin(), speedBuf.end(), effSpeed);
                 g_telem.effSpeed = effSpeed;
+            }
+            // MASTER PHASE CLOCK (5th process() signal input, see
+            // masterPhaseBuf's own declaration comment above): a single
+            // sample-accurate counter, incremented by N every block,
+            // wrapping at the current shared phrase length (cmd/master_len,
+            // the SAME value dsp/loop.dsp's per-looper wrapLen is ultimately
+            // derived from at each looper's own finishEdge) -- this is what
+            // every looper's recordStartPhaseOffset anchors to, guaranteeing
+            // two loopers can never drift apart from each other regardless
+            // of glitch/repeat/varispeed engagement (see dsp/loop.dsp's
+            // oneLooper comment for the full Faust-side reasoning).
+            // Genuinely internal (not read back from Faust) -- computed
+            // ONCE here, pushed in as a plain wire, exactly like
+            // clearBuf/speedBuf.
+            //
+            // Link resync: when a real Link session is active and driving
+            // the phrase length (linkDrivingLength, computed above from the
+            // SAME g_link->audioRead() this block already has), periodically
+            // correct any accumulated float/scheduling drift by re-deriving
+            // the phase from Link's own beatPhaseMicroBeats -- mirrors
+            // ../looper's own periodic re-anchor (loopClipUpdate.cpp:283-296,
+            // confirmed via cross-codebase research this session) that snaps
+            // even a self-advancing accumulator back to the master-derived
+            // absolute value at each phrase boundary. Standalone (no Link
+            // peers), masterPhase is purely the free-running block counter --
+            // still fully functional (aloop remains phrase-locked to ITSELF
+            // even with no Link session), just without an external reference
+            // to correct against.
+            {
+                static double masterPhaseSamples = 0.0;
+                float masterLen = g_params ? g_params->get("cmd/master_len", 0.0f) : 0.0f;
+                if (masterLen > 0.0f) {
+                    if (linkDrivingLength && g_link) {
+                        LinkSnapshot ls3 = g_link->audioRead();
+                        if (ls3.phaseValid && ls3.quantumMicroBeats > 0) {
+                            // Link's phase is a fraction of ITS OWN quantum
+                            // (beats); convert to a fraction of OUR phrase
+                            // (samples) and resync -- this is the periodic
+                            // drift-correction snap, applied every block a
+                            // valid Link phase is available (cheap, and
+                            // exactly matches looper's own "every phrase
+                            // boundary" cadence closely enough at block
+                            // granularity).
+                            double linkPhaseFrac = (double)ls3.beatPhaseMicroBeats / (double)ls3.quantumMicroBeats;
+                            if (linkPhaseFrac < 0.0) linkPhaseFrac = 0.0;
+                            if (linkPhaseFrac >= 1.0) linkPhaseFrac = 0.0;
+                            masterPhaseSamples = linkPhaseFrac * (double)masterLen;
+                        } else {
+                            masterPhaseSamples += (double)N;
+                        }
+                    } else {
+                        masterPhaseSamples += (double)N;
+                    }
+                    masterPhaseSamples = std::fmod(masterPhaseSamples, (double)masterLen);
+                    if (masterPhaseSamples < 0.0) masterPhaseSamples += masterLen;
+                } else {
+                    masterPhaseSamples = 0.0;   // no phrase established yet -- hold at 0
+                }
+                std::fill(masterPhaseBuf.begin(), masterPhaseBuf.end(), (float)masterPhaseSamples);
             }
             // Deinterleave the stereo wire -> mono DSP input: average the wire
             // channels (mono content is identical L/R; a stereo source is summed to
