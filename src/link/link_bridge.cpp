@@ -59,7 +59,15 @@ void LinkBridge::controlTick() {
     s.bpm    = state.tempo();
     s.synced = (l->numPeers() > 0);
     // Beat/phase in the looper's fixed-point micro-beat units.
-    const double quantum = 4.0;                     // one bar; matches the loop grid
+    // Quantum is 16.0 beats (4 bars at 4/4), matching the user's explicit
+    // standing requirement: "all loopers must absolutely and permanently
+    // stick and track to ableton links phrasing... the ableton link phrase
+    // must be as close to 4 bars 120 as we can get it." This is the FIXED
+    // base every looper's own length is a multiple/division of (see
+    // apc_grid.cpp's deriveTempoQuant, which picks tempo + a beat-count
+    // candidate relative to this same base) -- previously 4.0 (one bar),
+    // which under-scoped the phrase to 1/4 of the user's intended grid.
+    const double quantum = 16.0;
     const double beat  = state.beatAtTime(now, quantum);
     const double phase = state.phaseAtTime(now, quantum);
     s.phaseValid          = s.synced;

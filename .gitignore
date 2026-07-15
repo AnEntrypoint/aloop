@@ -32,6 +32,9 @@ node_modules/
 out/
 dist/
 
+# scratch dir for downloaded CI artifacts during manual deploy/debug
+tmp/
+
 # host-side netboot serving scratch (artifacts + WSL adhoc scripts)
 .netboot-stage/
 .netboot-serve/

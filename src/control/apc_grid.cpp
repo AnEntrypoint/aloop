@@ -60,29 +60,55 @@ static void setLooper(ParamStore& ps, int looper, const char* field, float v) {
     ps.setByName(name, v);
 }
 
-// Derive a tempo (BPM) from a recorded phrase's actual duration, choosing the
-// number of beats-per-phrase that lands the result NEAREST 120 BPM -- mirrors
-// looper's own (never-fully-wired) intended design, documented in its PRD
-// history: "bpm = 60*beats_in_clip / clip_seconds where beats chosen to land
-// tempo nearest 120." A 4-beat bar is tried first (the common case, matching
-// audio_thread.cpp's own beatsPerBar=4.0 assumption for Link-driven length),
-// but other small beat-counts (1,2,8,16) are also tried and whichever gets
-// closest to 120 BPM wins -- so a very short "one hit" loop doesn't get
-// forced into an absurd 4-beat interpretation (e.g. 500ms/4beats = 480bpm)
-// when interpreting it as a single beat (500ms/1beat = 120bpm exactly) is
-// obviously the musically-sensible reading.
-static double deriveTempoBpm(double seconds) {
-    if (seconds <= 0.0) return 120.0;
-    static const int kCandidates[] = {1, 2, 4, 8, 16};
-    double bestBpm = 120.0;
+// Ported from ../looper's real linkDeriveQuant (abletonLink.cpp:884-907),
+// confirmed via cross-codebase research this session. User's explicit
+// standing requirement: "all loopers must absolutely and permanently stick
+// and track to ableton links phrasing, they must all run on a multiple or
+// division of it... the ableton link phrase must be as close to 4 bars 120
+// as we can get it adjusting the tempo or division or multiple of 4 bars
+// accordingly, just like ../looper." The fixed base quantum is 4 bars = 16
+// beats (LinkBridge's own quantum, see link_bridge.h/.cpp); candidates are
+// multiples/divisions OF that 16-beat base (1/16, 1/8, 1/4, 1/2, 1x, 2x, 4x,
+// 8x -- i.e. 1,2,4,8,16,32,64,128 beats), mirroring looper's own candidate
+// SET SHAPE (its own {0.25,0.5,1,2,4,8,16} beats, rebased here onto a 4-bar
+// rather than looper's implicit 1-bar unit, per the user's explicit "4
+// bars" framing). For each candidate, the implied tempo is beats*60/seconds;
+// whichever candidate's implied tempo lands NEAREST 120 BPM wins (preferring
+// the [80,160] window if any candidate lands inside it, exactly mirroring
+// looper's own fallback-outside-window behavior) -- this is what lets a
+// short "one hit" loop resolve to a small beat-count instead of being
+// force-fit to a full 4-bar phrase at an absurd tempo.
+struct TempoSolveResult {
+    double bpm;
+    double beats;   // the winning candidate's beat-count (this loop's phrase length in beats)
+};
+static TempoSolveResult deriveTempoQuant(double seconds) {
+    if (seconds <= 0.0) return {120.0, 16.0};
+    static const double kCandidates[] = {1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0};
+    TempoSolveResult best = {120.0, 16.0};
     double bestDist = 1e18;
-    for (int beats : kCandidates) {
+    bool bestInWindow = false;
+    for (double beats : kCandidates) {
         double bpm = 60.0 * beats / seconds;
+        bool inWindow = (bpm >= 80.0 && bpm <= 160.0);
         double dist = std::fabs(bpm - 120.0);
-        if (dist < bestDist) { bestDist = dist; bestBpm = bpm; }
+        // Prefer any in-window candidate over any out-of-window one, then
+        // nearest-120 within whichever preference tier wins -- matches
+        // looper's own "within [80,160] window, else nearest-120 outside it".
+        bool better = inWindow && !bestInWindow;
+        bool tieBreak = (inWindow == bestInWindow) && (dist < bestDist);
+        if (better || tieBreak) {
+            best = {bpm, beats};
+            bestDist = dist;
+            bestInWindow = inWindow;
+        }
     }
-    return bestBpm;
+    return best;
 }
+// Backward-compatible BPM-only accessor for call sites that don't yet need
+// the beat-count (the phrase-length-in-beats result feeds the masterPhase
+// rearchitecture, tracked separately).
+static double deriveTempoBpm(double seconds) { return deriveTempoQuant(seconds).bpm; }
 
 void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, LinkBridge* link) {
     // Real 3-state cycle (apcKey25Notes.cpp:61-84):
@@ -179,29 +205,40 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             // master phrase across the whole rig (unlike looper's per-clip
             // m_nativeBlocks), so this is a single shared value, consistent
             // with cmd/master_len's own existing shared-rig design.
+            // TRUE PHRASE-LOCK (user's standing requirement): resolve the
+            // ACTUAL phrase length via the beat-count solver instead of
+            // trusting the raw recorded duration verbatim. deriveTempoQuant
+            // picks whichever candidate beat-count (multiple/division of the
+            // 4-bar/16-beat base -- see link_bridge.cpp's quantum) makes the
+            // recorded duration imply a tempo nearest 120 BPM; re-deriving
+            // m_masterLenSamples from that candidate's OWN beats-at-the-
+            // chosen-BPM (rather than the raw elapsed-time length) snaps the
+            // phrase to a clean, Link-grid-aligned value instead of an
+            // arbitrary duration that merely approximates one.
             double recordedSeconds = (double)m_masterLenSamples / (double)kSampleRate;
-            ps.setByName("cmd/recorded_bpm", (float)deriveTempoBpm(recordedSeconds));
+            TempoSolveResult solved = deriveTempoQuant(recordedSeconds);
+            long quantizedLenSamples = (long)(solved.beats * 60.0 / solved.bpm * kSampleRate + 0.5);
+            if (quantizedLenSamples < 64) quantizedLenSamples = 64;
+            if (quantizedLenSamples > kMaxLoopSamples) quantizedLenSamples = kMaxLoopSamples;
+            m_masterLenSamples = quantizedLenSamples;
+            ps.setByName("cmd/master_len", (float)m_masterLenSamples);
+            ps.setByName("cmd/recorded_bpm", (float)solved.bpm);
             // Propagate the newly-established phrase to every looper (this
             // one included) so a second, third, ... looper recorded next
             // joins the SAME shared grid, matching looper's single
             // masterLoopBlocks used by the whole rig, not a per-looper value.
             for (int lp = 0; lp < kLooperCount; lp++) setLooper(ps, lp, "len", (float)m_masterLenSamples);
-            // TWO-WAY LINK INTEGRATION: the first recorded loop PROPOSES its
-            // own tempo to the Link session, so Link becomes the shared
-            // tempo authority for the whole group from this point on --
-            // previously aloop only ever READ Link's tempo (LinkBridge::
-            // proposeTempo existed but was never called from anywhere,
-            // genuinely dead code). Mirrors looper's own intended-but-
-            // never-fully-wired design (linkSetBPM, PRD history: "bpm =
-            // 60*beats_in_clip/clip_seconds"). Once proposed, Link's own
-            // tempo becomes authoritative going forward: audio_thread.cpp's
-            // Link-synced branch will pick up this exact BPM on its very
-            // next read and start retiming everything (including THIS
-            // looper) from Link rather than the local cmd/master_len
-            // fallback -- a real closed loop, not a one-shot announcement.
+            // TWO-WAY LINK INTEGRATION: the first recorded loop ACTIVELY
+            // STEERS the Link session's tempo toward the solver's chosen BPM
+            // (nearest 120, at a clean multiple/division of the 4-bar
+            // quantum) -- not merely reading whatever tempo already exists.
+            // Mirrors looper's real linkDeriveQuant+linkEnd behavior
+            // (abletonLink.cpp:884-932, confirmed via cross-codebase
+            // research this session): propose tempo AND implicitly establish
+            // phrase origin together, so peers (and this session's own
+            // Link-synced branch) adopt both as one clean restart.
             if (link) {
-                double seconds = (double)m_masterLenSamples / (double)kSampleRate;
-                link->proposeTempo(deriveTempoBpm(seconds));
+                link->proposeTempo(solved.bpm);
             }
         } else {
             // WITNESSED live: "consecutive loops were all the same lengths
