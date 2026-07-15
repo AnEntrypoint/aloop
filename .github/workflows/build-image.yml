@@ -98,6 +98,17 @@ jobs:
           name: aloop-pi4-image
           path: aloop-pi4.img.gz
           if-no-files-found: error
+          # WITNESSED: this workflow re-runs on nearly every push (build-binary
+          # completion + any image/kernel/src/dsp/config push), and these two
+          # image artifacts run ~68MB+ each -- with the repo's default 90-day
+          # retention, a single active session's worth of pushes (100+ over a
+          # few hours) accumulated to 6.8GB+ and hit the account's total
+          # Actions artifact storage quota, blocking EVERY workflow's artifact
+          # upload repo-wide (including build-binary's much smaller binary)
+          # until the quota "recalculates" on GitHub's own 6-12h cycle. A
+          # short retention keeps this from recurring; these are dev-iteration
+          # artifacts, not release assets meant to be kept.
+          retention-days: 3
 
       - name: Upload netboot root
         uses: actions/upload-artifact@v4
@@ -105,3 +116,4 @@ jobs:
           name: aloop-netboot-root
           path: aloop-netboot.tar.gz
           if-no-files-found: error
+          retention-days: 3

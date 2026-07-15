@@ -84,3 +84,7 @@ jobs:
           name: home-fx-lv2
           path: effects/home/*.lv2
           if-no-files-found: error
+          # Short retention: see build-image.yml's matching comment for the
+          # full incident (accumulated artifacts across every push hit the
+          # account's total Actions storage quota and blocked all uploads).
+          retention-days: 3

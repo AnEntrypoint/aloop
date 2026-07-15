@@ -71,3 +71,8 @@ jobs:
         with:
           name: aloop-aarch64-musl
           path: build/aloop
+          # Short retention: this workflow runs on nearly every push during
+          # active iteration -- see build-image.yml's matching comment for
+          # the full incident (accumulated artifacts hit the account's total
+          # Actions storage quota and blocked every workflow's uploads).
+          retention-days: 3
