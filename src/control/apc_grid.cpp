@@ -257,7 +257,45 @@ void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps, LinkBridge* 
 
     int looper = gridLooperIndex(row, col);
     if (looper >= 0) {
+        // REPEATED-NOTE-ON GUARD: real APC Key25 hardware (unlike the
+        // synthetic midi-inject.js press/release test path used earlier this
+        // session) re-sends note-on for a pad that is physically still held
+        // down -- WITNESSED as a real, distinct MIDI byte sequence class this
+        // session was asked to check for but had not yet verified live
+        // (device unreachable at investigation time; this is a structural
+        // fix applied defensively from first-principles MIDI behavior, to be
+        // confirmed against a live raw-byte capture once the device is back
+        // on the network). Before this guard, EVERY repeated note-on for an
+        // already-held pad unconditionally reset m_looperHoldStart[looper]
+        // to "now" (below) -- so a >=1s continuous physical hold whose
+        // hardware re-sends note-on faster than kHoldEraseMs (1000ms) apart
+        // could NEVER accumulate enough elapsed time to fire the erase
+        // long-hold, and, far worse, a repeat arriving while
+        // m_looperRecording[looper] is true re-entered the
+        // `!hasContent || recording` press-dispatch condition below and
+        // fired applyRecPlayCycle a SECOND time mid-recording -- prematurely
+        // finishing the take after only the repeat interval's worth of
+        // audio (a fraction of a second) instead of the user's actual
+        // multi-second hold, then re-arming ANOTHER recording on the same
+        // physical press the user believes is still their first one. This
+        // is a direct structural mechanism for "recording came out blank/
+        // near-silent" independent of anything in the DSP or erase-release
+        // timing. Fix: only treat this as a genuinely NEW press (reset hold
+        // start, run the press-time dispatch) when the pad was not already
+        // marked held; a repeat note-on for an already-held pad is a no-op
+        // here, exactly as a real key-repeat/aftertouch event should be.
+        bool alreadyHeld = m_looperHeld[looper];
         m_looperHeld[looper] = true;
+        if (alreadyHeld) {
+            // TEMPORARY diagnostic (tracked for removal): confirms live
+            // whether real APC hardware actually sends repeated note-on
+            // while a pad is physically held (the guard above exists
+            // specifically to neutralize this) -- distinguishes this
+            // dedup path actually firing from the guard being dead code.
+            fprintf(stderr, "[diag8] onPadPress REPEAT-SUPPRESSED looper=%d now_ms=%u recording=%d\n",
+                    looper, now_ms, (int)m_looperRecording[looper]);
+            return;
+        }
         m_looperErased[looper] = false;
         m_looperHoldStart[looper] = now_ms;
         // Press-time-critical arm/finish, mirroring apcKey25Notes.cpp: an empty
@@ -319,6 +357,8 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps) {
     for (int looper = 0; looper < kLooperCount; looper++) {
         if (m_looperEraseReleaseAt[looper] != 0 && now_ms >= m_looperEraseReleaseAt[looper]) {
             setLooper(ps, looper, "erase", 0.0f);
+            fprintf(stderr, "[diag6b] pollHolds ERASE-RELEASE looper=%d now_ms=%u releaseAt=%u\n",
+                    looper, now_ms, m_looperEraseReleaseAt[looper]);
             m_looperEraseReleaseAt[looper] = 0;
         }
     }
@@ -357,6 +397,13 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps) {
         // it's released.
         setLooper(ps, looper, "erase", 1.0f);
         m_looperEraseReleaseAt[looper] = now_ms + 50;   // ~50ms is many DSP blocks; short enough no user notices a delay
+        // TEMPORARY diagnostic (tracked for removal, see diag7 in
+        // applyRecPlayCycle): real erase-fire timestamp, to compare directly
+        // against the next ARM/FINISH diag7 lines in a live reproduction and
+        // confirm precisely how long before the next ARM this fired, and
+        // whether the release (diag6b below) genuinely completes first.
+        fprintf(stderr, "[diag6] pollHolds ERASE-FIRE looper=%d now_ms=%u holdStart=%u heldMs=%u releaseAt=%u\n",
+                looper, now_ms, m_looperHoldStart[looper], now_ms - m_looperHoldStart[looper], m_looperEraseReleaseAt[looper]);
         if (m_looperRecording[looper]) {
             setLooper(ps, looper, "rec", 0.0f);   // cancel the in-progress take, don't leave rec stuck at 1
             m_looperRecording[looper] = false;
