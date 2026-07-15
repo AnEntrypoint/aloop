@@ -167,7 +167,50 @@ with {
     // follows wipe before any real write happens again.
     recPrev = recN : mem;
     armEdge = (recN > 0.5) & (recPrev < 0.5);   // recN this sample, NOT last sample: rising edge
-    wrapLen = max(1, int(lenN));
+    // ROOT CAUSE (total playback silence after the armEdge-reset fix,
+    // 0260de2): resetting writeIdx/readPos to 0 on armEdge fixed their
+    // MUTUAL alignment, but did nothing about `wrapLen` itself being able to
+    // change OUT FROM UNDER an in-progress recording. `lenN` (and therefore
+    // wrapLen) is only ever updated by the native shell at FINISH
+    // (apc_grid.cpp's applyRecPlayCycle, computed from the just-finished
+    // recording's OWN elapsed duration) -- it is NOT touched at ARM. So
+    // during the entire ARM..FINISH span, wrapLen is whatever it was BEFORE
+    // this recording (the Faust-compiled default 48000 on a clean boot, or a
+    // leftover length from a previous loop / a different looper's
+    // just-established shared phrase). writeIdx/readPos both wrap modulo
+    // THAT STALE length throughout the whole recording. The instant FINISH
+    // fires, wrapLen snaps to the NEW, actual recording length -- a
+    // completely different modulus than what the write pass actually used.
+    // Playback then scans [0, newWrapLen) even though the ring was only ever
+    // written using the OLD wrapLen's wrap boundary: any region of the new
+    // span the old-length write pass never reached (newWrapLen > oldWrapLen)
+    // is rwtable's zero-init default -- structurally silent, not audio. Even
+    // worse, if the recording is SHORT relative to a big leftover wrapLen
+    // (e.g. every looper just got set to a 4-second shared phrase and THIS
+    // looper's own fresh recording only lasts 1 second), the write pass
+    // never wraps at all and only populates a small prefix, while the old
+    // (still-in-effect-until-FINISH) wrapLen governs BOTH writeIdx's mod and
+    // readPos's mod identically during recording -- consistent DURING
+    // recording, but FINISH's post-hoc `len` rewrite can move the boundary
+    // to a place with little or no overlap with what got written, matching
+    // the reported "no loop content plays at all, only passthrough".
+    // FIX: latch wrapLen at the SAME armEdge that resets writeIdx/readPos,
+    // and HOLD that latched value fixed (not re-read every sample from the
+    // live, block-rate-updating lenN) until the NEXT armEdge. This guarantees
+    // one recording's write pass and its OWN subsequent playback always
+    // share the exact same wrap boundary, decided once at the moment
+    // recording starts and never moved underneath it -- exactly mirroring
+    // why writeIdx/readPos themselves needed a single shared reset instant.
+    // Faust-legal: an ordinary internal `~` recursion, entirely local to
+    // this oneLooper instance, no new UI control, no cross-stage recursion.
+    // NOTE: max(1, ...) applied again on the OUTPUT of the recursion (not
+    // just wrapLenRaw feeding in) covers the recursion's own Faust-default
+    // initial state (0, before the very first armEdge this instance ever
+    // sees) so no downstream `% wrapLen` can ever divide by zero on a cold
+    // boot's very first samples before any looper has ever been armed.
+    wrapLenRaw = max(1, int(lenN));
+    wrapLenStep(prev) = ba.if(armEdge, wrapLenRaw, prev);
+    wrapLen = max(1, wrapLenStep ~ _);
     writeIdxStep(prev) = ba.if(armEdge, 0, (prev + 1) % wrapLen);
     writeIdx = writeIdxStep ~ _;
     // record: capture the PREVIOUS block's fully-effected mix (prevFiltIn),
@@ -212,37 +255,31 @@ with {
     // read replays the recording from its true start, sample for sample.
     readPosStep(prev) = ba.if(armEdge, 0.0, wrapReadPos(prev + speedClamped))
     with { wrapReadPos(p) = p - floor(p / float(wrapLen)) * float(wrapLen); };
-    // TEMPORARY diagnostic (tracked for removal): re-investigating "plays a
-    // part of the loop once, does not repeat" -- expose readPos/wrapLen as
-    // hbargraph OUTPUTS. REGRESSION FOUND AND FIXED in this same edit
-    // (WITNESSED live: both diag zones returned fui.get's -1.0 "not found"
-    // default every single block): a hbargraph computed but never actually
-    // wired into a signal that reaches `out`/process()'s output gets
-    // dead-code-eliminated by Faust entirely -- the UI element is simply
-    // never instantiated. Fix: pipe readPos through `attachReadPosDiag` /
-    // `attachWrapLenDiag` (ordinary attach() wrappers, same idiom as
-    // attachLevel below), so the CHAIN's final result (still numerically
-    // just readPos -- attach()'s first argument passes through unchanged)
-    // is what feeds readIdx0/readIdx1 -- now both diag hbargraphs are
-    // genuinely part of the real signal path Faust must keep.
-    // FIX (attach()-chaining regression): the previous attachWrapLenDiag
-    // called attach(x, wrapLen:float:hbargraph(...)) -- attach(x,y)'s
-    // contract is that y is evaluated as a SIDE EFFECT of x flowing through,
-    // but Faust's dead-code elimination only keeps a UI primitive reachable
-    // if it is part of the SAME signal expression that is attach()'d, not
-    // merely evaluated "nearby" in the same with-block. `wrapLen` here does
-    // not depend on `x` (readPos) at all -- it's an entirely separate
-    // upstream signal (derived straight from lenN) -- so the compiler could
-    // (and did) still treat that hbargraph as unreachable from `out`. Fix:
-    // make each diag hbargraph's argument GENUINELY derive from the signal
-    // being attached (x + 0*wrapLen keeps the mathematical value of x
-    // unchanged, since wrapLen is provably a compile-time-boundable, always-
-    // finite int, but now makes the hbargraph's input signal actually depend
-    // on the chain it's attached to, so DCE cannot drop it independently of
-    // readPos itself).
-    attachReadPosDiag(x) = attach(x, x : hbargraph("readposdiag", 0.0, 999999.0));
-    attachWrapLenDiag(x) = attach(x, x*0 + float(wrapLen) : hbargraph("wraplendiag", 0.0, 999999.0));
-    readPos = (readPosStep ~ _) : attachReadPosDiag : attachWrapLenDiag;
+    // HISTORY (superseded, kept for context): this file previously carried
+    // readposdiag/wraplendiag TEMPORARY diagnostic hbargraphs, added to
+    // investigate "plays a part of the loop once, does not repeat" by
+    // exposing readPos/wrapLen as hbargraph OUTPUTS read back via fui.get()
+    // in audio_thread.cpp. Two attempts to make Faust's dead-code
+    // elimination actually keep them reachable from `out` were tried (the
+    // first attach()-chaining attempt still failed since wrapLen didn't
+    // structurally depend on the attached signal); both attempts still read
+    // fui.get()'s -1.0 "not found" default live, every single time.
+    // REMOVED (this fix): both diagnostic hbargraphs are gone -- they were
+    // the newest, least-proven code sitting DIRECTLY in the
+    // real readPos chain that feeds readIdx0/readIdx1 -- i.e. every reader of
+    // this signal path. Faust's attach() is documented/verified to be a
+    // genuine value-identity pass-through (attach(x,y) returns x unchanged;
+    // this was independently re-verified against Faust's own semantics while
+    // investigating this exact regression), so the diag chain itself was not
+    // the direct cause of the silence bug fixed above -- but a broken
+    // diagnostic that has never once produced a real reading, sitting inline
+    // on the single most fragile signal in this file, is a standing risk for
+    // zero ongoing benefit. Removed entirely rather than attempted a third
+    // time; if readPos/wrapLen visibility is needed again, prefer exposing
+    // them via the EXISTING working telemetry path (audio_thread.cpp's
+    // fui.get() reads of already-functioning zones like level/rec/play)
+    // rather than a new attach()-chained hbargraph.
+    readPos = readPosStep ~ _;
     readIdx0 = int(readPos) % wrapLen;             // floor tap
     readIdx1 = (readIdx0 + 1) % wrapLen;             // ceil tap, wrapped
     readFrac = readPos - floor(readPos);

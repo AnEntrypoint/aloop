@@ -263,3 +263,6 @@
 - id: varispeed-report-ear-verification-needed
   subject: 'Final report must explicitly state what needs the user ear: does half/double-speed now audibly change pitch not just duration, and does Link-tempo reconnection at a different tempo correctly re-pitch already-recorded loops -- cannot be verified by this session.'
   status: pending
+- subject: 'Fix total playback silence regression introduced by 0260de2''s armEdge writeIdx/readPos reset in dsp/loop.dsp: root cause is wrapLen (loop length) changing between when a recording starts (ARM, uses stale prior len) and when it is established (FINISH, computed from actual elapsed duration) -- write and read spans end up using different, uncoordinated wrap boundaries, leaving large regions of the ring at rwtable''s zero-init default. Fix: latch wrapLen at the same armEdge that resets writeIdx/readPos, holding it fixed for the whole recording+playback cycle.'
+  id: fix-total-playback-silence-regression-introduced-by-0260de2-s-ar
+  status: pending
