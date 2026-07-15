@@ -259,7 +259,17 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             // verify exactly).
             unsigned elapsedMs = now_ms - m_recordStartMs[looper];
             long rawSamples = (long)elapsedMs * kSampleRate / 1000;
-            static const double kMultiples[] = { 0.25, 0.5, 1.0, 2.0, 4.0 };
+            // WITNESSED live: "it works just fine unless the division loop
+            // is short, we must just support some shorter divisions" -- the
+            // smallest available candidate was 0.25 (M/4), so any recording
+            // genuinely intended as a shorter division (M/8, M/16) had no
+            // matching candidate and got force-rounded up to M/4 instead --
+            // not a quantization-target BUG, just a too-narrow candidate
+            // range. Extended down to M/16, matching ../looper's own
+            // candidate span (loopClipState.cpp's _calcQuantizeTarget tries
+            // {floorLen, M/8, M/4, M/2, M, 2M, 4M, 8M, ...}, confirmed via
+            // cross-codebase research this session).
+            static const double kMultiples[] = { 0.0625, 0.125, 0.25, 0.5, 1.0, 2.0, 4.0 };
             double bestLen = (double)m_masterLenSamples;
             double bestDist = 1e18;
             for (double mult : kMultiples) {
