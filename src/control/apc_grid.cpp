@@ -275,23 +275,63 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             // verify exactly).
             unsigned elapsedMs = now_ms - m_recordStartMs[looper];
             long rawSamples = (long)elapsedMs * kSampleRate / 1000;
-            // WITNESSED live: "it works just fine unless the division loop
-            // is short, we must just support some shorter divisions" -- the
-            // smallest available candidate was 0.25 (M/4), so any recording
-            // genuinely intended as a shorter division (M/8, M/16) had no
-            // matching candidate and got force-rounded up to M/4 instead --
-            // not a quantization-target BUG, just a too-narrow candidate
-            // range. Extended down to M/16, matching ../looper's own
-            // candidate span (loopClipState.cpp's _calcQuantizeTarget tries
-            // {floorLen, M/8, M/4, M/2, M, 2M, 4M, 8M, ...}, confirmed via
-            // cross-codebase research this session).
-            static const double kMultiples[] = { 0.0625, 0.125, 0.25, 0.5, 1.0, 2.0, 4.0 };
-            double bestLen = (double)m_masterLenSamples;
-            double bestDist = 1e18;
-            for (double mult : kMultiples) {
-                double candidate = (double)m_masterLenSamples * mult;
-                double dist = std::fabs((double)rawSamples - candidate);
-                if (dist < bestDist) { bestDist = dist; bestLen = candidate; }
+            // WITNESSED live, two rounds of feedback this session:
+            // (1) "it works just fine unless the division loop is short, we
+            //     must just support some shorter divisions" -- the smallest
+            //     available candidate was 0.25 (M/4), fixed by extending
+            //     down to M/16.
+            // (2) "recording multiples didnt quite work it didnt take the
+            //     whole length just took a piece of the end" / clarified:
+            //     "we want to be able to take any multiple of the loop if
+            //     the start loop is 1/4 bar and the next loop is 64 bars it
+            //     must also work" / "when we press stop of a loop just past
+            //     2 bars we dont want to keep playing till 4 bars, it must
+            //     cut to whatevers closer to where we pressed, but if we
+            //     press past the 3/4 mark [confirmed: 68%], it must keep
+            //     recording to the multiple and not cut back."
+            // ROOT CAUSE of (2): the old design picked whichever candidate
+            // in a SMALL FIXED SET {..., 2.0, 4.0} was closest by raw
+            // distance -- with a big gap between 2M and 4M, anything past
+            // ~3M (raw distance nearest-neighbor) would jump all the way to
+            // 4M, extending recording for a potentially very long time past
+            // where the user actually stopped playing, capturing mostly
+            // silence/nothing -- "took a piece of the end" exactly matches
+            // extending far past the performed content. Also capped at 4M,
+            // so a genuinely-intended 8M/16M/64M take had no candidate to
+            // reach at all.
+            // FIX: an UNBOUNDED geometric candidate sequence (powers of 2,
+            // M/16 up through as many multiples as kMaxLoopSamples allows),
+            // and instead of "nearest by raw distance across the whole set",
+            // find the bracketing PAIR immediately below/above rawSamples,
+            // then apply the user's own confirmed 68% threshold: extend to
+            // the UPPER candidate only if rawSamples is past 68% of the way
+            // from the lower to the upper candidate; otherwise trim to the
+            // LOWER one. This bounds the maximum possible "wait" extension
+            // to at most 32% of one octave's span from wherever the user
+            // actually released -- never a multi-bar jump like the old
+            // fixed-set-nearest design could produce.
+            // Bracket rawSamples between consecutive powers of 2 (times M)
+            // directly via log2 of the ratio -- correct regardless of
+            // whether rawSamples is above or below M, no directional walk
+            // to get backwards (an earlier draft of this fix had exactly
+            // that bug: a lower-only walk starting at M could never find a
+            // lower bracket ABOVE M for a raw recording already past M,
+            // caught and fixed before this ever reached CI).
+            double ratio = (double)rawSamples / (double)m_masterLenSamples;
+            if (ratio < 1.0 / 16.0) ratio = 1.0 / 16.0;   // floor: never propose below M/16
+            double log2Ratio = std::log2(ratio);
+            double lowerExp = std::floor(log2Ratio);
+            double lowerCand = (double)m_masterLenSamples * std::pow(2.0, lowerExp);
+            double upperCand = (double)m_masterLenSamples * std::pow(2.0, lowerExp + 1.0);
+            if (upperCand > (double)kMaxLoopSamples) upperCand = (double)kMaxLoopSamples;
+            if (lowerCand > upperCand) lowerCand = upperCand;   // degenerate guard at the ceiling
+            double span = upperCand - lowerCand;
+            double bestLen;
+            if (span <= 0.0) {
+                bestLen = lowerCand;   // rawSamples exactly on a candidate (or span collapsed)
+            } else {
+                double frac = ((double)rawSamples - lowerCand) / span;
+                bestLen = (frac >= 0.68) ? upperCand : lowerCand;
             }
             long quantized = (long)(bestLen + 0.5);
             if (quantized < 64) quantized = 64;
