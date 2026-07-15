@@ -19,10 +19,10 @@ the engine-global `clear`/`speed` handling). This is the authoritative parity ma
 | `LOOP_COMMAND_PLAY` | 0x81 | `looper<i>/play` | Faust `checkbox("play")` — gates the looper output |
 | `LOOP_COMMAND_STOP` / `STOP_IMMEDIATE` | 0x03 / 0x02 | `cmd/stopall` | audio thread clears **every** `looper<i>/play` to 0 |
 | `LOOP_COMMAND_STOP_TRACK_BASE` | 0x40+i | `looper<i>/play`=0 | per-track stop = clearing that one play checkbox |
-| `LOOP_COMMAND_CLEAR_ALL` | 0x01 | `cmd/clearall` | engine-global Faust `button("clear")` — wipes all 20 loops |
+| `LOOP_COMMAND_CLEAR_ALL` | 0x01 | `cmd/clearall` | engine-global — a plain `process()` signal input (3rd input, `clearBuf` in audio_thread.cpp), NOT a Faust UI zone — wipes all 20 loops |
 | `LOOP_COMMAND_ERASE_TRACK_BASE` | 0x60+i | `looper<i>/erase` | per-looper Faust `button("erase")` — wipes that one loop |
-| `LOOP_COMMAND_HALFSPEED_ON/OFF` | 0x0C/0x0D | `cmd/halfspeed` | engine-global `speed`=0.5 while held (varispeed read rate) |
-| `LOOP_COMMAND_DOUBLESPEED_ON/OFF` | 0x0E/0x0F | `cmd/doublespeed` | engine-global `speed`=2.0 while held (2× read rate) |
+| `LOOP_COMMAND_HALFSPEED_ON/OFF` | 0x0C/0x0D | `cmd/halfspeed` | engine-global `speed`=0.5 while held (varispeed read rate) — a plain `process()` signal input (4th input, `speedBuf`), NOT a Faust UI zone (see below) |
+| `LOOP_COMMAND_DOUBLESPEED_ON/OFF` | 0x0E/0x0F | `cmd/doublespeed` | engine-global `speed`=2.0 while held (2× read rate), same signal-input mechanism |
 | `LOOP_COMMAND_ABORT_RECORDING` | 0x06 | `looper<i>/rec`=0 | releasing rec ends the take; record replaces in place so there is nothing to "un-append" |
 | `LOOP_COMMAND_LOOP_IMMEDIATE` | 0x08 | *(model difference)* | needs an addressable read head — see the note below |
 | `LOOP_COMMAND_SET_LOOP_START` | 0x09 | *(model difference)* | needs an addressable read head — see the note below |
@@ -55,6 +55,25 @@ Link-set `len`: Link sets the base loop length, `speed` divides it (loop stays
 grid-locked, plays at 0.5×/2×). The `TRACK_BASE 0x20` / `STOP_TRACK_BASE 0x40` /
 `ERASE_TRACK_BASE 0x60` families are 20 contiguous per-track slots — the default
 `config/controls.conf` binds all 20 of each; remap freely (no recompile).
+
+**`clear`/`speed` are process() signal inputs, not Faust UI zones (fixed in
+commit 9806835, 2nd-generation fix on top of 382e775's incomplete attempt):**
+Faust's `par(i, NLOOPERS, vgroup(...))` combinator re-elaborates whatever UI
+primitive (`button()`/`hslider()`) is textually referenced inside its body at
+EACH of the 20 instantiation sites — even when the declaration itself is
+hoisted to file scope and threaded in as an ordinary function parameter. This
+was WITNESSED via the generated C++ (`build/loop.cpp`): `"speed"`/`"clear"`
+each appeared 20 times, one per `"looper N"` vgroup, even after 382e775
+believed it had collapsed them to a single shared zone. There is no Faust
+mechanism for "declare a UI control once, reference the same zone from many
+call sites" across a `par()` boundary. The real fix removes `clear`/`speed`
+as Faust UI controls entirely: `dsp/loop.dsp`'s `process()` now takes 4
+signal inputs — `(in, prevFiltIn, clearAll, speedMul)` — and `clearAll`/
+`speedMul` are plain wires threaded through `par()`, which cannot duplicate a
+signal the way it duplicates a UI primitive. `audio_thread.cpp` fills
+`clearBuf`/`speedBuf` (constant across each block) and passes them as
+`fins[2]`/`fins[3]` to `compute()` instead of calling `fui.set("clear"/
+"speed", ...)`.
 
 ## APC Key25 controls (the exact mapping — src/control/midi.cpp, param_mapping.md)
 - CC48–55 → reverb/delay/time/HP/LP/resonance (all `/127`)

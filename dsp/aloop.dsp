@@ -152,10 +152,12 @@ glitchFold = hslider("GLITCHFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
 //      block's input, matching looper's m_input_buffer += m_output_buffer*fg
 //      (loopMachine.cpp:738) -- the RAW loop output, not the fully-effected
 //      wet signal (which would compound effects every block the fold is held).
-//   4. recordTap -- filtOut tapped a second time (fouts[3]), so
-//      audio_thread.cpp can snapshot it into prevFiltOut for next block's
-//      DEDICATED record-only input (see RECORD-ALWAYS-EFFECTED below and
-//      loop.dsp's oneLooper) without touching the live fout buffer.
+//   4. recordTap -- the fx-EFFECTED signal alone (fouts[3], NOT filtOut --
+//      see the REGRESSION FOUND AND FIXED note below for why they must
+//      differ), so audio_thread.cpp can snapshot it into prevFiltOut for
+//      next block's DEDICATED record-only input (see RECORD-ALWAYS-EFFECTED
+//      below and loop.dsp's oneLooper) without ever including the
+//      unconditional direct-playback term.
 // directFoldSuppress: the direct raw-loopSum term is suppressed whenever
 // EITHER SHIFT (monitorFold) OR glitch (glitchFold) is fading its own
 // fx-routed copy of loop content IN via `dry` (audio_thread.cpp's native
@@ -186,13 +188,30 @@ glitchFold = hslider("GLITCHFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
 // block's filtOut/recordTap -- so a SHIFT-held or glitch-held recording
 // captures effected loop content automatically via this SAME single tap,
 // no separate term needed.
+// REGRESSION FOUND AND FIXED (WITNESSED live: "loops are now incorrectly
+// recording without shift being held"): recordTap was set to `filtOut`,
+// but `filtOut` unconditionally includes `loopSum*directFoldSuppress` --
+// the ALWAYS-ON direct raw-playback term for normal (non-SHIFT, non-glitch)
+// loop audibility. Since recordTap becomes every looper's record-only input
+// one block later, that meant ALL currently-playing loop content was
+// automatically recordable at all times again, exactly the bug 7aec025
+// fixed for the OLD glitch-only tap, now reintroduced for the whole fx
+// chain by RECORD-ALWAYS-EFFECTED's redesign. Fixed by deriving recordTap
+// from `fxEffected` (fxOuts' filtered output ALONE, no direct loopSum term)
+// instead of `filtOut` -- fxEffected already contains: live input (always
+// effected, per the user's requirement), PLUS SHIFT-held loop content
+// (via the native prevLoopSum fold into `dry`), PLUS glitch-held loop
+// content (same fold, glitch-gated) -- everything that should be
+// recordable -- while excluding the unconditional direct-playback term
+// that must stay audible-only, never automatically recordable.
 mixAndFx(dry, loopSum) = filtOut, rawGlitchTap, loopSum, recordTap
 with {
     fxOuts = dry : fx;
     directFoldSuppress = (1.0-monitorFold) * (1.0-glitchFold);
-    filtOut = (fxOuts : (_, !)) + loopSum*directFoldSuppress;
+    fxEffected = fxOuts : (_, !);
+    filtOut = fxEffected + loopSum*directFoldSuppress;
     rawGlitchTap = fxOuts : (!, _);
-    recordTap = filtOut;
+    recordTap = fxEffected;
 };
 // prevFiltIn: previous block's fully-effected mix output (audio_thread.cpp's
 // prevFiltOut), fed ONLY into loop's dedicated record-only input (see
