@@ -617,6 +617,15 @@ static void* worker(void*) {
                     else if (foldGain > foldTarget) { foldGain -= kFoldStep / N; if (foldGain < foldTarget) foldGain = foldTarget; }
                     fin[i] += prevLoopSum[i] * foldGain;
                 }
+                // Push this SAME foldGain into aloop.dsp's MONITORFOLD zone
+                // (a real, live-written zone again -- see dsp/aloop.dsp's
+                // REGRESSION FOUND AND FIXED comment) so the direct raw-
+                // loopSum term there fades out exactly as the native fold
+                // fades in, instead of ever summing both at once. This
+                // write MUST happen every block (not just when g_params
+                // exists but only conditionally) or the zone reverts to a
+                // dead one exactly like the bug this fixes.
+                fui.set("MONITORFOLD", foldGain);
             }
             // Glitch (microrepeat) recordability: FIXED via a dedicated
             // record-only Faust input instead of folding into `fin`.
