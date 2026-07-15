@@ -200,39 +200,3 @@
   id: verify-live-on-the-real-pi-4-via-ssh-after-the-fix-proc-asound-c
   status: completed
   witness: 'Verified live via SSH after commits 322f780 (routing) and 7a85947 (format fix): /proc/asound/card0/stream0 shows Status: Running on both playback (S32_LE, 24-bit) and capture; /proc/asound/card0/pcm0p/sub0/hw_params confirms format:S32_LE, period_size:64 (matching block_size); telemetry shows 0 xruns and 7-8% core_busy (real DSP work happening). User directly confirmed the audio passthrough sounds correct/clean, not the earlier loud static -- this is the real hardware/human verification the row required.'
-- id: user-confirmed-apc-key25-cc-knobs-work-correctly-but-grid-transp
-  note: 'Device 192.168.137.100 now reachable (ping 0% loss, confirmed this session) -- external blocker cleared. Resuming: verify APC key25 grid/transpose behavior live via test/hardware/midi-inject.js and status.json telemetry.'
-  status: pending
-- id: user-reports-current-deployed-build-7a85947-s32-le-format-fix-pr
-  note: 'Device 192.168.137.100 now reachable -- external blocker cleared. Resuming: confirm current deployed build and S32_LE format fix via live status.json / ssh-run.js.'
-  status: pending
-- id: witnessed-live-the-netboot-serve-process-image-serve-netboot-win
-  note: 'Device 192.168.137.100 now reachable -- external blocker cleared. Resuming: witness netboot serve process live.'
-  status: pending
-- id: witnessed-live-immediately-after-fixing-the-execfilesync-hang-ma
-  note: 'Device 192.168.137.100 now reachable -- external blocker cleared. Resuming: witness live post-execFileSync-hang-fix behavior.'
-  status: pending
-- id: root-cause-found-and-confirmed-live-for-the-no-audible-sound-rep
-  note: 'Device 192.168.137.100 now reachable -- external blocker cleared. Resuming: confirm no-audible-sound root cause fix live.'
-  status: pending
-- id: user-reports-we-couldn-t-hear-the-first-loops-but-consecutive-lo
-  note: 'Device 192.168.137.100 now reachable -- external blocker cleared. Resuming: verify first-loop-audibility issue live.'
-  status: pending
-- id: user-confirms-1-no-led-feedback-lights-up-on-the-real-apc-key-25
-  note: 'Device 192.168.137.100 now reachable -- external blocker cleared. Resuming: verify LED feedback live on real APC key25.'
-  status: pending
-- id: user-states-levels-output-for-loops-to-lights-must-work-this-is
-  note: 'Device 192.168.137.100 now reachable -- external blocker cleared. Resuming: verify loop-level-to-LED output live.'
-  status: pending
-- id: user-states-loops-must-receive-effects-the-same-way-looper-does
-  note: 'Device 192.168.137.100 now reachable -- external blocker cleared. Resuming: verify loops receive effects live, matching looper''s behavior.'
-  status: pending
-- id: user-reports-pressed-the-transpose-live-pitch-engage-key-note-64
-  note: 'Device 192.168.137.100 now reachable -- external blocker cleared. Resuming: verify transpose/live-pitch-engage key (note 64) live.'
-  status: pending
-- id: user-states-our-record-routing-of-glitches-and-varispeed-must-al
-  note: 'Device 192.168.137.100 now reachable -- external blocker cleared. Resuming: verify record routing of glitches and varispeed live. This is closely related to the new glitch-must-replace-normal-loop-output-while-microrepeat-held row; will be verified together once that DSP change lands.'
-  status: pending
-- id: glitch-must-replace-normal-loop-output-while-microrepeat-held
-  note: 'User confirmed: glitch should replace normal loop output while held (not play alongside it). Design: extend dsp/aloop.dsp mixAndFx with a second glitch-gated fold mechanism mirroring the existing SHIFT/monitorFold native one-block-lag pattern in src/dsp/audio_thread.cpp (prevLoopSum/foldGain), gated by fx/microrepeat_div>0 (glitch engaged) instead of SHIFT-held. Add a glitchFoldGain ramp alongside foldGain, fold prevLoopSum into fin scaled by glitchFoldGain too (SHIFT and glitch combine additively/summed, clamped), push into a new GLITCHFOLD Faust zone that gates a second direct-term reduction: filtOut''s loopSum*(1-monitorFold) becomes loopSum*(1-monitorFold)*(1-glitchFold) style so the direct raw term fades out when EITHER SHIFT or glitch is held. Must NOT alter rawGlitchTap derivation. Must preserve unconditional normal playback when neither held (regression history: 90083c4 recursion break, dead MONITORFOLD leak, silenced-all-playback -- extreme caution required).'
-  status: pending
