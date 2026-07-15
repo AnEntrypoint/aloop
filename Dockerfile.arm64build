@@ -1,0 +1,11 @@
+# Persistent local build image for aloop's arm64/musl cross-compile step,
+# so we stop re-downloading the full apk toolchain on every single local
+# build this session. Build once: docker build --platform linux/arm64
+# -f Dockerfile.arm64build -t aloop-arm64build .
+#
+# Uses Docker BuildKit's cache mount for apk's package cache -- a rebuild
+# reuses already-downloaded .apk files instead of re-fetching.
+# syntax=docker/dockerfile:1
+FROM --platform=linux/arm64 alpine:3.20
+RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
+    apk add --no-cache build-base cmake pkgconf git alsa-lib-dev lilv-dev lv2-dev linux-headers eudev-dev

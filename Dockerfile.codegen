@@ -1,0 +1,15 @@
+# Persistent local build image for aloop's Faust codegen step, so we stop
+# re-downloading faust+LLVM (a large apt install) on every single local
+# build this session. Build once: docker build -f Dockerfile.codegen -t
+# aloop-codegen . Then reuse: docker run --rm -v ...:/w -w /w aloop-codegen
+# faust -lang cpp ...
+#
+# Uses Docker BuildKit's cache mount for /var/cache/apt and /var/lib/apt so
+# a rebuild (e.g. after editing this Dockerfile) reuses already-downloaded
+# .deb files instead of re-fetching from the network -- this is real
+# persistent caching across `docker build` invocations, not just within one.
+# syntax=docker/dockerfile:1
+FROM ubuntu:22.04
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update -qq && apt-get install -y -qq faust
