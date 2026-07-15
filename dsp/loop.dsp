@@ -20,6 +20,37 @@
 // (record/play/stop/erase/clear/half-double-speed/Link-varispeed) maps 1:1.
 // The discrete control (which looper, record vs play, loop length from Link) comes
 // from the native shell as the per-looper param inputs.
+//
+// KNOWN LIMITATION, deliberately deferred (half/double-speed is NOT true
+// varispeed): WITNESSED live -- holding half/double-speed audibly changes
+// each looper's LOOP CYCLE LENGTH (effLen below) but produces "no other
+// audible change" -- no pitch/rate shift, unlike a real tape-speed change.
+// Root cause: `de.fdelay` reads at a FIXED 1:1 rate relative to the block
+// clock; changing its length only relocates WHERE in the ring the read tap
+// sits, it cannot change the RATE audio is traversed at. Compared against
+// looper's real mechanism (C:\dev\looper\loopClipUpdate.cpp's loopClip::
+// update(), m_playPos/m_playRate): looper achieves genuine varispeed via a
+// continuously-advancing FRACTIONAL read-position accumulator into a plain
+// flat sample buffer (m_playPos += m_playRate*globalSpeedMul each sample,
+// linear-interpolated read at floor/frac(m_playPos)) -- entirely
+// independent of the record write head, so the SAME audio plays over
+// MORE/FEWER real-time samples, changing duration AND pitch together, tape-
+// style. This is architecturally feasible in Faust WITHOUT hitting the RMW
+// rejection above (confirmed via research this session): unlike the
+// rejected preserve-on-hold playhead, a varispeed read never writes back
+// into the table at the read position -- write (record) stays a simple 1:1
+// `rwtable` write at a monotonic index exactly as today; read becomes a
+// SEPARATE fractional accumulator (`readPos ~ _`, ordinary signal
+// recursion, not a table RMW) driving two `rwtable` reads (floor/ceil)
+// blended by the fractional part. This is a real architectural change
+// (de.fdelay -> rwtable across all 20 loopers, a new per-looper read
+// accumulator, wrap/loop-length handling, redoing the record-tap wiring
+// since de.fdelay's `loop` feedback signal disappears) -- deliberately NOT
+// attempted in the same session as the varispeed/clear-all zone-duplication
+// fix, the microrepeat feedback-whine fix, the clear-all playback-gate fix,
+// and the erase-state-stuck fix, all landing in this exact file/area this
+// session. Tracked as its own dedicated follow-up, not a silently dropped
+// feature.
 
 import("stdfaust.lib");
 
