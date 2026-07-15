@@ -19,6 +19,26 @@
 // it's baked into the input signal itself, one block later, matching
 // looper's real one-block-lag fold (loopMachine.cpp:709-741) exactly.
 //
+// BUG FOUND AND FIXED (unconditional loop-into-record leak, WITNESSED via
+// hardware telemetry + code trace): this file used to ALSO gate a direct
+// `loopSum*(1.0-monitorFold)` term into fxOuts below, controlled by a Faust
+// `MONITORFOLD` hslider zone. That zone is DEAD -- audio_thread.cpp stopped
+// pushing "fx/monitorfold" into any Faust zone once the native fold above
+// was introduced (it reads the ParamStore value directly instead; see its
+// own top-of-worker comment) -- so `monitorFold` was permanently stuck at
+// its compiled-in default 0.0, meaning `(1.0-monitorFold)` was ALWAYS 1.0
+// and `loopSum` (full, ungated, every block) was unconditionally summed
+// into `fxOuts` regardless of SHIFT state. `rawGlitchTap` (derived from
+// fxOuts) is exactly what audio_thread.cpp feeds back as `glitchIn` into
+// EVERY looper's record path every block -- so this dead gate was the
+// actual mechanism silently making all loop content recordable into any
+// armed looper at all times, not just during a genuine SHIFT hold.
+// Fixed by dropping the term entirely: `dry` (=`fin`) already carries the
+// SHIFT-gated loop-fold via the native prevLoopSum/foldGain mechanism one
+// block later, so re-adding raw `loopSum` here was both redundant for the
+// audible path and, worse, the actual leak for the record path. `fxOuts`
+// is now just `dry : fx`, matching what the native fold already provides.
+//
 // Composing this way means the ENTIRE home audio path is one Faust compile — the
 // maintainability win: change a knob mapping or a stage in Faust, rebuild, done.
 // No hand-written C++ DSP anywhere in the home stack.
@@ -42,19 +62,14 @@ loop = component("loop.dsp");
 // stays the A/B reference, this is the runtime variant).
 fx   = component("effects_runtime.dsp");
 
-// MONITORFOLD (bound by ApcGrid::onShiftPress/Release to fx/monitorfold, held
-// while SHIFT is down): must complementarily GATE the dry-summed loopSum
-// contribution here (1-monitorFold), matching looper's m_loopOutputGain =
-// 1-foldEnd (loopMachine.cpp:730) -- WITNESSED live: without this gate, a
-// held loop's audio reaches the final output TWICE while SHIFT is held: once
-// via the direct dry+loopSum sum below (always active, since aloop.dsp
-// itself no longer knows about fold state) AND once via the native
-// prevLoopSum fold-in (audio_thread.cpp), which re-enters through `loop` as
-// a new `dry` signal next block and gets summed in again here -- reported
-// as "shift... doubling the audio". si.smoo matches looper's MONITOR_GATE_STEP
-// ramp shape (a continuous exponential approach vs a fixed per-block linear
-// step, functionally equivalent for a hold/release gesture).
-monitorFold = hslider("MONITORFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
+// MONITORFOLD Faust zone REMOVED (see top-of-file BUG FOUND AND FIXED
+// comment): it was dead (nothing writes to it anymore -- the SHIFT-fold
+// gating lives entirely in audio_thread.cpp's native prevLoopSum/foldGain
+// mix now), and its stuck-at-0.0 default was the actual mechanism letting
+// loop content leak into every looper's record path at all times via
+// rawGlitchTap/glitchIn, regardless of SHIFT state. `fxOuts` below no
+// longer references it -- `dry` alone (already SHIFT-fold-gated by the
+// native mechanism one block later) is fx's only input now.
 
 // `loop`'s two outputs (dry, loopSum) are consumed by `mixAndFx`, which sums
 // dry with the COMPLEMENTARILY-GATED loopSum for the live-heard signal
@@ -77,7 +92,7 @@ monitorFold = hslider("MONITORFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
 //      wet signal (which would compound effects every block the fold is held).
 mixAndFx(dry, loopSum) = filtOut, rawGlitchTap, loopSum
 with {
-    fxOuts = (dry + loopSum*(1.0-monitorFold)) : fx;
+    fxOuts = dry : fx;
     filtOut = fxOuts : (_, !);
     rawGlitchTap = fxOuts : (!, _);
 };
