@@ -51,6 +51,19 @@
 // (glitchIn) that only the record-capture term consumes (dsp/loop.dsp's
 // oneLooper) -- it never touches the dry/live path, so it cannot re-enter
 // `fx`/microStage on any later block. See audio_thread.cpp's prevGlitchTap.
+//
+// GLITCH-HELD LOOP-ROUTING (GLITCHFOLD, distinct from the above): the above
+// paragraph is about microStage's OWN output being recordable; this is about
+// the LOOPERS' output being routed INTO microStage while glitch is held, so
+// glitch "replaces" normal loop playback rather than playing alongside it
+// (user-confirmed requirement). This reuses the EXACT SAME native mechanism
+// as the SHIFT-fold (audio_thread.cpp's prevLoopSum -- the raw LOOP ENGINE
+// output, NOT rawGlitchTap/microStage's output, so this is not the whine
+// path described above), just gated by glitch-engaged instead of
+// SHIFT-held, with its own GLITCHFOLD zone complementarily suppressing the
+// direct raw-loopSum term below (mirrors MONITORFOLD). See
+// audio_thread.cpp's "GLITCH-HELD loop-routing fold" comment for the native
+// side and the SHIFT+glitch-simultaneous combine-and-clamp reasoning.
 
 import("stdfaust.lib");
 
@@ -97,21 +110,37 @@ fx   = component("effects_runtime.dsp");
 // the earlier record-leak bug. si.smoo matches looper's MONITOR_GATE_STEP.
 monitorFold = hslider("MONITORFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
 
+// GLITCHFOLD: same pattern as MONITORFOLD above, but reflecting glitch
+// (microrepeat) engagement instead of SHIFT-held. audio_thread.cpp writes
+// its OWN native glitchFoldGain ramp into this zone every block (gated by
+// fx/microrepeat_div > 0), mirroring foldGain's SHIFT-held ramp exactly --
+// see its "GLITCH-HELD loop-routing fold" comment. User-confirmed
+// requirement: "glitch should replace normal loop output while held" --
+// the direct raw-loopSum term below must fade OUT while glitch is engaged,
+// exactly as it already fades out while SHIFT is held, so loop content
+// becomes audible ONLY via the fx-routed (glitched) path in that case, not
+// doubled/layered with the unprocessed direct term.
+glitchFold = hslider("GLITCHFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
+
 // `loop`'s two outputs (dry, loopSum) are consumed by `mixAndFx`:
 //   - `fxOuts = dry : fx` -- fx's input (and therefore the glitch tap fed
 //     back as glitchIn) is `dry` ALONE, so loop content is never
-//     automatically recordable except via the native SHIFT-fold's
-//     one-block-lag re-entry into `dry` (audio_thread.cpp's prevLoopSum).
+//     automatically recordable except via the native SHIFT-fold's or
+//     GLITCH-fold's one-block-lag re-entry into `dry`
+//     (audio_thread.cpp's prevLoopSum, combined-and-clamped there).
 //   - `filtOut` sums fxOuts' filtered output with `loopSum` GATED by
-//     `(1-monitorFold)` -- normal playback (SHIFT not held) hears loops
-//     directly/unprocessed by fx, exactly matching looper's real monitor
-//     path; while SHIFT is held, this direct raw term fades OUT
-//     (monitorFold->1) as the native one-block-lag fold fades loop content
-//     IN through `dry`/`fx` instead (audio_thread.cpp's foldGain ramp),
-//     so the audible signal crossfades from raw to fx-processed loop
-//     content rather than ever summing both at once -- REGRESSION FOUND
-//     AND FIXED: WITNESSED live as "no loops play back" when a prior fix
-//     removed loopSum from the mix entirely instead of just re-gating it.
+//     `(1-monitorFold)*(1-glitchFold)` -- normal playback (neither SHIFT
+//     nor glitch held) hears loops directly/unprocessed by fx, exactly
+//     matching looper's real monitor path; while EITHER SHIFT or glitch is
+//     held, this direct raw term fades OUT (its own gate -> 1) as the
+//     matching native one-block-lag fold fades loop content IN through
+//     `dry`/`fx` instead (audio_thread.cpp's foldGain/glitchFoldGain
+//     ramps), so the audible signal crossfades from raw to fx-processed
+//     loop content rather than ever summing both at once -- REGRESSION
+//     FOUND AND FIXED (SHIFT case): WITNESSED live as "no loops play back"
+//     when a prior fix removed loopSum from the mix entirely instead of
+//     just re-gating it; the glitch case reuses the identical gating shape
+//     to avoid repeating that mistake.
 //     Three total program outputs, in this order:
 //   1. finalOut  -- the real audible/wire signal (fouts[0] in audio_thread.cpp)
 //   2. rawGlitchTap -- microStage's own post-glitch signal (fouts[1]), so
@@ -127,10 +156,20 @@ monitorFold = hslider("MONITORFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
 //      block's input, matching looper's m_input_buffer += m_output_buffer*fg
 //      (loopMachine.cpp:738) -- the RAW loop output, not the fully-effected
 //      wet signal (which would compound effects every block the fold is held).
+// directFoldSuppress: the direct raw-loopSum term is suppressed whenever
+// EITHER SHIFT (monitorFold) OR glitch (glitchFold) is fading its own
+// fx-routed copy of loop content IN via `dry` (audio_thread.cpp's native
+// one-block-lag fold, combined-and-clamped there so a simultaneous SHIFT+
+// glitch hold folds loop content in at most once, not twice). Multiplying
+// the two complements (rather than summing the raw folds here) means either
+// control alone fully suppresses the direct term at its own gain, and both
+// held together still bottoms out at (1-1)*(1-1)=0 -- never negative, never
+// double-counted -- matching the native side's single clamped fin[] fold.
 mixAndFx(dry, loopSum) = filtOut, rawGlitchTap, loopSum
 with {
     fxOuts = dry : fx;
-    filtOut = (fxOuts : (_, !)) + loopSum*(1.0-monitorFold);
+    directFoldSuppress = (1.0-monitorFold) * (1.0-glitchFold);
+    filtOut = (fxOuts : (_, !)) + loopSum*directFoldSuppress;
     rawGlitchTap = fxOuts : (!, _);
 };
 // glitchIn: previous block's post-glitch tap (audio_thread.cpp's prevGlitchTap),

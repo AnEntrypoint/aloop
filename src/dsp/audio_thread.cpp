@@ -612,20 +612,54 @@ static void* worker(void*) {
                 static float foldGain = 0.0f;
                 float foldTarget = g_params->get("fx/monitorfold") > 0.5f ? 1.0f : 0.0f;
                 const float kFoldStep = 1.0f / 16.0f;   // reach target over ~16 blocks, matching looper's own step
+                // GLITCH-HELD loop-routing fold: same native one-block-lag
+                // mechanism as the SHIFT-fold immediately above (reusing the
+                // exact same prevLoopSum buffer, per user's explicit request
+                // not to invent a new signal-flow mechanism), but gated by
+                // "glitch engaged" (fx/microrepeat_div > 0, the 5 microrepeat
+                // latch notes 82-86 via apc_grid.cpp's onMicrorepeatOn/Off)
+                // instead of SHIFT-held. User-confirmed requirement: "glitch
+                // should replace normal loop output while held" -- i.e. while
+                // microrepeat is engaged, loop content must route INTO fx
+                // (hitting microStage) and the NORMAL direct/raw loop output
+                // must stop being separately audible, not play alongside it.
+                static float glitchFoldGain = 0.0f;
+                float glitchFoldTarget = g_params->get("fx/microrepeat_div") > 0.5f ? 1.0f : 0.0f;
                 for (int i = 0; i < N; i++) {
                     if (foldGain < foldTarget)      { foldGain += kFoldStep / N; if (foldGain > foldTarget) foldGain = foldTarget; }
                     else if (foldGain > foldTarget) { foldGain -= kFoldStep / N; if (foldGain < foldTarget) foldGain = foldTarget; }
-                    fin[i] += prevLoopSum[i] * foldGain;
+                    if (glitchFoldGain < glitchFoldTarget)      { glitchFoldGain += kFoldStep / N; if (glitchFoldGain > glitchFoldTarget) glitchFoldGain = glitchFoldTarget; }
+                    else if (glitchFoldGain > glitchFoldTarget) { glitchFoldGain -= kFoldStep / N; if (glitchFoldGain < glitchFoldTarget) glitchFoldGain = glitchFoldTarget; }
+                    // SHIFT and glitch can be held simultaneously -- combine by
+                    // summing the two fold contributions into `fin`, clamped to
+                    // 1.0 (matching a single hold's ramp ceiling) so a
+                    // simultaneous hold folds loop content in at most once at
+                    // full gain, never double-strength. This is the SAME
+                    // `fin[i] +=` term as before, just fed by the max of the two
+                    // gains rather than foldGain alone, so a listener holding
+                    // BOTH controls hears exactly what holding either alone
+                    // would (loop content routed through fx once), not two
+                    // stacked copies.
+                    float combinedFold = foldGain + glitchFoldGain;
+                    if (combinedFold > 1.0f) combinedFold = 1.0f;
+                    fin[i] += prevLoopSum[i] * combinedFold;
                 }
-                // Push this SAME foldGain into aloop.dsp's MONITORFOLD zone
-                // (a real, live-written zone again -- see dsp/aloop.dsp's
-                // REGRESSION FOUND AND FIXED comment) so the direct raw-
-                // loopSum term there fades out exactly as the native fold
-                // fades in, instead of ever summing both at once. This
-                // write MUST happen every block (not just when g_params
-                // exists but only conditionally) or the zone reverts to a
-                // dead one exactly like the bug this fixes.
+                // Push foldGain into aloop.dsp's MONITORFOLD zone (a real,
+                // live-written zone again -- see dsp/aloop.dsp's REGRESSION
+                // FOUND AND FIXED comment) so the direct raw-loopSum term
+                // there fades out exactly as the native SHIFT-fold fades in,
+                // instead of ever summing both at once. This write MUST
+                // happen every block (not just when g_params exists but only
+                // conditionally) or the zone reverts to a dead one exactly
+                // like the bug this fixes.
                 fui.set("MONITORFOLD", foldGain);
+                // Push glitchFoldGain into aloop.dsp's new GLITCHFOLD zone
+                // (mirrors MONITORFOLD exactly) so the direct raw-loopSum
+                // term ALSO fades out while glitch is held, complementing
+                // the same fx-routed loop content the fin[] fold above just
+                // added -- same crossfade shape as SHIFT, gated by glitch
+                // engagement instead.
+                fui.set("GLITCHFOLD", glitchFoldGain);
             }
             // Glitch (microrepeat) recordability: FIXED via a dedicated
             // record-only Faust input instead of folding into `fin`.
