@@ -166,52 +166,65 @@ with {
     // 0. A redundant wipe-triggered reset would be a no-op given ARM always
     // follows wipe before any real write happens again.
     recPrev = recN : mem;
-    armEdge = (recN > 0.5) & (recPrev < 0.5);   // recN this sample, NOT last sample: rising edge
-    // ROOT CAUSE (total playback silence after the armEdge-reset fix,
-    // 0260de2): resetting writeIdx/readPos to 0 on armEdge fixed their
-    // MUTUAL alignment, but did nothing about `wrapLen` itself being able to
-    // change OUT FROM UNDER an in-progress recording. `lenN` (and therefore
-    // wrapLen) is only ever updated by the native shell at FINISH
-    // (apc_grid.cpp's applyRecPlayCycle, computed from the just-finished
-    // recording's OWN elapsed duration) -- it is NOT touched at ARM. So
-    // during the entire ARM..FINISH span, wrapLen is whatever it was BEFORE
-    // this recording (the Faust-compiled default 48000 on a clean boot, or a
-    // leftover length from a previous loop / a different looper's
-    // just-established shared phrase). writeIdx/readPos both wrap modulo
-    // THAT STALE length throughout the whole recording. The instant FINISH
-    // fires, wrapLen snaps to the NEW, actual recording length -- a
-    // completely different modulus than what the write pass actually used.
-    // Playback then scans [0, newWrapLen) even though the ring was only ever
-    // written using the OLD wrapLen's wrap boundary: any region of the new
-    // span the old-length write pass never reached (newWrapLen > oldWrapLen)
-    // is rwtable's zero-init default -- structurally silent, not audio. Even
-    // worse, if the recording is SHORT relative to a big leftover wrapLen
-    // (e.g. every looper just got set to a 4-second shared phrase and THIS
-    // looper's own fresh recording only lasts 1 second), the write pass
-    // never wraps at all and only populates a small prefix, while the old
-    // (still-in-effect-until-FINISH) wrapLen governs BOTH writeIdx's mod and
-    // readPos's mod identically during recording -- consistent DURING
-    // recording, but FINISH's post-hoc `len` rewrite can move the boundary
-    // to a place with little or no overlap with what got written, matching
-    // the reported "no loop content plays at all, only passthrough".
-    // FIX: latch wrapLen at the SAME armEdge that resets writeIdx/readPos,
-    // and HOLD that latched value fixed (not re-read every sample from the
-    // live, block-rate-updating lenN) until the NEXT armEdge. This guarantees
-    // one recording's write pass and its OWN subsequent playback always
-    // share the exact same wrap boundary, decided once at the moment
-    // recording starts and never moved underneath it -- exactly mirroring
-    // why writeIdx/readPos themselves needed a single shared reset instant.
-    // Faust-legal: an ordinary internal `~` recursion, entirely local to
-    // this oneLooper instance, no new UI control, no cross-stage recursion.
-    // NOTE: max(1, ...) applied again on the OUTPUT of the recursion (not
-    // just wrapLenRaw feeding in) covers the recursion's own Faust-default
-    // initial state (0, before the very first armEdge this instance ever
-    // sees) so no downstream `% wrapLen` can ever divide by zero on a cold
-    // boot's very first samples before any looper has ever been armed.
-    wrapLenRaw = max(1, int(lenN));
-    wrapLenStep(prev) = ba.if(armEdge, wrapLenRaw, prev);
+    armEdge = (recN > 0.5) & (recPrev < 0.5);      // recN this sample, NOT last sample: rising edge
+    finishEdge = (recN < 0.5) & (recPrev > 0.5);   // falling edge: recording just stopped
+    // ROOT CAUSE (silence ever since TRUE varispeed's rwtable redesign,
+    // WITNESSED live: "can't hear our loops at all, but we can hear half a
+    // loop the first time pressing varispeed"): the PRIOR fix (0260de2/
+    // 1099e78) latched wrapLen at armEdge (recording START) from `lenN` --
+    // but `lenN` (the shared master length) is only ever computed and
+    // written by the native shell AFTER a recording finishes
+    // (apc_grid.cpp's applyRecPlayCycle, from the just-finished take's own
+    // elapsed duration). At ARM time, `lenN` can only ever reflect the
+    // PREVIOUS recording's length, or -- for the very first recording ever
+    // on a clean boot -- Faust's compiled-in hslider default (48000 = 1s),
+    // regardless of how long the user actually holds record for. So the
+    // write pass wrapped every 48000 samples (or whatever the stale prior
+    // length was) throughout the WHOLE recording, populating only a
+    // fraction of that span (or overwriting it, if held longer), while
+    // readPos -- ungated during recording, just inaudible via hold's
+    // (1-recN) gate -- kept drifting through that same stale span. The
+    // instant FINISH set play=1, playback started scanning from wherever
+    // readPos happened to have drifted to: mostly the stale span's
+    // zero-init silence, briefly clipping through the one small region that
+    // genuinely got written -- exactly "half a loop, once, then silence".
+    // FIX: stop depending on lenN/the native shell's timing entirely.
+    // writeIdx itself, counted up FREELY (not modulo any wrapLen) during an
+    // active recording, already equals the exact number of samples written
+    // by the time FINISH fires -- a value entirely internal to this Faust
+    // instance, with no cross-thread race. Latch wrapLen from writeIdx's own
+    // value at finishEdge instead of from lenN at armEdge. writeIdx is
+    // reset to 0 at armEdge as before (so it starts counting from a known
+    // position every take), but during the ARM..FINISH span it must NOT
+    // wrap modulo the OLD wrapLen anymore (that was the actual bug) --
+    // instead it counts up freely, bounded only by MAXLEN (a recording
+    // longer than that is simply clamped, matching the old ring's own
+    // capacity ceiling). Faust-legal: an ordinary internal `~` recursion,
+    // entirely local to this oneLooper instance, no new UI control, no
+    // cross-stage recursion.
+    wrapLenStep(prev) = ba.if(finishEdge, writeIdxForLatch, prev);
     wrapLen = max(1, wrapLenStep ~ _);
-    writeIdxStep(prev) = ba.if(armEdge, 0, (prev + 1) % wrapLen);
+    // writeIdxForLatch: writeIdx's value AT the finishEdge sample -- reading
+    // writeIdx here (rather than re-deriving it) is safe because writeIdx's
+    // own recursion is defined below using `wrapLen` only for the
+    // NOT-recording (idle) case; while `recN` is held (armEdge already
+    // fired, finishEdge not yet), writeIdx counts up unconditionally, so by
+    // the time finishEdge fires, writeIdx already holds the exact elapsed
+    // sample count for this take, with no additional latching needed here.
+    writeIdxForLatch = writeIdx;
+    // WRITE side: counts up from 0 (reset at armEdge) while actively
+    // recording, uncapped by any wrapLen (that modulus isn't known yet --
+    // it's only DERIVED from this same counter once FINISH latches it
+    // above); clamped to MAXLEN-1 so a take longer than the ring's own
+    // capacity simply stops advancing rather than wrapping and overwriting
+    // its own start (matching the old ring's hard capacity ceiling). Once
+    // NOT recording (recN==0, after FINISH), writeIdx's value is dead --
+    // nothing writes again until the next armEdge resets it -- so the idle
+    // branch's own modulo-wrapLen behavior is a don't-care, kept simply for
+    // definitional totality (ba.if requires an else-branch expression).
+    writeIdxStep(prev) = ba.if(armEdge, 0,
+                          ba.if(recN > 0.5, min(prev + 1, MAXLEN - 1),
+                                (prev + 1) % wrapLen));
     writeIdx = writeIdxStep ~ _;
     // record: capture the PREVIOUS block's fully-effected mix (prevFiltIn),
     // one-block-lag, so every recording is ALWAYS effected (pitch/delay/
@@ -243,17 +256,19 @@ with {
     // handles both forward overflow (speed>1) and, defensively, negative
     // values (never produced today since speedClamped>0, but keeps the wrap
     // well-defined if that ever changes).
-    // readPos ALSO resets to 0 on the same armEdge as writeIdx. Reasoning:
-    // write always starts at a known position (0) now, but if read did NOT
-    // also realign to 0 at that instant, read and write would still be two
-    // independently-phased spans of the same length -- correct in the sense
-    // that read never outputs OLD-loop stale content once a full wrapLen has
-    // elapsed since the reset, but WRONG in that content would come back
-    // rotated (starting from wherever readPos happened to be, not from the
-    // actual start of what was just recorded) rather than played back in the
-    // order it was captured. Resetting both on the identical edge guarantees
-    // read replays the recording from its true start, sample for sample.
-    readPosStep(prev) = ba.if(armEdge, 0.0, wrapReadPos(prev + speedClamped))
+    // readPos resets to 0 at BOTH armEdge and finishEdge. armEdge's reset
+    // matters only cosmetically (hold's own (1-recN) gate mutes readPos's
+    // output entirely while actively recording, so wherever it drifts
+    // during the take is inaudible) -- but finishEdge's reset is the one
+    // that actually matters: wrapLen has JUST been latched (see wrapLenStep
+    // above) from this exact take's real length, and readPos must start
+    // fresh at 0 relative to THAT new boundary the instant playback becomes
+    // audible (play=1 fires in this same native FINISH call), or it would
+    // resume from wherever it had drifted to while wrapping the OLD (now
+    // stale) wrapLen throughout the recording -- precisely the "half a loop
+    // once, then silence" symptom: a playback head picking up mid-drift
+    // through a boundary that no longer matches what was just written.
+    readPosStep(prev) = ba.if(armEdge | finishEdge, 0.0, wrapReadPos(prev + speedClamped))
     with { wrapReadPos(p) = p - floor(p / float(wrapLen)) * float(wrapLen); };
     // HISTORY (superseded, kept for context): this file previously carried
     // readposdiag/wraplendiag TEMPORARY diagnostic hbargraphs, added to
