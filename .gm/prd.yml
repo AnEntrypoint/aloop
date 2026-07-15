@@ -200,3 +200,66 @@
   id: verify-live-on-the-real-pi-4-via-ssh-after-the-fix-proc-asound-c
   status: completed
   witness: 'Verified live via SSH after commits 322f780 (routing) and 7a85947 (format fix): /proc/asound/card0/stream0 shows Status: Running on both playback (S32_LE, 24-bit) and capture; /proc/asound/card0/pcm0p/sub0/hw_params confirms format:S32_LE, period_size:64 (matching block_size); telemetry shows 0 xruns and 7-8% core_busy (real DSP work happening). User directly confirmed the audio passthrough sounds correct/clean, not the earlier loud static -- this is the real hardware/human verification the row required.'
+- id: varispeed-rwtable-write-side
+  subject: 'Replace de.fdelay in dsp/loop.dsp oneLooper with rwtable-based WRITE: monotonic write index wrapping at lenN, writing prevFiltIn*recN each sample, structurally identical semantics to current de.fdelay ring write (no overdub, record fully replaces loop content).'
+  status: pending
+- id: varispeed-read-accumulator
+  subject: Add a NEW per-looper fractional read-position accumulator (readPos ~ _ signal recursion, NOT a UI zone) advancing by effSpeed samples per sample-tick, wrapping at the same loop length as the write side, driving TWO rwtable reads (floor index, ceil index) blended by fractional part for linear interpolation -- this is the actual varispeed engine.
+  status: pending
+- id: varispeed-manual-speed-wiring
+  subject: Wire the existing global speedMul process()-signal-input (already fixed to be a single shared signal, not a duplicated UI zone) into the new read accumulator rate instead of into effLen -- half/doublespeed now change genuine playback rate/pitch, not loop length.
+  status: pending
+- id: varispeed-link-formula-port
+  subject: Port looper Looper.h setMasterBlocks formula (playRate = nativeBlocks/newMasterBlocks, equivalently recordedBpm/currentLinkBpm, recomputed absolutely every Link tempo change, not accumulated) into aloop -- confirmed via reading C:/dev/looper Looper.h:294-305 and loopMachine.cpp:637-663 this session.
+  status: pending
+- id: varispeed-per-looper-recorded-tempo-state
+  subject: 'aloop currently uses ONE SHARED cmd/master_len/m_masterLenSamples across all loopers (apc_grid.cpp), unlike loopers per-clip m_nativeBlocks. Decide + implement per-looper recorded-tempo tracking: since aloop shares a single master phrase length across the whole rig (by design, confirmed in apc_grid.cpp comments), a single shared recordedBpm (derived from m_masterLenSamples at establishment time) is the architecturally-correct port, not a per-looper hslider -- verify this reasoning explicitly before implementing since the task spec flagged it as needing careful judgment.'
+  status: pending
+- id: varispeed-link-drives-read-rate
+  subject: 'audio_thread.cpp Varispeed Link sync section (~565-591) currently ONLY sets looperN/len from Link BPM. Add: compute linkSpeedRatio = recordedBpm/currentLinkBpm and push as a new process() signal input (like speedMul) so read rate ALSO adjusts, keeping already-recorded loops pitch-locked to Link tempo changes -- combined multiplicatively with manual speedMul exactly as looper does (effectiveRate = playRate*globalSpeedMul).'
+  status: pending
+- id: varispeed-recordedbpm-tracking-cpp
+  subject: Add C++ state (apc_grid.cpp, alongside m_masterLenSamples) to remember the BPM the phrase was established at (deriveTempoBpm(masterLenSamples/sampleRate) at establishment time), persisted until next clear, threaded down as a new process() signal input alongside clearAll/speedMul/linkSpeedRatio.
+  status: pending
+- id: varispeed-process-signature-update
+  subject: Update dsp/loop.dsp and dsp/aloop.dsp process() signatures to add the new linkSpeedRatio (or combined effSpeed) signal input(s), update every call site (audio_thread.cpp fins[]/fouts[] arrays, compute() call) consistently -- avoid duplicating the clearAll/speedMul zone-duplication bug class for this new input.
+  status: pending
+- id: varispeed-record-side-unaffected
+  subject: Verify structurally that the new rwtable write-side index/wrap logic is completely independent of the new read-side speed/rate -- recording at ANY read speed must capture identically to before (write index always advances 1:1 with sample clock, matching todays de.fdelay ring write, never touched by effSpeed).
+  status: pending
+- id: varispeed-erase-clearall-preserved
+  subject: Verify the wipe gate (clearAll OR eraseN) still zeroes/gates the rwtable-based loop exactly as it did the de.fdelay-based one -- structurally trace through the new write-side hold/wipe logic.
+  status: pending
+- id: varispeed-shift-glitch-fold-preserved
+  subject: Verify prevLoopSum native fold-in (SHIFT-fold, GLITCH-fold) still works unchanged -- the new oneLooper output (out = read-accumulator-interpolated-value * playN * volN) must be the same shape/role as the old loopSig*playN*volN so aloop.dsp mixAndFx needs no changes.
+  status: pending
+- id: varispeed-level-meter-preserved
+  subject: Verify attachLevel/levelMeter VU meter tap still attaches to the new rwtable-read-based output signal correctly (same attach() idiom, new source).
+  status: pending
+- id: varispeed-faust-codegen-local-build
+  subject: Build Faust codegen locally via Docker (ubuntu:22.04 + faust, per task spec exact command) to confirm dsp/aloop.dsp compiles clean with the new rwtable-based loop.dsp -- do NOT rely on CI (quota-blocked).
+  status: pending
+- id: varispeed-crosscompile-local-build
+  subject: Cross-compile aarch64 build locally via Docker (alpine:3.20 platform linux/arm64, per task spec exact command) to produce build/aloop binary incorporating the new generated loop.cpp.
+  status: pending
+- id: varispeed-generated-cpp-zone-audit
+  subject: After Faust codegen, grep the generated build/loop.cpp for the new linkSpeedRatio/recordedBpm zone names to CONFIRM they compile down to the intended single-shared-signal-input shape (not 20x duplicated UI zones) -- same verification discipline as the diagnostic dump commit 3c6bf3f already established for speed/clear.
+  status: pending
+- id: varispeed-deploy-hotswap
+  subject: Deploy the newly built binary to the Pi via hotswap.js, after checking docker ps -a for stray containers from other concurrent agents and checking for uncommitted changes not made by this session.
+  status: pending
+- id: varispeed-status-json-verify
+  subject: 'Structurally verify post-deploy via ssh-run.js status.json: clean boot, xruns:0 and staying 0 across repeated checks, sane audio_peak.'
+  status: pending
+- id: varispeed-midi-inject-full-sequence
+  subject: 'Exercise via test/hardware/midi-inject.js: full record cycle (pad2/looper0 ARM+FINISH), pause/resume, SHIFT-held recording (0x62/98), glitch engagement (note 82), half/double-speed (notes 70/71) -- confirm no crash and xruns stays low/stable through the WHOLE sequence.'
+  status: pending
+- id: varispeed-remove-known-limitation-comment
+  subject: Once true varispeed is implemented and verified, remove/update the KNOWN LIMITATION comment block at the top of dsp/loop.dsp (lines ~24-53) and the docs commit 34b8dd0 documented as loop-length-only -- update docs/DECISIONS.md or wherever that limitation was recorded to reflect the fix.
+  status: pending
+- id: varispeed-maxlen-bounds-check
+  subject: Verify MAXLEN(48000*60) rwtable sizing and the read accumulator wrap arithmetic cannot read out of bounds at extreme speedMul values (0.5x, 2x) or extreme linkSpeedRatio values from a very fast/slow Link tempo -- clamp read rate to sane bounds matching the old effLen clamp min(MAXLEN,max(1.0,...)).
+  status: pending
+- id: varispeed-report-ear-verification-needed
+  subject: 'Final report must explicitly state what needs the user ear: does half/double-speed now audibly change pitch not just duration, and does Link-tempo reconnection at a different tempo correctly re-pitch already-recorded loops -- cannot be verified by this session.'
+  status: pending

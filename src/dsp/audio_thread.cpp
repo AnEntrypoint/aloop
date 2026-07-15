@@ -595,6 +595,21 @@ static void* worker(void*) {
                     snprintf(z, sizeof z, "looper%2d/level", lp); g_telem.looperLevel[lp] = fui.get(z, 0.0f);
                 }
             }
+            // TEMPORARY diagnostic (tracked for removal): re-investigating
+            // "plays a part of the loop once, does not repeat" after the
+            // TRUE varispeed rwtable redesign -- log looper 0's readPos vs
+            // wrapLen periodically to confirm whether the read accumulator
+            // genuinely wraps back into [0, wrapLen) or drifts/sticks
+            // outside it after a fresh recording changes wrapLen.
+            {
+                static uint64_t diagCount = 0;
+                if (diagCount++ % 200 == 0) {
+                    float rp = fui.get("looper 0/readposdiag", -1.0f);
+                    float wl = fui.get("looper 0/wraplendiag", -1.0f);
+                    fprintf(stderr, "[diag9] looper0 readPos=%.1f wrapLen=%.1f play=%.0f rec=%.0f\n",
+                            rp, wl, fui.get("looper 0/play", -1.0f), fui.get("looper 0/rec", -1.0f));
+                }
+            }
             // monitorMode telemetry (apcKey25.cpp:361's p.monitorMode = m_shift):
             // read directly from ParamStore now (no more MONITORFOLD Faust
             // zone -- the fold is a native block-rate mix, see prevLoopSum

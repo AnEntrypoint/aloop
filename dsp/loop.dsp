@@ -167,6 +167,14 @@ with {
     readPosStep(prev) = wrapReadPos(prev + speedClamped)
     with { wrapReadPos(p) = p - floor(p / float(wrapLen)) * float(wrapLen); };
     readPos = readPosStep ~ _;
+    // TEMPORARY diagnostic (tracked for removal): re-investigating "plays a
+    // part of the loop once, does not repeat" -- expose readPos/wrapLen as
+    // hbargraph OUTPUTS (read-only telemetry, same pattern as levelMeter
+    // below) so audio_thread.cpp can log them and confirm whether readPos is
+    // genuinely wrapping back to a valid range, or drifting/staying stuck
+    // outside [0, wrapLen) after a fresh recording changes wrapLen.
+    readPosDiag = readPos : hbargraph("readposdiag", 0.0, 999999.0);
+    wrapLenDiag = float(wrapLen) : hbargraph("wraplendiag", 0.0, 999999.0);
     readIdx0 = int(readPos) % wrapLen;             // floor tap
     readIdx1 = (readIdx0 + 1) % wrapLen;             // ceil tap, wrapped
     readFrac = readPos - floor(readPos);
