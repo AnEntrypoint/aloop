@@ -118,6 +118,36 @@ with {
     playN = checkbox("play");
     lenN  = hslider("len", 48000, 64, MAXLEN, 1);
     volN  = hslider("vol", 1.0, 0.0, 1.0, 0.001);
+    // FINISH-QUANTIZATION (user, this turn): "when our second loop is short,
+    // it doesnt take the start and stop timing it its making it longer and
+    // offsetting the position instead of matching it" / "when the loops are
+    // longer or shorter than the first loop it should snap to the most
+    // sensible in-phrase multiple or division" / "it should wait when
+    // waiting is closer, and backdate if pressed just too late instead of
+    // waiting for the next one." ROOT CAUSE: wrapLen previously latched from
+    // writeIdx's RAW elapsed sample count at finishEdge -- the DSP never
+    // read the nicely-quantized target apc_grid.cpp computes, so a short
+    // second loop played back at its raw (un-quantized, often longer)
+    // length with a phase anchor that didn't match either. FIX: two new
+    // per-looper zones -- finishReqN (a button C++ pulses at the ACTUAL
+    // finish press, BEFORE releasing recN) and finishTargetN (the chosen
+    // quantized target sample count, pushed in the SAME instant). Once a
+    // finish is requested, writing continues (ignoring recN's own release)
+    // until writeIdx reaches finishTargetN -- extending recording sample-
+    // accurately if the target hasn't been reached yet ("wait when waiting
+    // is closer"), or stopping essentially immediately if the target was
+    // already passed at request time ("backdate if pressed just too late":
+    // writeIdx is already >= finishTargetN the instant it's checked, so
+    // writing halts within one sample of the request; the few extra samples
+    // already written past the target during the raw take are simply never
+    // read back once wrapLen latches to the SMALLER finishTargetN value --
+    // no erase/undo needed, an unreachable ring region beyond wrapLen-1 is
+    // harmless). apc_grid.cpp computes the direction (extend vs backdate)
+    // by finding the nearest quantization candidate to the raw elapsed
+    // duration -- this file only needs to know the FINAL target, not which
+    // direction it came from.
+    finishReqN    = button("finishreq");
+    finishTargetN = hslider("finishtarget", 0, 0, MAXLEN, 1);
     eraseN = button("erase");   // per-looper wipe (hardware ERASE_TRACK 0x60)
     // wipe this loop when EITHER the global clear or this looper's erase is held.
     wipe   = max(clearAll, eraseN);
@@ -167,7 +197,15 @@ with {
     // follows wipe before any real write happens again.
     recPrev = recN : mem;
     armEdge = (recN > 0.5) & (recPrev < 0.5);      // recN this sample, NOT last sample: rising edge
-    finishEdge = (recN < 0.5) & (recPrev > 0.5);   // falling edge: recording just stopped
+    // finishRequested: latches the instant a finish is PULSED (finishReqN,
+    // pushed by apc_grid.cpp the same block as the finish press, alongside
+    // finishTargetN), stays true until the NEXT armEdge. Its own recursion
+    // depends only on armEdge/finishReqN -- no reference to writeIdx, so it
+    // cannot participate in any writeIdx-adjacent mutual-recursion class
+    // (the exact RMW-class rejection already hit once this session tracing
+    // wrapLen<->writeIdx).
+    finishRequestedStep(prev) = ba.if(armEdge, 0, ba.if(finishReqN > 0.5, 1, prev));
+    finishRequested = finishRequestedStep ~ _;
     // ROOT CAUSE (silence ever since TRUE varispeed's rwtable redesign,
     // WITNESSED live: "can't hear our loops at all, but we can hear half a
     // loop the first time pressing varispeed"): the PRIOR fix (0260de2/
@@ -231,10 +269,41 @@ with {
     // wrapping) the idle value is semantically identical for this file's
     // purposes: idle writeIdx is provably dead (nothing reads or writes
     // through it again until the next armEdge unconditionally resets it to
-    // 0), so what it holds in between literally cannot matter.
+    // 0), so what it holds in between literally cannot matter. (This
+    // "idle" state is now recordingGate==false, not simply recN==0 -- see
+    // recordingGate below, which also stays true a little past recN's own
+    // release while a finish is pending its quantized target.)
+    // recordingGate(prev): should writeIdx keep counting THIS sample? Two
+    // ways to still be "recording": recN is genuinely held (the normal
+    // case, matches pre-quantization behavior exactly when no finish has
+    // been requested yet), OR a finish HAS been requested but writeIdx
+    // hasn't yet reached its target (this is what lets writing continue
+    // past recN's own release -- "wait when waiting is closer"). Written in
+    // terms of `prev` (writeIdx's own PREVIOUS value, the recursion's own
+    // parameter) rather than re-reading the `writeIdx` identifier itself --
+    // this is the fold-into-one-recursion design that avoids the
+    // writeIdx<->finishRequested cycle a separate "writingActive" signal
+    // would have created (traced explicitly this session before writing
+    // any code).
+    recordingGate(prev) = (recN > 0.5) | (finishRequested & (prev < finishTargetN));
     writeIdxStep(prev) = ba.if(armEdge, 0,
-                          ba.if(recN > 0.5, min(prev + 1, MAXLEN - 1), prev));
+                          ba.if(recordingGate(prev), min(prev + 1, MAXLEN - 1), prev));
     writeIdx = writeIdxStep ~ _;
+    // finishEdge: the REAL stop instant that latches wrapLen/
+    // recordStartPhaseOffset -- derived from recordingGate's OWN falling
+    // edge (evaluated against writeIdx's actual output via `: mem`, the
+    // identical edge-detection idiom already used for recN/recPrev above,
+    // NOT a new recursion reading writeIdx circularly). "Backdate if
+    // pressed just too late": if finishTargetN was ALREADY <= writeIdx the
+    // instant finishReqN pulsed, recordingGate is false on the very next
+    // sample (prev is already >= finishTargetN), so finishEdge fires
+    // essentially immediately -- the few extra samples already written past
+    // the target during the raw take are simply never read back once
+    // wrapLen latches to the smaller finishTargetN value (an unreachable
+    // ring region beyond wrapLen-1 is harmless, no erase/undo needed).
+    recordingGateNow = recordingGate(writeIdx : mem);
+    recordingGatePrev = recordingGateNow : mem;
+    finishEdge = (recordingGateNow < 0.5) & (recordingGatePrev > 0.5);
     // record: capture the PREVIOUS block's fully-effected mix (prevFiltIn),
     // one-block-lag, so every recording is ALWAYS effected (pitch/delay/
     // reverb/microrepeat/filters) -- matching the user's explicit
@@ -248,7 +317,13 @@ with {
     // it structurally cannot re-enter `fx` on any later block. `wipe` zeroes
     // the write too (a wiped/erased loop must not silently resurrect old
     // ring content next read pass), matching the old hold*(1-wipe) gating.
-    writeVal = prevFiltIn * recN * (1.0 - wipe);
+    // Gated by recordingGateNow (NOT raw recN): recN is released to 0
+    // immediately at the finish press, but writeIdx may keep advancing a
+    // little longer to reach its quantized target -- gating writeVal on
+    // recN alone would write SILENCE into those extended index positions
+    // instead of real audio, corrupting exactly the samples the
+    // finish-quantization extension exists to capture.
+    writeVal = prevFiltIn * recordingGateNow * (1.0 - wipe);
     ring = rwtable(MAXLEN, 0.0, writeIdx, writeVal, readIdx0);
 
     // ---- READ side: PHRASE-LOCK (user's standing requirement: "our loops
@@ -338,8 +413,12 @@ with {
     delayed = ring + (ringCeil - ring) * readFrac;   // linear-interpolated read
     // hold/recirculate exactly as before -- the wrap-around READ POSITION is
     // what changes speed now (not effLen), so hold's own gating (not
-    // recording, not wiped) is unchanged from the old design.
-    hold = delayed * (1.0 - recN) * (1.0 - wipe);
+    // recording, not wiped) is unchanged from the old design, EXCEPT it now
+    // uses recordingGateNow instead of raw recN for the same reason as
+    // writeVal above: recording (and therefore "not recording" muting of
+    // playback) must track the EXTENDED finish-quantization window, not
+    // just recN's own early release.
+    hold = delayed * (1.0 - recordingGateNow) * (1.0 - wipe);
     // record (live monitoring term): the OLD de.fdelay-ring design's `out`
     // was `step = record+hold` fed straight back into the delay -- since
     // write and read were the SAME point in that ring, recording produced

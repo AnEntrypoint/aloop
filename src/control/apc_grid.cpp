@@ -31,7 +31,7 @@ namespace aloop {
 void ApcGrid::bindAll(ParamStore& ps) {
     char name[32];
     for (int looper = 0; looper < kLooperCount; looper++) {
-        for (const char* field : {"rec", "play", "erase"}) {
+        for (const char* field : {"rec", "play", "erase", "finishreq"}) {
             snprintf(name, sizeof name, "looper%d/%s", looper, field);
             ps.bind(name);
         }
@@ -44,6 +44,12 @@ void ApcGrid::bindAll(ParamStore& ps) {
         // sets a real value.
         snprintf(name, sizeof name, "looper%d/len", looper);
         ps.bind(name, 48000.0f);
+        // finishtarget: the quantized sample-count target for
+        // finish-quantization (see dsp/loop.dsp's oneLooper comment) --
+        // 0 default matches Faust's own hslider("finishtarget", 0, ...)
+        // compiled default.
+        snprintf(name, sizeof name, "looper%d/finishtarget", looper);
+        ps.bind(name, 0.0f);
     }
     ps.bind("fx/pitchbend");
     ps.bind("fx/pitchbend_engaged");
@@ -240,6 +246,16 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             if (link) {
                 link->proposeTempo(solved.bpm);
             }
+            // FINISH-QUANTIZATION (see dsp/loop.dsp's oneLooper comment):
+            // this looper's own write boundary must land exactly on
+            // m_masterLenSamples (the just-solved quantized target), not
+            // wherever its raw elapsed recording happened to be -- push the
+            // target and pulse finishreq so the DSP extends/trims to it
+            // sample-accurately, mirroring every other looper's own
+            // finish-quantization path below.
+            setLooper(ps, looper, "finishtarget", (float)m_masterLenSamples);
+            setLooper(ps, looper, "finishreq", 1.0f);
+            m_looperFinishReqReleaseAt[looper] = now_ms + 50;
         } else {
             // WITNESSED live: "consecutive loops were all the same lengths
             // not multiples and divisions like ../looper" -- this branch
@@ -280,7 +296,21 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             long quantized = (long)(bestLen + 0.5);
             if (quantized < 64) quantized = 64;
             if (quantized > kMaxLoopSamples) quantized = kMaxLoopSamples;
-            setLooper(ps, looper, "len", (float)quantized);
+            // FINISH-QUANTIZATION (WITNESSED live: "when our second loop is
+            // short, it doesnt take the start and stop timing it its making
+            // it longer and offsetting the position instead of matching
+            // it"): setLooper(..., "len", ...) alone used to just relabel
+            // the Faust len ZONE, which dsp/loop.dsp's wrapLen never reads
+            // (it latches from the RAW writeIdx count at finishEdge) -- so
+            // this quantization never actually reached the DSP's real write
+            // boundary. Fixed: push the quantized target and pulse
+            // finishreq, exactly like the FIRST-establish branch above, so
+            // Faust itself extends/trims writing to hit this exact target
+            // sample-accurately ("wait when waiting is closer, and backdate
+            // if pressed just too late").
+            setLooper(ps, looper, "finishtarget", (float)quantized);
+            setLooper(ps, looper, "finishreq", 1.0f);
+            m_looperFinishReqReleaseAt[looper] = now_ms + 50;
         }
     } else if (!m_looperHasContent[looper]) {
         setLooper(ps, looper, "rec", 1.0f);   // ARM: start recording -- next press finishes it
@@ -424,6 +454,21 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps) {
             fprintf(stderr, "[diag6b] pollHolds ERASE-RELEASE looper=%d now_ms=%u releaseAt=%u\n",
                     looper, now_ms, m_looperEraseReleaseAt[looper]);
             m_looperEraseReleaseAt[looper] = 0;
+        }
+    }
+    // Release any pending finishreq pulse the same momentary-pulse pattern
+    // as erase above -- setLooper(..., "finishreq", 1.0f) alone (see
+    // applyRecPlayCycle) would stay stuck at 1 forever with nothing else
+    // ever writing it back to 0, and dsp/loop.dsp's finishRequestedStep
+    // only cares that finishreq was seen >0.5 for at least one sample (it
+    // latches into finishRequested until the next armEdge), so holding it
+    // for ~50ms (many DSP blocks) then releasing is correct and harmless --
+    // it does NOT need to still be 1 by the time the DSP-side target is
+    // actually reached (that's what finishRequested's own latch is for).
+    for (int looper = 0; looper < kLooperCount; looper++) {
+        if (m_looperFinishReqReleaseAt[looper] != 0 && now_ms >= m_looperFinishReqReleaseAt[looper]) {
+            setLooper(ps, looper, "finishreq", 0.0f);
+            m_looperFinishReqReleaseAt[looper] = 0;
         }
     }
     for (int looper = 0; looper < kLooperCount; looper++) {
@@ -638,6 +683,14 @@ void ApcGrid::onClearAll(bool held, ParamStore& ps) {
         // whenever a clear/interrupt lands mid-recording. Explicitly stop
         // every looper's rec gate here too, matching play's fix above.
         setLooper(ps, lp, "rec", 0.0f);
+        // Also release any pending finishreq pulse/target -- a clear landing
+        // mid-finish-quantization-extension shouldn't leave a stale
+        // finishreq=1 or finishtarget from the interrupted take lingering
+        // (harmless either way once the DSP's own armEdge resets
+        // finishRequested/writeIdx on the NEXT genuine recording, but
+        // explicit hygiene here matches rec/play's own explicit resets).
+        setLooper(ps, lp, "finishreq", 0.0f);
+        m_looperFinishReqReleaseAt[lp] = 0;
         // ROOT CAUSE FOUND + FIXED at the DSP level (dsp/loop.dsp), 2nd
         // generation fix: the "clear"/"speed" engine-global controls were
         // originally referenced by bare name INSIDE oneLooper, which par(i,

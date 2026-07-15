@@ -166,6 +166,7 @@ private:
     unsigned m_looperHoldStart[kLooperCount] = {};
     bool m_looperErased[kLooperCount] = {};      // true once the hold-erase fired this press
     unsigned m_looperEraseReleaseAt[kLooperCount] = {};  // 0 = not pending; else wall-clock ms to release looperN/erase back to 0 (see pollHolds)
+    unsigned m_looperFinishReqReleaseAt[kLooperCount] = {};  // 0 = not pending; else wall-clock ms to release looperN/finishreq back to 0 (see pollHolds, same momentary-pulse pattern as erase)
     bool m_looperArmedOnPress[kLooperCount] = {}; // suppress the release tap (armed on press)
     bool m_looperPlaying[kLooperCount] = {};      // local shadow: last rec/play state we sent
     bool m_looperHasContent[kLooperCount] = {};   // local shadow: has this looper recorded anything
