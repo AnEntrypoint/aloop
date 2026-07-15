@@ -349,6 +349,13 @@ static void* worker(void*) {
     auto samplerPtr = std::make_unique<Sampler>();
     g_sampler = samplerPtr.get();
     std::vector<int32_t> samplerBuf((size_t)N, 0);   // s32 scratch for captureBlock/renderInto
+    // captureFin: a SEPARATE snapshot of dry input + SHIFT/glitch-folded
+    // loop content, EXCLUDING the sampler's own renderInto playback voices
+    // -- see the sampler-capture block below for why this must be distinct
+    // from `fin` (which by capture time also carries this block's own
+    // just-mixed-in sample playback, a genuine self-recording risk a first
+    // draft of this fix introduced and caught before it shipped).
+    std::vector<float> captureFin((size_t)N, 0.0f);
 #endif
 
     // The user's swappable effect(s): an in-process LV2 host loading any bundle
@@ -813,15 +820,24 @@ static void* worker(void*) {
                 if (a > inPeak) inPeak = a;
             }
             g_telem.inPeak = inPeak;
-            // Sampler mix-in (sampler.h's own load-bearing invariant, verbatim
-            // from ../looper): capture reads the DRY input snapshot BEFORE any
-            // voices are mixed in (so a sample recording never records itself
-            // or the loops), and the mixed-in result feeds the loop engine +
-            // effects chain same as fresh input would -- so a sample gets all
+            // Snapshot dry input for the sampler CAPTURE path (see below) --
+            // taken BEFORE renderInto's playback voices are mixed into `fin`,
+            // so a sample recording can never contain this block's own
+            // just-triggered sample playback, exactly matching sampler.h's
+            // documented no-self-recording invariant. The SHIFT/glitch fold
+            // is applied to this buffer too, in the SAME fold loop below, so
+            // captureFin ends up as "dry input + folded loop content, no
+            // sampler voices" -- distinct from `fin` (dry input + sampler
+            // voices + folded loop content, the correct DSP-facing signal).
+            captureFin = fin;
+            // Sampler PLAYBACK mix-in (sampler.h's own load-bearing invariant,
+            // verbatim from ../looper): voices are mixed in BEFORE the loop
+            // engine + effects chain, so a played-back sample gets all
             // effects and is recordable by a loop under SHIFT fold, matching
-            // looper's renderInto-before-the-chain ordering exactly.
+            // looper's renderInto-before-the-chain ordering exactly. Capture
+            // (recording INTO a sample slot) is handled SEPARATELY below,
+            // after the SHIFT/glitch fold -- see that comment for why.
             for (int i = 0; i < N; i++) samplerBuf[(size_t)i] = (int32_t)(fin[i] * 32768.0f);
-            g_sampler->captureBlock(samplerBuf.data(), N);
             g_sampler->renderInto(samplerBuf.data(), N);
             for (int i = 0; i < N; i++) fin[i] = (float)samplerBuf[(size_t)i] / 32768.0f;
             // SHIFT-held monitor-fold (native mix, see prevLoopSum's declaration
@@ -869,6 +885,13 @@ static void* worker(void*) {
                     float combinedFold = foldGain + glitchFoldGain;
                     if (combinedFold > 1.0f) combinedFold = 1.0f;
                     fin[i] += prevLoopSum[i] * combinedFold;
+                    // Apply the IDENTICAL fold to captureFin (dry input, no
+                    // sampler voices) so the sampler's capture path sees the
+                    // same SHIFT/glitch-folded loop content as the DSP's own
+                    // `fin` does, without also picking up this block's
+                    // sampler playback -- see captureFin's declaration
+                    // comment and the sampler-capture block below.
+                    captureFin[i] += prevLoopSum[i] * combinedFold;
                 }
                 // Push foldGain into aloop.dsp's MONITORFOLD zone (a real,
                 // live-written zone again -- see dsp/aloop.dsp's REGRESSION
@@ -887,6 +910,33 @@ static void* worker(void*) {
                 // engagement instead.
                 fui.set("GLITCHFOLD", glitchFoldGain);
             }
+            // Sampler CAPTURE (recording INTO a sample slot): user's explicit
+            // request this session -- "shift should route loops into the
+            // sample recording, for drums and all-key samples to be able to
+            // record from loopers the same way that input and effects get
+            // recorded into samplers, since loopers play into the input
+            // channel its a surprise it doesnt already do this." ROOT CAUSE
+            // (confirmed via investigation this session): captureBlock used
+            // to run BEFORE the SHIFT/glitch fold, using dry `fin[]` alone --
+            // so a sample recording could never contain loop content, folded
+            // or not, regardless of SHIFT state. FIRST FIX ATTEMPT (caught
+            // and corrected before shipping): simply moving captureBlock to
+            // run on `fin[]` AFTER the fold reintroduced a genuine
+            // self-recording bug, since `fin[]` by this point ALSO contains
+            // THIS block's own renderInto-mixed sample playback voices -- a
+            // sample recorded while another sample/drum hit is playing would
+            // record itself. REAL FIX: capture from `captureFin` instead, a
+            // SEPARATE buffer snapshotted from dry input BEFORE renderInto
+            // ever touches it, with the SAME SHIFT/glitch fold applied to it
+            // independently (see captureFin's declaration and the fold loop
+            // above) -- dry input + folded loop content, deliberately
+            // excluding this block's own sampler playback. No lag/whine risk
+            // (unlike the loop-engine's own `fin[] +=` recursion class this
+            // file's history warns about): captureBlock is a pure
+            // capture-into-buffer, never fed back into any Faust input, so
+            // it structurally cannot re-enter the effects chain later.
+            for (int i = 0; i < N; i++) samplerBuf[(size_t)i] = (int32_t)(captureFin[i] * 32768.0f);
+            g_sampler->captureBlock(samplerBuf.data(), N);
             // Recording: ALWAYS captures the fully-effected mix, via a
             // dedicated record-only Faust input, never by folding into
             // `fin`. WITNESSED-BROKEN prior approach (this file's history,
