@@ -10,6 +10,15 @@
 # persistent caching across `docker build` invocations, not just within one.
 # syntax=docker/dockerfile:1
 FROM ubuntu:22.04
+# ROOT CAUSE FOUND (WITNESSED live): apt-get update/install hung indefinitely
+# on every attempt in this environment -- traced to archive.ubuntu.com (and
+# Alpine's CDN, same symptom) resolving to IPv6-ONLY addresses here
+# (`getent hosts` returned only 2620:2d:... AAAA records, zero A records),
+# while this Docker network path cannot actually route IPv6 -- apt/apk hang
+# trying to connect via IPv6 with no automatic IPv4 fallback within any
+# reasonable timeout. Forcing IPv4 fixes it completely (confirmed: identical
+# `apt-get update` went from hanging >180s to succeeding in seconds).
+RUN echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update -qq && apt-get install -y -qq faust

@@ -166,15 +166,22 @@ with {
     // well-defined if that ever changes).
     readPosStep(prev) = wrapReadPos(prev + speedClamped)
     with { wrapReadPos(p) = p - floor(p / float(wrapLen)) * float(wrapLen); };
-    readPos = readPosStep ~ _;
     // TEMPORARY diagnostic (tracked for removal): re-investigating "plays a
     // part of the loop once, does not repeat" -- expose readPos/wrapLen as
-    // hbargraph OUTPUTS (read-only telemetry, same pattern as levelMeter
-    // below) so audio_thread.cpp can log them and confirm whether readPos is
-    // genuinely wrapping back to a valid range, or drifting/staying stuck
-    // outside [0, wrapLen) after a fresh recording changes wrapLen.
-    readPosDiag = readPos : hbargraph("readposdiag", 0.0, 999999.0);
-    wrapLenDiag = float(wrapLen) : hbargraph("wraplendiag", 0.0, 999999.0);
+    // hbargraph OUTPUTS. REGRESSION FOUND AND FIXED in this same edit
+    // (WITNESSED live: both diag zones returned fui.get's -1.0 "not found"
+    // default every single block): a hbargraph computed but never actually
+    // wired into a signal that reaches `out`/process()'s output gets
+    // dead-code-eliminated by Faust entirely -- the UI element is simply
+    // never instantiated. Fix: pipe readPos through `attachReadPosDiag` /
+    // `attachWrapLenDiag` (ordinary attach() wrappers, same idiom as
+    // attachLevel below), so the CHAIN's final result (still numerically
+    // just readPos -- attach()'s first argument passes through unchanged)
+    // is what feeds readIdx0/readIdx1 -- now both diag hbargraphs are
+    // genuinely part of the real signal path Faust must keep.
+    attachReadPosDiag(x) = attach(x, x : hbargraph("readposdiag", 0.0, 999999.0));
+    attachWrapLenDiag(x) = attach(x, wrapLen : float : hbargraph("wraplendiag", 0.0, 999999.0));
+    readPos = (readPosStep ~ _) : attachReadPosDiag : attachWrapLenDiag;
     readIdx0 = int(readPos) % wrapLen;             // floor tap
     readIdx1 = (readIdx0 + 1) % wrapLen;             // ceil tap, wrapped
     readFrac = readPos - floor(readPos);
