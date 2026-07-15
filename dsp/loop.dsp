@@ -122,17 +122,53 @@ with {
     // wipe this loop when EITHER the global clear or this looper's erase is held.
     wipe   = max(clearAll, eraseN);
 
-    // ---- WRITE side: unchanged semantics from the old de.fdelay ring ----
-    // Monotonic write index, wraps at lenN (the CURRENT loop length -- the
-    // Link-driven length update, same as before). No overdub: writing
-    // prevFiltIn*recN REPLACES whatever was in that cell; when not
-    // recording, nothing is written to this index (record content persists
-    // until the next recording pass or an explicit wipe below). This is
-    // structurally the exact same write-index behavior de.fdelay's internal
-    // ring implicitly performed -- only now it's an explicit rwtable, so the
-    // read side can be independent.
+    // ---- WRITE side ----
+    // ROOT CAUSE (silent second recording after clear, reported since project
+    // start): writeIdx was a FREE-RUNNING counter with NO reset anywhere --
+    // not at program start, not on wipe/clear, not on a fresh ARM. It just
+    // kept incrementing modulo wrapLen forever from whatever arbitrary
+    // position it happened to be at. Two compounding problems:
+    //   1. On the FIRST-establish FINISH (apc_grid.cpp's applyRecPlayCycle,
+    //      masterLen(before)==0 branch), `len` is set for EVERY looper
+    //      in-place, changing wrapLen INSTANTLY the next Faust block. A
+    //      writeIdx that was wrapping at the OLD wrapLen (e.g. the
+    //      Faust-compiled default 48000) is suddenly modulo'd against a
+    //      DIFFERENT wrapLen -- `(prev+1) % newWrapLen` does not restart at
+    //      0, it just continues from wherever `prev` was, now bounded by a
+    //      different modulus (harmless numerically -- % is always in-range
+    //      -- but the value is essentially arbitrary relative to "start of
+    //      loop", never guaranteed to be near 0).
+    //   2. Nothing ties writeIdx==0 to the ARM press (rec 0->1). So a fresh
+    //      recording's write span starts at whatever position the
+    //      free-running counter is at that exact block -- e.g. index 743 --
+    //      NOT index 0. The READ side's readPos is a SEPARATELY initialized/
+    //      advancing accumulator with NO relationship to where the write
+    //      actually started. Even though both spans are wrapLen samples
+    //      long, they are not aligned: readPos scans from wherever IT starts
+    //      (also arbitrary pre-fix), so it can read pre-write stale/zeroed
+    //      ring content for part of the loop and real content for the rest,
+    //      or (worst case) mostly stale content if the misalignment is bad
+    //      -- exactly matching "second recording captures nothing".
+    // FIX: detect the ARM edge (rec 0->1, same engageEdge/counter-reset
+    // pattern as effects/home/faust/microrepeat.dsp's engageEdge/sampleIdx)
+    // and force writeIdx back to a KNOWN position (0) at that exact instant,
+    // via ba.if in the recursion's own reset condition -- same idiom as
+    // microrepeat's `counter(prev) = ba.if(engageEdge, 0, prev+1)`. This
+    // guarantees every fresh recording's write span starts at a known,
+    // read-reachable position, regardless of how long writeIdx had been
+    // free-running before, and regardless of any wrapLen change that
+    // happened in between (a stale `prev` value no longer matters once the
+    // edge fires -- it's discarded, not carried forward).
+    // wipe (clear-all/erase) does NOT need its OWN separate writeIdx reset:
+    // wipe already zeroes writeVal (nothing new gets written while wiped),
+    // and the NEXT genuine recording after a wipe always goes through a
+    // fresh ARM (recN 0->1) first -- which this same edge already resets to
+    // 0. A redundant wipe-triggered reset would be a no-op given ARM always
+    // follows wipe before any real write happens again.
+    recPrev = recN : mem;
+    armEdge = (recN > 0.5) & (recPrev < 0.5);   // recN this sample, NOT last sample: rising edge
     wrapLen = max(1, int(lenN));
-    writeIdxStep(prev) = (prev + 1) % wrapLen;
+    writeIdxStep(prev) = ba.if(armEdge, 0, (prev + 1) % wrapLen);
     writeIdx = writeIdxStep ~ _;
     // record: capture the PREVIOUS block's fully-effected mix (prevFiltIn),
     // one-block-lag, so every recording is ALWAYS effected (pitch/delay/
@@ -164,7 +200,17 @@ with {
     // handles both forward overflow (speed>1) and, defensively, negative
     // values (never produced today since speedClamped>0, but keeps the wrap
     // well-defined if that ever changes).
-    readPosStep(prev) = wrapReadPos(prev + speedClamped)
+    // readPos ALSO resets to 0 on the same armEdge as writeIdx. Reasoning:
+    // write always starts at a known position (0) now, but if read did NOT
+    // also realign to 0 at that instant, read and write would still be two
+    // independently-phased spans of the same length -- correct in the sense
+    // that read never outputs OLD-loop stale content once a full wrapLen has
+    // elapsed since the reset, but WRONG in that content would come back
+    // rotated (starting from wherever readPos happened to be, not from the
+    // actual start of what was just recorded) rather than played back in the
+    // order it was captured. Resetting both on the identical edge guarantees
+    // read replays the recording from its true start, sample for sample.
+    readPosStep(prev) = ba.if(armEdge, 0.0, wrapReadPos(prev + speedClamped))
     with { wrapReadPos(p) = p - floor(p / float(wrapLen)) * float(wrapLen); };
     // TEMPORARY diagnostic (tracked for removal): re-investigating "plays a
     // part of the loop once, does not repeat" -- expose readPos/wrapLen as
@@ -179,8 +225,23 @@ with {
     // just readPos -- attach()'s first argument passes through unchanged)
     // is what feeds readIdx0/readIdx1 -- now both diag hbargraphs are
     // genuinely part of the real signal path Faust must keep.
+    // FIX (attach()-chaining regression): the previous attachWrapLenDiag
+    // called attach(x, wrapLen:float:hbargraph(...)) -- attach(x,y)'s
+    // contract is that y is evaluated as a SIDE EFFECT of x flowing through,
+    // but Faust's dead-code elimination only keeps a UI primitive reachable
+    // if it is part of the SAME signal expression that is attach()'d, not
+    // merely evaluated "nearby" in the same with-block. `wrapLen` here does
+    // not depend on `x` (readPos) at all -- it's an entirely separate
+    // upstream signal (derived straight from lenN) -- so the compiler could
+    // (and did) still treat that hbargraph as unreachable from `out`. Fix:
+    // make each diag hbargraph's argument GENUINELY derive from the signal
+    // being attached (x + 0*wrapLen keeps the mathematical value of x
+    // unchanged, since wrapLen is provably a compile-time-boundable, always-
+    // finite int, but now makes the hbargraph's input signal actually depend
+    // on the chain it's attached to, so DCE cannot drop it independently of
+    // readPos itself).
     attachReadPosDiag(x) = attach(x, x : hbargraph("readposdiag", 0.0, 999999.0));
-    attachWrapLenDiag(x) = attach(x, wrapLen : float : hbargraph("wraplendiag", 0.0, 999999.0));
+    attachWrapLenDiag(x) = attach(x, x*0 + float(wrapLen) : hbargraph("wraplendiag", 0.0, 999999.0));
     readPos = (readPosStep ~ _) : attachReadPosDiag : attachWrapLenDiag;
     readIdx0 = int(readPos) % wrapLen;             // floor tap
     readIdx1 = (readIdx0 + 1) % wrapLen;             // ceil tap, wrapped
