@@ -223,18 +223,21 @@ with {
 // making a separate glitch-only term redundant/double-counting. Second
 // process() input.
 //
-// clearAll/speedMul: 3rd and 4th process() inputs, the momentary global
-// commands (hardware CLEAR_ALL, HALFSPEED/DOUBLESPEED). Previously declared
-// as Faust UI zones (button("clear")/hslider("speed", ...)) inside loop.dsp,
-// which par()'s per-looper replication silently duplicated into 20 separate
-// zones even after being "hoisted" outside the vgroup textually -- see
-// loop.dsp's ROOT CAUSE comment above oneLooper for the full trace (Faust's
-// par() is a code-generating combinator: an expression passed as an argument
-// into a replicated block gets re-elaborated, UI declaration included, at
-// each of the 20 call sites). Routed here as plain signal inputs instead,
-// the same technique as prevFiltIn -- audio_thread.cpp pushes the computed
-// clear/speed values directly into fins[2]/fins[3] every block (constant
-// across the block, no interpolation needed since they are momentary step
-// values, not audio-rate signals), and they reach every looper identically
-// via loop.dsp's par() without ever being independently instantiated.
-process(in, prevFiltIn, clearAll, speedMul) = loop(in, prevFiltIn, clearAll, speedMul) : mixAndFx;
+// clearAll/effSpeed: 3rd and 4th process() inputs, the momentary global
+// commands (hardware CLEAR_ALL, HALFSPEED/DOUBLESPEED) and now TRUE
+// varispeed's combined playback-rate multiplier (manual speed x Link-tempo
+// ratio, see loop.dsp's top-of-file comment). Previously declared as Faust
+// UI zones (button("clear")/hslider("speed", ...)) inside loop.dsp, which
+// par()'s per-looper replication silently duplicated into 20 separate zones
+// even after being "hoisted" outside the vgroup textually -- see loop.dsp's
+// ROOT CAUSE comment above oneLooper for the full trace (Faust's par() is a
+// code-generating combinator: an expression passed as an argument into a
+// replicated block gets re-elaborated, UI declaration included, at each of
+// the 20 call sites). Routed here as plain signal inputs instead, the same
+// technique as prevFiltIn -- audio_thread.cpp pushes the computed
+// clear/effSpeed values directly into fins[2]/fins[3] every block (constant
+// across the block, no interpolation needed since they are momentary step/
+// slow-changing values, not per-sample-varying control), and they reach
+// every looper identically via loop.dsp's par() without ever being
+// independently instantiated.
+process(in, prevFiltIn, clearAll, effSpeed) = loop(in, prevFiltIn, clearAll, effSpeed) : mixAndFx;

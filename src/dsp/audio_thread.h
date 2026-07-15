@@ -102,6 +102,12 @@ public:
         // minimal Alpine image (no amixer package in the local netboot repo).
         float    inPeak = 0.0f;
         float    outPeak = 0.0f;
+        // TRUE varispeed telemetry: the combined effSpeed (manual half/
+        // double-speed x Link-tempo ratio) actually pushed into loop.dsp's
+        // read accumulator this block -- lets a UDP query / structural test
+        // confirm the read rate genuinely changed (e.g. reads 0.5 while
+        // half-speed is held) without needing to hear the pitch shift.
+        float    effSpeed = 1.0f;
         // Per-looper state — the Linux-native equivalent of the hardware's
         // GET_STATE 0x30 dump (which of the 20 loopers are recording/playing and
         // their levels). Read from the Faust zones each block; served on udp/4445.

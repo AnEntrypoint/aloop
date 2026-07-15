@@ -1,56 +1,40 @@
 // aloop loop engine — in Faust. Matches the real hardware setup:
 //   * 20 INDEPENDENT loopers (each its own record buffer + play head),
 //   * record / play only — NO OVERDUB (the hardware has no overdub control),
-//   * each looper's play position tracks the Ableton Link grid (varispeed sync),
+//   * each looper's play RATE tracks manual half/double-speed AND the Ableton
+//     Link grid (TRUE varispeed: tape-style pitch+duration change together),
 //   * the 20 looper outputs sum to the engine output.
 //
-// WHY a feedback-delay ring (not a buffer+playhead): each looper is a cycle-free
-// feedback-delay ring — record replaces the loop, play recirculates it, no overdub
-// means no read-modify-write, so it stays simple AND compiles. A buffer+playhead
-// (rwtable) model was attempted to gain an addressable read position for the
-// hardware's mark-point / loop-immediate commands, but a preserve-on-hold playhead
-// requires reading a table and writing the read-back to the SAME table — a
-// read-modify-write that Faust's pure-signal evaluator rejects ("endless evaluation
-// cycle" / "stack overflow in eval", witnessed across 4 CI codegen attempts, see
-// docs/DECISIONS.md ADR + .wfgy/lessons.md). The delay ring sidesteps RMW by
-// construction, so it is the correct Faust looper. CONSEQUENCE: mark-point restart
-// (SET/CLEAR_LOOP_START) and immediate re-trigger (LOOP_IMMEDIATE) — which need an
-// addressable read head — are a deliberate model difference, documented in
-// docs/COMMAND-SURFACE.md, not a silently dropped feature. Every OTHER loop command
-// (record/play/stop/erase/clear/half-double-speed/Link-varispeed) maps 1:1.
-// The discrete control (which looper, record vs play, loop length from Link) comes
-// from the native shell as the per-looper param inputs.
+// TRUE VARISPEED (this generation): the WRITE side is still a simple
+// monotonic-index ring write (record replaces the loop, no overdub, no
+// read-modify-write of the SAME cell -- this is why the design compiles).
+// The READ side is now a genuinely SEPARATE fractional accumulator
+// (`readPos ~ _`, ordinary Faust signal recursion) advancing by `effSpeed`
+// SAMPLES PER SAMPLE (not per block), wrapping at the loop's own length,
+// driving TWO `rwtable` reads (floor/ceil index) linearly blended by the
+// fractional part. This is NOT a read-modify-write: the read never writes
+// back into the table at (or near) the position it read -- it only reads,
+// exactly like looking up two arbitrary indices in an array -- so it does
+// not hit the RMW rejection that blocked the EARLIER (different, now
+// abandoned) attempt at a preserve-on-hold ADDRESSABLE playhead (which
+// needed to write the read-back value into the SAME cell, a genuine RMW
+// Faust's evaluator rejects, "endless evaluation cycle"/"stack overflow in
+// eval", witnessed across 4 CI codegen attempts, see docs/DECISIONS.md ADR +
+// .wfgy/lessons.md). Mark-point restart (SET/CLEAR_LOOP_START) and immediate
+// re-trigger (LOOP_IMMEDIATE) still are NOT wired (a deliberate model
+// difference documented in docs/COMMAND-SURFACE.md, unrelated to varispeed).
 //
-// KNOWN LIMITATION, deliberately deferred (half/double-speed is NOT true
-// varispeed): WITNESSED live -- holding half/double-speed audibly changes
-// each looper's LOOP CYCLE LENGTH (effLen below) but produces "no other
-// audible change" -- no pitch/rate shift, unlike a real tape-speed change.
-// Root cause: `de.fdelay` reads at a FIXED 1:1 rate relative to the block
-// clock; changing its length only relocates WHERE in the ring the read tap
-// sits, it cannot change the RATE audio is traversed at. Compared against
-// looper's real mechanism (C:\dev\looper\loopClipUpdate.cpp's loopClip::
-// update(), m_playPos/m_playRate): looper achieves genuine varispeed via a
-// continuously-advancing FRACTIONAL read-position accumulator into a plain
-// flat sample buffer (m_playPos += m_playRate*globalSpeedMul each sample,
-// linear-interpolated read at floor/frac(m_playPos)) -- entirely
-// independent of the record write head, so the SAME audio plays over
-// MORE/FEWER real-time samples, changing duration AND pitch together, tape-
-// style. This is architecturally feasible in Faust WITHOUT hitting the RMW
-// rejection above (confirmed via research this session): unlike the
-// rejected preserve-on-hold playhead, a varispeed read never writes back
-// into the table at the read position -- write (record) stays a simple 1:1
-// `rwtable` write at a monotonic index exactly as today; read becomes a
-// SEPARATE fractional accumulator (`readPos ~ _`, ordinary signal
-// recursion, not a table RMW) driving two `rwtable` reads (floor/ceil)
-// blended by the fractional part. This is a real architectural change
-// (de.fdelay -> rwtable across all 20 loopers, a new per-looper read
-// accumulator, wrap/loop-length handling, redoing the record-tap wiring
-// since de.fdelay's `loop` feedback signal disappears) -- deliberately NOT
-// attempted in the same session as the varispeed/clear-all zone-duplication
-// fix, the microrepeat feedback-whine fix, the clear-all playback-gate fix,
-// and the erase-state-stuck fix, all landing in this exact file/area this
-// session. Tracked as its own dedicated follow-up, not a silently dropped
-// feature.
+// Ported from looper's real mechanism (C:\dev\looper\loopClipUpdate.cpp's
+// loopClip::update(), m_playPos/m_playRate; Looper.h's setMasterBlocks();
+// loopMachine.cpp:637-663): `effectiveRate = m_playRate * g_globalSpeedMul`,
+// where m_playRate = m_nativeBlocks/currentMasterBlocks (recomputed
+// ABSOLUTELY, never accumulated, from the loop's ORIGINAL recorded length
+// vs whatever length Link's current tempo implies) and g_globalSpeedMul is
+// PURELY the manual half/double-speed button state (1.0/0.5/2.0), entirely
+// separate from Link. aloop's native shell (audio_thread.cpp) computes this
+// SAME product every block and pushes it in as `effSpeed`, a single
+// process()-level SIGNAL INPUT (see the ROOT CAUSE comment below for why
+// this must never become a UI-declared control).
 
 import("stdfaust.lib");
 
@@ -128,39 +112,85 @@ NLOOPERS = 20;            // 20 independent loopers (the hardware setup)
 // post-glitch content (effects_runtime.dsp: microStage feeds both
 // filterStage and rawGlitchTap, so microStage's output is upstream of and
 // already baked into filtOut/recordTap).
-oneLooper(in, prevFiltIn, clearAll, speedMul) = out : attachLevel
+oneLooper(in, prevFiltIn, clearAll, effSpeed) = out : attachLevel
 with {
     recN  = button("rec");
     playN = checkbox("play");
     lenN  = hslider("len", 48000, 64, MAXLEN, 1);
     volN  = hslider("vol", 1.0, 0.0, 1.0, 0.001);
     eraseN = button("erase");   // per-looper wipe (hardware ERASE_TRACK 0x60)
-    // effective length obeys the global speed multiplier (varispeed half/double).
-    // halfspeed (0.5) LENGTHENS the delay (slower/lower); doublespeed (2.0) shortens
-    // it. Clamp to [1, MAXLEN] so the fdelay stays in range even at 0.5× (2×len).
-    effLen = min(MAXLEN, max(1.0, lenN / speedMul));
     // wipe this loop when EITHER the global clear or this looper's erase is held.
     wipe   = max(clearAll, eraseN);
-    step(loop) = record + hold
-    with {
-        delayed = de.fdelay(MAXLEN, effLen, loop);
-        // record: capture the PREVIOUS block's fully-effected mix
-        // (prevFiltIn), one-block-lag, so every recording is ALWAYS
-        // effected (pitch/delay/reverb/microrepeat/filters) -- matching the
-        // user's explicit requirement, not just live input passed through
-        // raw. This also captures glitch/microrepeat content (matching
-        // looper's "stutter becomes ... the record source",
-        // loopMachine.cpp:806-833) since prevFiltIn already contains
-        // microStage's output one block later, and captures SHIFT/glitch
-        // -held loop content too, since the native fold already routes that
-        // content through `fx` into filtOut before this tap is taken.
-        // prevFiltIn never touches `in`/dry, only this record term, so it
-        // structurally cannot re-enter `fx` on any later block.
-        record  = prevFiltIn * recN;
-        // else hold/recirculate — UNLESS wiped, which zeroes the loop.
-        hold    = delayed * (1.0 - recN) * (1.0 - wipe);
-    };
-    loopSig = step ~ _;
+
+    // ---- WRITE side: unchanged semantics from the old de.fdelay ring ----
+    // Monotonic write index, wraps at lenN (the CURRENT loop length -- the
+    // Link-driven length update, same as before). No overdub: writing
+    // prevFiltIn*recN REPLACES whatever was in that cell; when not
+    // recording, nothing is written to this index (record content persists
+    // until the next recording pass or an explicit wipe below). This is
+    // structurally the exact same write-index behavior de.fdelay's internal
+    // ring implicitly performed -- only now it's an explicit rwtable, so the
+    // read side can be independent.
+    wrapLen = max(1, int(lenN));
+    writeIdxStep(prev) = (prev + 1) % wrapLen;
+    writeIdx = writeIdxStep ~ _;
+    // record: capture the PREVIOUS block's fully-effected mix (prevFiltIn),
+    // one-block-lag, so every recording is ALWAYS effected (pitch/delay/
+    // reverb/microrepeat/filters) -- matching the user's explicit
+    // requirement, not just live input passed through raw. This also
+    // captures glitch/microrepeat content (matching looper's "stutter
+    // becomes ... the record source", loopMachine.cpp:806-833) since
+    // prevFiltIn already contains microStage's output one block later, and
+    // captures SHIFT/glitch-held loop content too, since the native fold
+    // already routes that content through `fx` into filtOut before this tap
+    // is taken. prevFiltIn never touches `in`/dry, only this record term, so
+    // it structurally cannot re-enter `fx` on any later block. `wipe` zeroes
+    // the write too (a wiped/erased loop must not silently resurrect old
+    // ring content next read pass), matching the old hold*(1-wipe) gating.
+    writeVal = prevFiltIn * recN * (1.0 - wipe);
+    ring = rwtable(MAXLEN, 0.0, writeIdx, writeVal, readIdx0);
+
+    // ---- READ side: the NEW genuinely-independent fractional accumulator
+    // driving true varispeed (tape-style pitch+duration change together).
+    // effSpeed is a plain process()-level SIGNAL INPUT (see ROOT CAUSE
+    // comment above oneLooper for why it must never be a UI hslider/button
+    // threaded through par() -- would be re-elaborated into 20 duplicate
+    // zones, exactly the varispeed/clear-all bug class already fixed once
+    // this session). Clamp to a sane nonzero range so a pathological
+    // Link-tempo ratio or manual speed can never stall (0) or explode
+    // (runaway) the read accumulator.
+    speedClamped = max(0.1, min(8.0, effSpeed));
+    // wrap into [0, wrapLen) using the CURRENT wrapLen every sample -- this
+    // handles both forward overflow (speed>1) and, defensively, negative
+    // values (never produced today since speedClamped>0, but keeps the wrap
+    // well-defined if that ever changes).
+    readPosStep(prev) = wrapReadPos(prev + speedClamped)
+    with { wrapReadPos(p) = p - floor(p / float(wrapLen)) * float(wrapLen); };
+    readPos = readPosStep ~ _;
+    readIdx0 = int(readPos) % wrapLen;             // floor tap
+    readIdx1 = (readIdx0 + 1) % wrapLen;             // ceil tap, wrapped
+    readFrac = readPos - floor(readPos);
+    // Second read of the SAME ring at the ceil index for linear
+    // interpolation. Both reads are plain lookups (no write), so this is
+    // NOT a read-modify-write -- the ring's only writer is writeIdx/writeVal
+    // above, entirely independent of where the read side is looking.
+    ringCeil = rwtable(MAXLEN, 0.0, writeIdx, writeVal, readIdx1);
+    delayed = ring + (ringCeil - ring) * readFrac;   // linear-interpolated read
+    // hold/recirculate exactly as before -- the wrap-around READ POSITION is
+    // what changes speed now (not effLen), so hold's own gating (not
+    // recording, not wiped) is unchanged from the old design.
+    hold = delayed * (1.0 - recN) * (1.0 - wipe);
+    // record (live monitoring term): the OLD de.fdelay-ring design's `out`
+    // was `step = record+hold` fed straight back into the delay -- since
+    // write and read were the SAME point in that ring, recording produced
+    // zero-added-latency monitoring (you hear yourself as you record) for
+    // free. The new independent read/write heads lose that automatically
+    // (the read position is generally somewhere else in the ring while
+    // writeIdx advances), so this term reinstates it explicitly: while
+    // actively recording, `out` carries the live writeVal directly, exactly
+    // matching the old ring's same-point read=write behavior.
+    record = writeVal;
+    loopSig = record + hold;
     out = loopSig * playN * volN;
     // LEVEL meter: an hbargraph UI OUTPUT (never fui.set() from ParamStore --
     // read-only via fui.get(), same pattern as the existing rec/play/vol
@@ -202,11 +232,17 @@ with {
 // what actually makes them single shared zones (see oneLooper's comment above
 // for why referencing them by bare name from INSIDE the vgroup-wrapped par
 // failed to do this).
-// clearAll/speedMul are now genuine process() SIGNAL inputs (see the ROOT
+// clearAll/effSpeed are now genuine process() SIGNAL inputs (see the ROOT
 // CAUSE comment above oneLooper) -- plain wires, not UI-declared button()/
 // hslider() boxes, so par()'s per-instance code generation cannot duplicate
 // them into 20 separate zones. They are broadcast identically to every
-// oneLooper instance the same way prevFiltIn already is.
-loopEngine(in, prevFiltIn, clearAll, speedMul) = in, (par(i, NLOOPERS, vgroup("looper%2i", oneLooper(in, prevFiltIn, clearAll, speedMul))) :> _);
+// oneLooper instance the same way prevFiltIn already is. effSpeed REPLACES
+// the old speedMul: it is audio_thread.cpp's precomputed product of the
+// manual half/double-speed multiplier AND the Link-tempo-driven ratio
+// (recordedBpm/currentLinkBpm), matching looper's
+// `effectiveRate = m_playRate * g_globalSpeedMul` exactly (see top-of-file
+// comment) -- one combined signal, since Faust's read accumulator only ever
+// needs the FINAL rate, not the two factors separately.
+loopEngine(in, prevFiltIn, clearAll, effSpeed) = in, (par(i, NLOOPERS, vgroup("looper%2i", oneLooper(in, prevFiltIn, clearAll, effSpeed))) :> _);
 
-process(in, prevFiltIn, clearAll, speedMul) = loopEngine(in, prevFiltIn, clearAll, speedMul);   // (dry, loopSum) — two outputs, see aloop.dsp's fold mix
+process(in, prevFiltIn, clearAll, effSpeed) = loopEngine(in, prevFiltIn, clearAll, effSpeed);   // (dry, loopSum) — two outputs, see aloop.dsp's fold mix

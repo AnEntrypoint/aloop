@@ -115,6 +115,26 @@ LinkBridge* g_link = nullptr;     // Ableton Link (tempo/phase); read each block
 // ADR-013) and published here for the MIDI thread to reach.
 aloop::Sampler* g_sampler = nullptr;
 
+// TRUE varispeed state (see dsp/loop.dsp's top-of-file comment + the
+// "Varispeed Link sync" block below). Mirrors looper's split exactly:
+// g_globalSpeedMul (manual half/double-speed, PURELY button-driven,
+// confirmed via ../looper's loopMachine.cpp:530-545) is entirely separate
+// from the Link-tempo-driven per-phrase ratio (looper's per-clip
+// m_playRate = m_nativeBlocks/currentMasterBlocks, Looper.h:301-305).
+// aloop shares ONE master phrase length across the whole rig (apc_grid.cpp's
+// cmd/master_len, unlike looper's per-clip m_nativeBlocks -- see
+// deriveTempoBpm's own comment for why aloop's design is already
+// rig-wide-shared, not per-looper), so the architecturally-correct port is a
+// SINGLE shared "recorded BPM" (the tempo implied by cmd/master_len at the
+// moment it was established) tracked via the SAME ParamStore mechanism as
+// cmd/master_len itself (see apc_grid.cpp's applyRecPlayCycle, which now
+// also writes cmd/recorded_bpm alongside cmd/master_len) rather than a
+// per-looper value or a private static local here -- keeps a single source
+// of truth reachable from both the control thread (which establishes it)
+// and this audio thread (which reads it every block below).
+float g_manualSpeedMul = 1.0f;   // 1.0 / 0.5 / 2.0, set by the halfspeed/doublespeed block
+
+
 // Map a control-map TARGET name ("looper3/rec", "fx/hp") to the Faust zone label
 // the home stack exposes. Loopers use a 2-digit index (looper03/rec); effects use
 // the chain's slider labels. Returns "" if there is no matching zone.
@@ -283,7 +303,13 @@ static void* worker(void*) {
     // clearBuf/speedBuf are filled with a CONSTANT value across the block
     // each iteration below (these are momentary step commands, not
     // audio-rate signals -- no interpolation needed, matching the previous
-    // hslider/button zones' own block-constant behavior).
+    // hslider/button zones' own block-constant behavior). speedBuf now
+    // carries TRUE varispeed's combined effSpeed = manualSpeedMul *
+    // linkSpeedRatio (see the "Varispeed Link sync" block below), matching
+    // looper's `effectiveRate = m_playRate * g_globalSpeedMul`
+    // (loopClipUpdate.cpp:76) -- one signal is all loop.dsp's read
+    // accumulator needs, so the two factors are combined here rather than
+    // threading a 5th process() input.
     std::vector<float> clearBuf((size_t)N, 0.0f);
     std::vector<float> speedBuf((size_t)N, 1.0f);
     float* fins[4]  = { fin.data(), prevFiltOut.data(), clearBuf.data(), speedBuf.data() };
@@ -507,11 +533,23 @@ static void* worker(void*) {
                 // resetting masterLoopBlocks to 0 (loopMachine.cpp:325-330,
                 // 411-412) so a cleared rig's first new loop defines a new
                 // grid rather than inheriting the previous session's length.
-                if (clearAllHeld) g_params->setByName("cmd/master_len", 0.0f);
-                float speed = 1.0f;
-                if (g_params->get("cmd/halfspeed")   > 0.5f) speed = 0.5f;
-                if (g_params->get("cmd/doublespeed") > 0.5f) speed = 2.0f;
-                std::fill(speedBuf.begin(), speedBuf.end(), speed);
+                if (clearAllHeld) {
+                    g_params->setByName("cmd/master_len", 0.0f);
+                    g_params->setByName("cmd/recorded_bpm", 0.0f);   // see apc_grid.cpp's "TRUE varispeed" comment
+                }
+                // manualSpeedMul: PURELY the manual half/double-speed button
+                // state (1.0/0.5/2.0) -- confirmed via reading looper's real
+                // g_globalSpeedMul (loopMachine.cpp:530-545): it is set ONLY
+                // by these two buttons, never touched by Link/tempo code.
+                // Combined with the Link-driven ratio (g_linkSpeedRatio,
+                // computed in the "Varispeed Link sync" block below, which
+                // runs AFTER this) into the single effSpeed signal pushed to
+                // loop.dsp's read accumulator -- see speedBuf's declaration
+                // comment above for why this is one combined signal.
+                float manualSpeedMul = 1.0f;
+                if (g_params->get("cmd/halfspeed")   > 0.5f) manualSpeedMul = 0.5f;
+                if (g_params->get("cmd/doublespeed") > 0.5f) manualSpeedMul = 2.0f;
+                g_manualSpeedMul = manualSpeedMul;
                 // NOTE: LOOP_IMMEDIATE / SET_LOOP_START / CLEAR_LOOP_START (mark-point
                 // restart) are NOT wired — they need an addressable read head, which
                 // the Faust feedback-delay looper does not have (a preserve-on-hold
@@ -612,6 +650,46 @@ static void* worker(void*) {
                 // matching looper's masterLoopBlocks==0 empty-rig case).
                 float masterLen = g_params->get("cmd/master_len", 0.0f);
                 fui.set("MLB", masterLen > 0.0f ? (masterLen / (float)N) : 0.0f);
+            }
+            // TRUE varispeed: Link-tempo-driven READ RATE (distinct from the
+            // loop-LENGTH resize above). Ports looper's real per-clip formula
+            // (Looper.h:301-305's setMasterBlocks: `m_playRate =
+            // m_nativeBlocks / newMaster`, recomputed ABSOLUTELY every tempo
+            // change, never accumulated -- confirmed via reading
+            // C:\dev\looper\Looper.h and loopMachine.cpp:637-663 this
+            // session) -- equivalently `recordedBpm / currentLinkBpm`, since
+            // both nativeBlocks and newMaster are themselves derived from a
+            // BPM via the same block-length formula. aloop shares ONE master
+            // phrase across the whole rig (unlike looper's per-clip
+            // tracking, see g_manualSpeedMul's declaration comment), so this
+            // is a SINGLE ratio applied to every looper, not a per-looper
+            // value -- architecturally correct given aloop's existing
+            // shared-phrase design, not a simplification of looper's.
+            // "cmd/recorded_bpm" is written by apc_grid.cpp's
+            // applyRecPlayCycle at the SAME moment cmd/master_len is first
+            // established (deriveTempoBpm(masterLenSamples/sampleRate)),
+            // exactly mirroring looper's m_nativeBlocks being locked in at
+            // _finishRecording and never changing while the clip lives.
+            // linkSpeedRatio stays 1.0 (no-op) whenever there's no recorded
+            // phrase yet OR Link isn't actively driving length this block --
+            // an unsynced/no-Link session must not silently alter pitch.
+            float linkSpeedRatio = 1.0f;
+            if (linkDrivingLength && g_params && g_link) {
+                float recordedBpm = g_params->get("cmd/recorded_bpm", 0.0f);
+                LinkSnapshot ls2 = g_link->audioRead();
+                if (recordedBpm > 1.0f && ls2.bpm > 1.0) {
+                    linkSpeedRatio = recordedBpm / (float)ls2.bpm;
+                }
+            }
+            // effSpeed = manualSpeedMul * linkSpeedRatio, matching looper's
+            // effectiveRate = m_playRate * g_globalSpeedMul exactly (see
+            // speedBuf's declaration comment above). Filled as a CONSTANT
+            // across the block -- both factors are momentary/slow-changing
+            // (button state, once-per-tempo-change ratio), not audio-rate.
+            {
+                float effSpeed = g_manualSpeedMul * linkSpeedRatio;
+                std::fill(speedBuf.begin(), speedBuf.end(), effSpeed);
+                g_telem.effSpeed = effSpeed;
             }
             // Deinterleave the stereo wire -> mono DSP input: average the wire
             // channels (mono content is identical L/R; a stereo source is summed to

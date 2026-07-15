@@ -51,6 +51,7 @@ void ApcGrid::bindAll(ParamStore& ps) {
     ps.bind("fx/monitorfold");
     ps.bind("fx/formant");
     ps.bind("cmd/master_len", 0.0f);   // local master-phrase length (samples), 0 = none established yet
+    ps.bind("cmd/recorded_bpm", 0.0f); // TRUE varispeed: BPM the shared phrase was recorded at, 0 = none established yet
 }
 
 static void setLooper(ParamStore& ps, int looper, const char* field, float v) {
@@ -164,6 +165,22 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             if (lenSamples > kMaxLoopSamples) lenSamples = kMaxLoopSamples;
             m_masterLenSamples = lenSamples;
             ps.setByName("cmd/master_len", (float)m_masterLenSamples);
+            // TRUE varispeed: lock in the BPM this shared phrase was
+            // established at, exactly at the same moment cmd/master_len
+            // itself is first established -- mirrors looper's
+            // m_nativeBlocks being set ONCE at _finishRecording and never
+            // changing while the clip lives (Looper.h:317's field comment,
+            // loopClip.cpp:268-271). audio_thread.cpp's "Varispeed Link
+            // sync" block reads this back as cmd/recorded_bpm to compute
+            // linkSpeedRatio = recordedBpm/currentLinkBpm every block a
+            // Link session is actively driving length, so an
+            // already-recorded loop stays pitch-locked to the tempo it was
+            // captured at even as Link's tempo moves. aloop shares ONE
+            // master phrase across the whole rig (unlike looper's per-clip
+            // m_nativeBlocks), so this is a single shared value, consistent
+            // with cmd/master_len's own existing shared-rig design.
+            double recordedSeconds = (double)m_masterLenSamples / (double)kSampleRate;
+            ps.setByName("cmd/recorded_bpm", (float)deriveTempoBpm(recordedSeconds));
             // Propagate the newly-established phrase to every looper (this
             // one included) so a second, third, ... looper recorded next
             // joins the SAME shared grid, matching looper's single
@@ -435,6 +452,11 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps) {
     if (!anyHasContent && m_masterLenSamples != 0) {
         m_masterLenSamples = 0;
         ps.setByName("cmd/master_len", 0.0f);
+        // cmd/recorded_bpm rides with cmd/master_len (see the "TRUE
+        // varispeed" comment where it's established) -- an emptied rig must
+        // not leave a stale recorded-tempo reference for the NEXT phrase's
+        // Link-ratio computation.
+        ps.setByName("cmd/recorded_bpm", 0.0f);
     }
     for (int p = 0; p < kPresetCount; p++) {
         if (!m_presetHeld[p] || m_presetCaptured[p]) continue;
@@ -583,6 +605,7 @@ void ApcGrid::onClearAll(bool held, ParamStore& ps) {
     // rather than depending on a race with the audio thread's next block).
     m_masterLenSamples = 0;
     ps.setByName("cmd/master_len", 0.0f);
+    ps.setByName("cmd/recorded_bpm", 0.0f);   // see the "TRUE varispeed" comment above
 }
 void ApcGrid::onKeybedNoteOn(int note, ParamStore& ps, Sampler* sampler) {
     // apcKey25.cpp:103-125: the sampler takes the keys when it has content.
