@@ -98,6 +98,10 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
         m_looperHasContent[looper] = true;
         m_looperPlaying[looper] = true;
         setLooper(ps, looper, "play", 1.0f);
+        // TEMPORARY diagnostic (tracked for removal): see ARM's matching diag7.
+        fprintf(stderr, "[diag7] FINISH looper=%d now_ms=%u recordStart=%u elapsedMs=%u masterLen(before)=%ld erase_zone=%.2f\n",
+                looper, now_ms, m_recordStartMs[looper], now_ms - m_recordStartMs[looper], m_masterLenSamples,
+                ps.get("looper" + std::to_string(looper) + "/erase", -1.0f));
         // WITNESSED live + confirmed by cross-codebase research against
         // ../looper (loopClip.cpp:64-66,219,243): looper's masterLoopBlocks
         // (the shared phrase length ALL loopers quantize to) is established
@@ -218,6 +222,15 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
         setLooper(ps, looper, "rec", 1.0f);   // ARM: start recording -- next press finishes it
         m_looperRecording[looper] = true;
         m_recordStartMs[looper] = now_ms;
+        // TEMPORARY diagnostic (tracked for removal): re-investigating "the
+        // second time we try its still empty" after the master-phrase-reset
+        // fix (67c10a8) -- checking whether a pending per-looper erase
+        // release (m_looperEraseReleaseAt) is still active when a fresh ARM
+        // fires, which could mean the erase gate (wipe=1) is still held
+        // during part of this new recording's window.
+        fprintf(stderr, "[diag7] ARM looper=%d now_ms=%u eraseReleaseAt=%u (pending=%d) masterLen=%ld cmd_masterlen=%.0f erase_zone=%.2f\n",
+                looper, now_ms, m_looperEraseReleaseAt[looper], (int)(m_looperEraseReleaseAt[looper] != 0),
+                m_masterLenSamples, ps.get("cmd/master_len", -1.0f), ps.get("looper" + std::to_string(looper) + "/erase", -1.0f));
     } else if (m_looperPlaying[looper]) {
         setLooper(ps, looper, "play", 0.0f);
         m_looperPlaying[looper] = false;
