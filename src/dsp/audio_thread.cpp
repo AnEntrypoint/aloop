@@ -766,7 +766,34 @@ static void* worker(void*) {
                 } else {
                     masterPhaseSamples = 0.0;   // no phrase established yet -- hold at 0
                 }
-                std::fill(masterPhaseBuf.begin(), masterPhaseBuf.end(), (float)masterPhaseSamples);
+                // WITNESSED live: "loops now sound bitcrushed" -- ROOT CAUSE:
+                // std::fill() previously pushed the SAME block-start value
+                // into every one of the N samples in masterPhaseBuf, exactly
+                // like the genuinely block-constant clearBuf/speedBuf
+                // (correct for those, since they're momentary/slow-changing
+                // commands, not per-sample position data). But
+                // dsp/loop.dsp's absPos formula treats masterPhase as this
+                // looper's actual READ POSITION at effSpeed==1.0 -- holding
+                // it constant for a whole 64-sample block meant readIdx0/
+                // readIdx1 never advanced WITHIN a block, only jumping 64
+                // samples at each block boundary: a stepped/aliased readback
+                // pattern, audibly indistinguishable from bitcrushing. Fix:
+                // ramp masterPhaseBuf smoothly WITHIN the block (each sample
+                // i gets masterPhaseSamples + i, wrapped at masterLen), so
+                // absPos genuinely advances one sample per sample exactly
+                // like the old self-integrating readPos did -- masterPhase
+                // is a real per-sample POSITION signal now, not a
+                // momentary/step control like clearBuf/speedBuf.
+                if (masterLen > 0.0f) {
+                    for (int i = 0; i < N; i++) {
+                        double p = masterPhaseSamples + (double)i;
+                        p = std::fmod(p, (double)masterLen);
+                        if (p < 0.0) p += masterLen;
+                        masterPhaseBuf[(size_t)i] = (float)p;
+                    }
+                } else {
+                    std::fill(masterPhaseBuf.begin(), masterPhaseBuf.end(), 0.0f);
+                }
             }
             // Deinterleave the stereo wire -> mono DSP input: average the wire
             // channels (mono content is identical L/R; a stereo source is summed to
