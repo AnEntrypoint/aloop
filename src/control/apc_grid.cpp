@@ -574,6 +574,23 @@ void ApcGrid::onClearAll(bool held, ParamStore& ps) {
         // every looper's play gate here, matching what m_looperPlaying=false
         // claims is already true.
         setLooper(ps, lp, "play", 0.0f);
+        // ROOT CAUSE FOUND LIVE (this session, real hardware): CLEAR_ALL
+        // pressed WHILE a looper was still mid-recording (rec=1) left that
+        // looper's "rec" Faust zone stuck at 1 FOREVER -- this loop resets
+        // m_looperRecording[lp]=false (the C++ shadow only) but, exactly the
+        // same class of bug the play-gate fix above already documents, never
+        // told the Faust DSP itself to stop recording. dsp/loop.dsp's
+        // `hold = delayed * (1.0 - recN) * (1.0 - wipe)` is gated to ZERO
+        // for as long as recN stays 1 -- so a looper whose rec zone got stuck
+        // this way can never play back ANY recirculated loop content again,
+        // even after a fresh, otherwise-correct ARM/FINISH cycle re-records
+        // it (the NEXT armEdge does reset writeIdx/readPos/wrapLen, but nothing
+        // in this clear path ever unstuck the STALE rec=1 zone if the clear
+        // happened to land while recording was in progress) -- matching
+        // exactly the reported "loops don't play, only passthrough" symptom
+        // whenever a clear/interrupt lands mid-recording. Explicitly stop
+        // every looper's rec gate here too, matching play's fix above.
+        setLooper(ps, lp, "rec", 0.0f);
         // ROOT CAUSE FOUND + FIXED at the DSP level (dsp/loop.dsp), 2nd
         // generation fix: the "clear"/"speed" engine-global controls were
         // originally referenced by bare name INSIDE oneLooper, which par(i,
