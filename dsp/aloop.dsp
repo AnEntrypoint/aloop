@@ -141,21 +141,21 @@ glitchFold = hslider("GLITCHFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
 //     when a prior fix removed loopSum from the mix entirely instead of
 //     just re-gating it; the glitch case reuses the identical gating shape
 //     to avoid repeating that mistake.
-//     Three total program outputs, in this order:
+//     Four total program outputs, in this order:
 //   1. finalOut  -- the real audible/wire signal (fouts[0] in audio_thread.cpp)
-//   2. rawGlitchTap -- microStage's own post-glitch signal (fouts[1]), so
-//      audio_thread.cpp can fold the stutter into next block's DEDICATED
-//      record-only glitchIn input (this program's second process() input,
-//      below), making glitch content recordable into a new loop without ever
-//      re-entering `fx`/microStage (matching loopMachine.cpp:806-833's
-//      "stutter becomes BOTH the audible output and the record source", but
-//      via a record-only tap rather than feeding back into `in`/dry -- see
-//      the GLITCH RECORDABILITY comment at the top of this file for why).
+//   2. rawGlitchTap -- microStage's own post-glitch signal (fouts[1]); kept
+//      as a structural output but no longer consumed for record-folding
+//      (see RECORD-ALWAYS-EFFECTED below -- recordTap/prevFiltIn superseded
+//      the old glitchIn-only mechanism this tap used to feed).
 //   3. rawLoopSum -- the loop engine's own output (fouts[2]), so the native
 //      SHIFT-fold mix (see top-of-file comment) can fold it into next
 //      block's input, matching looper's m_input_buffer += m_output_buffer*fg
 //      (loopMachine.cpp:738) -- the RAW loop output, not the fully-effected
 //      wet signal (which would compound effects every block the fold is held).
+//   4. recordTap -- filtOut tapped a second time (fouts[3]), so
+//      audio_thread.cpp can snapshot it into prevFiltOut for next block's
+//      DEDICATED record-only input (see RECORD-ALWAYS-EFFECTED below and
+//      loop.dsp's oneLooper) without touching the live fout buffer.
 // directFoldSuppress: the direct raw-loopSum term is suppressed whenever
 // EITHER SHIFT (monitorFold) OR glitch (glitchFold) is fading its own
 // fx-routed copy of loop content IN via `dry` (audio_thread.cpp's native
@@ -165,15 +165,57 @@ glitchFold = hslider("GLITCHFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
 // control alone fully suppresses the direct term at its own gain, and both
 // held together still bottoms out at (1-1)*(1-1)=0 -- never negative, never
 // double-counted -- matching the native side's single clamped fin[] fold.
-mixAndFx(dry, loopSum) = filtOut, rawGlitchTap, loopSum
+// RECORD-ALWAYS-EFFECTED (4th output, filtOut tapped again as recordTap):
+// user-confirmed requirement -- recording must ALWAYS capture the fully
+// effected signal (through pitch/delay/reverb/microrepeat/filters), not the
+// raw pre-fx input, unconditionally (not just under SHIFT). Cannot wire
+// filtOut directly into loop.dsp's record path THIS block (loop's record
+// term runs BEFORE fx even executes -- `process(in,...) = loop(in,...) :
+// mixAndFx`, loop first) and cannot feed it back into `in`/dry either (would
+// re-enter `fx` AGAIN next block, the exact whine bug class dafa945 fixed
+// for glitch specifically, now an even worse surface covering every stage).
+// So this reuses the IDENTICAL native one-block-lag technique as
+// prevGlitchTap/prevLoopSum: filtOut is tapped a SECOND time here as a
+// dedicated 4th process() output (recordTap, numerically identical to
+// output 1, just duplicated so audio_thread.cpp can snapshot it into
+// prevFiltOut without touching the live audible path), fed back next block
+// as loop.dsp's new record-only input (see loop.dsp's oneLooper: record =
+// prevFiltIn * recN). Since SHIFT-fold and GLITCH-fold both already put loop
+// content into `dry` BEFORE this block's `fx` call (audio_thread.cpp's
+// prevLoopSum fold into fin), that folded content is ALREADY part of THIS
+// block's filtOut/recordTap -- so a SHIFT-held or glitch-held recording
+// captures effected loop content automatically via this SAME single tap,
+// no separate term needed.
+mixAndFx(dry, loopSum) = filtOut, rawGlitchTap, loopSum, recordTap
 with {
     fxOuts = dry : fx;
     directFoldSuppress = (1.0-monitorFold) * (1.0-glitchFold);
     filtOut = (fxOuts : (_, !)) + loopSum*directFoldSuppress;
     rawGlitchTap = fxOuts : (!, _);
+    recordTap = filtOut;
 };
-// glitchIn: previous block's post-glitch tap (audio_thread.cpp's prevGlitchTap),
-// fed ONLY into loop's dedicated record-only input (see loop.dsp's oneLooper
-// comment) -- never mixed into `in`/dry, so it cannot re-enter `fx`/microStage
-// on this or any later block. Second process() input.
-process(in, glitchIn) = loop(in, glitchIn) : mixAndFx;
+// prevFiltIn: previous block's fully-effected mix output (audio_thread.cpp's
+// prevFiltOut), fed ONLY into loop's dedicated record-only input (see
+// loop.dsp's oneLooper comment) -- never mixed into `in`/dry, so it cannot
+// re-enter `fx` on this or any later block. This REPLACES the old glitchIn
+// input: prevFiltIn already contains post-glitch content one block later
+// (effects_runtime.dsp's stage order has microStage upstream of
+// filterStage, so microStage's output is already baked into filtOut),
+// making a separate glitch-only term redundant/double-counting. Second
+// process() input.
+//
+// clearAll/speedMul: 3rd and 4th process() inputs, the momentary global
+// commands (hardware CLEAR_ALL, HALFSPEED/DOUBLESPEED). Previously declared
+// as Faust UI zones (button("clear")/hslider("speed", ...)) inside loop.dsp,
+// which par()'s per-looper replication silently duplicated into 20 separate
+// zones even after being "hoisted" outside the vgroup textually -- see
+// loop.dsp's ROOT CAUSE comment above oneLooper for the full trace (Faust's
+// par() is a code-generating combinator: an expression passed as an argument
+// into a replicated block gets re-elaborated, UI declaration included, at
+// each of the 20 call sites). Routed here as plain signal inputs instead,
+// the same technique as prevFiltIn -- audio_thread.cpp pushes the computed
+// clear/speed values directly into fins[2]/fins[3] every block (constant
+// across the block, no interpolation needed since they are momentary step
+// values, not audio-rate signals), and they reach every looper identically
+// via loop.dsp's par() without ever being independently instantiated.
+process(in, prevFiltIn, clearAll, speedMul) = loop(in, prevFiltIn, clearAll, speedMul) : mixAndFx;

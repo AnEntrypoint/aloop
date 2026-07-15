@@ -41,43 +41,63 @@ NLOOPERS = 20;            // 20 independent loopers (the hardware setup)
 // Global controls (shared across all loopers): clear wipes every loop; speedMul
 // scales the effective loop length for the momentary half/double-speed commands.
 //
-// ROOT CAUSE FIXED HERE: these MUST be computed ONCE, outside the par(i,
-// NLOOPERS, vgroup(...)) instantiation of oneLooper below, and threaded IN as
-// ordinary function parameters -- NOT referenced by bare name from inside
-// oneLooper's own body. WITNESSED via a native startup diagnostic (dumping
-// every FaustUI zone containing "speed"/"clear"): declaring clearAll/speedMul
-// at file scope but only ever REFERENCING them (not passing them as
-// parameters) inside oneLooper, which par(...) instantiates 20 times each
-// wrapped in its own vgroup("looper%2i"), does NOT produce one shared zone --
-// Faust has no notion of "the same UI element" reused across separate
-// expression instances; each textual button()/hslider() occurrence is its
-// own box, so the vgroup wrapping produced 20 SEPARATE zones ("looper
-// 0/clear" .. "looper19/clear", "looper 0/speed" .. "looper19/speed").
-// audio_thread.cpp's fui.set("clear", ...) / fui.set("speed", ...) (a bare,
-// unqualified name) resolved via FaustUI::set's first-match suffix search,
-// which only ever found ONE of the 20 duplicated zones -- so a "half/double
-// speed" button press only ever changed ONE looper's playback rate (silently
-// inaudible unless that one specific looper happened to be playing), and
-// cmd/clearall's DSP-side wipe only ever hit ONE looper's ring (the C++ side
-// had to separately erase every looper by its own unambiguous "looperN/erase"
-// name to compensate -- see apc_grid.cpp's onClearAll). Passing clearAll/
-// speedMul as parameters (computed once, above/outside the par) means every
-// oneLooper instance receives the SAME already-evaluated signal, with no
-// per-instance re-declaration -- exactly one real UI zone each, addressable
-// by its plain top-level name, matching docs/COMMAND-SURFACE.md's documented
-// "engine-global" intent.
-clearAllGlobal = button("clear");
-speedMulGlobal = hslider("speed", 1.0, 0.25, 4.0, 0.001);   // 0.5 = half, 2.0 = double
+// ROOT CAUSE (2nd generation, THE REAL ONE): 382e775 hoisted clearAllGlobal/
+// speedMulGlobal's button()/hslider() DECLARATIONS to file scope, outside the
+// par(i, NLOOPERS, vgroup(...)) textually, and threaded them into oneLooper
+// as ordinary function parameters -- but this did NOT stop Faust's compiler
+// from still emitting 20 separate UI zones. WITNESSED via inspecting the
+// generated C++ (build/loop.cpp): `grep -c '"speed"'` and `grep -c '"clear"'`
+// each returned 20, and every occurrence is INSIDE its own "looper N" vgroup
+// (`openVerticalBox("looper 0"); ... addHorizontalSlider("speed", ...)`),
+// exactly like before the "fix". Root cause: Faust's par(...) combinator is
+// a CODE-GENERATING combinator, not a runtime loop -- passing an expression
+// (clearAllGlobal, itself a button() box) as an argument to oneLooper, which
+// par() instantiates 20 times, means that expression is substituted/inlined
+// at each of the 20 call sites. Each inlined copy of the button()/hslider()
+// box gets its own UI declaration, and since the call site is lexically
+// inside vgroup("looper%2i"), each inlined declaration lands inside that
+// specific looper's group too. Hoisting the TEXT of the declaration outside
+// the par loop doesn't matter: what determines UI-zone identity in Faust is
+// where the box is ELABORATED (i.e. every place the expression is used),
+// not where it is textually written once in the source. There is no Faust
+// mechanism for "declare this UI control once, reference the same zone from
+// many call sites" when the reference crosses a par() replication boundary --
+// the language does not have that concept; par() genuinely duplicates
+// whatever signal graph (including UI primitives) sits in its body.
+//
+// REAL FIX: stop declaring clear/speed as Faust UI controls (hslider/button)
+// at all. Make them plain SIGNAL inputs to process() instead -- exactly the
+// same technique already proven for prevFiltIn below (a native block-rate
+// value pushed in from audio_thread.cpp's fins[] array, never a UI zone).
+// A signal input threaded through par() is NOT re-elaborated per instance
+// the way a UI-primitive box is -- it's just a wire, so every oneLooper
+// instance genuinely reads the exact same sample-accurate value every block,
+// with no zone-lookup, no FaustUI::set() suffix-matching, and no possibility
+// of the compiler duplicating it. audio_thread.cpp now writes cmd/clearall
+// and the computed speed multiplier directly into fins[2]/fins[3] (constant
+// across the block) instead of calling fui.set("clear"/"speed", ...).
 
-// glitchIn: previous block's post-glitch (microrepeat) tap, native one-block-lag
-// fold-in (see audio_thread.cpp's prevGlitchTap + dsp/aloop.dsp's top-of-file
-// comment on why this is a DEDICATED record-only input rather than being
-// folded into `in`/`fin`: adding it to the engine's live/dry input would make
-// it flow into `fx` again next block (re-entering microStage → the WITNESSED
-// feedback whine, see audio_thread.cpp's "REVERTED here" comment). Routed
-// ONLY into the record capture term below, so glitch content becomes
-// recordable into a new loop without ever being reprocessed by microStage.
-oneLooper(in, glitchIn, clearAll, speedMul) = out : attachLevel
+// prevFiltIn: previous block's FULLY-EFFECTED mix output (audio_thread.cpp's
+// prevFiltOut, dsp/aloop.dsp's recordTap/4th process() output), native
+// one-block-lag fold-in -- the same proven technique as the old glitchIn tap
+// (see dsp/aloop.dsp's top-of-file comment for why this is a DEDICATED
+// record-only input rather than being folded into `in`/`fin`: adding it to
+// the engine's live/dry input would make it flow into `fx` again next block,
+// re-entering every stage -- the WITNESSED feedback whine, see
+// audio_thread.cpp's "REVERTED here" comment, now would apply to the WHOLE
+// fx chain not just microStage). Routed ONLY into the record capture term
+// below: recording now ALWAYS captures the fully-effected signal
+// (pitch/delay/reverb/microrepeat/filters), matching the user's explicit
+// requirement ("all effects should record"), not just raw dry input.
+// REPLACES the old (in + glitchIn) composition entirely -- `in` (raw pre-fx
+// input) is no longer part of the record term at all, since prevFiltIn one
+// block later already contains everything `in` would have contributed (this
+// block's `in` becomes part of next block's filtOut via the normal fx path),
+// and the old glitchIn term is redundant now that prevFiltIn already carries
+// post-glitch content (effects_runtime.dsp: microStage feeds both
+// filterStage and rawGlitchTap, so microStage's output is upstream of and
+// already baked into filtOut/recordTap).
+oneLooper(in, prevFiltIn, clearAll, speedMul) = out : attachLevel
 with {
     recN  = button("rec");
     playN = checkbox("play");
@@ -93,12 +113,19 @@ with {
     step(loop) = record + hold
     with {
         delayed = de.fdelay(MAXLEN, effLen, loop);
-        // record: capture the live input PLUS the previous block's glitch tap,
-        // so a loop armed while microrepeat is engaged captures the STUTTERED
-        // audio (matching looper's "stutter becomes ... the record source",
-        // loopMachine.cpp:806-833) without microStage ever seeing its own
-        // output again (glitchIn never touches `in`/dry, only this record sum).
-        record  = (in + glitchIn) * recN;
+        // record: capture the PREVIOUS block's fully-effected mix
+        // (prevFiltIn), one-block-lag, so every recording is ALWAYS
+        // effected (pitch/delay/reverb/microrepeat/filters) -- matching the
+        // user's explicit requirement, not just live input passed through
+        // raw. This also captures glitch/microrepeat content (matching
+        // looper's "stutter becomes ... the record source",
+        // loopMachine.cpp:806-833) since prevFiltIn already contains
+        // microStage's output one block later, and captures SHIFT/glitch
+        // -held loop content too, since the native fold already routes that
+        // content through `fx` into filtOut before this tap is taken.
+        // prevFiltIn never touches `in`/dry, only this record term, so it
+        // structurally cannot re-enter `fx` on any later block.
+        record  = prevFiltIn * recN;
         // else hold/recirculate — UNLESS wiped, which zeroes the loop.
         hold    = delayed * (1.0 - recN) * (1.0 - wipe);
     };
@@ -134,15 +161,21 @@ with {
 // vgroup label "looper%2i" → Faust substitutes the par index, giving group names
 // "looper 0" … "looper19" (a space for single digits). The native shell's
 // targetToZone normalizes to this exact form so each looper is addressable.
-// Second process() input (glitchIn) is broadcast to every looper's record-only
-// tap (see oneLooper's comment) -- it never appears in the dry-thru output
-// (only `in` does), so the glitch content is recordable but never re-enters
-// the live/dry path (which would flow back into `fx`/microStage next block).
+// Second process() input (prevFiltIn, previous block's fully-effected mix
+// output) is broadcast to every looper's record-only tap (see oneLooper's
+// comment) -- it never appears in the dry-thru output (only `in` does), so
+// the fully-effected signal is recordable but never re-enters the live/dry
+// path (which would flow back into `fx` next block).
 // clearAllGlobal/speedMulGlobal are evaluated ONCE here, OUTSIDE any vgroup,
 // then passed as ordinary parameters into every oneLooper instance -- this is
 // what actually makes them single shared zones (see oneLooper's comment above
 // for why referencing them by bare name from INSIDE the vgroup-wrapped par
 // failed to do this).
-loopEngine(in, glitchIn) = in, (par(i, NLOOPERS, vgroup("looper%2i", oneLooper(in, glitchIn, clearAllGlobal, speedMulGlobal))) :> _);
+// clearAll/speedMul are now genuine process() SIGNAL inputs (see the ROOT
+// CAUSE comment above oneLooper) -- plain wires, not UI-declared button()/
+// hslider() boxes, so par()'s per-instance code generation cannot duplicate
+// them into 20 separate zones. They are broadcast identically to every
+// oneLooper instance the same way prevFiltIn already is.
+loopEngine(in, prevFiltIn, clearAll, speedMul) = in, (par(i, NLOOPERS, vgroup("looper%2i", oneLooper(in, prevFiltIn, clearAll, speedMul))) :> _);
 
-process(in, glitchIn) = loopEngine(in, glitchIn);   // (dry, loopSum) — two outputs, see aloop.dsp's fold mix
+process(in, prevFiltIn, clearAll, speedMul) = loopEngine(in, prevFiltIn, clearAll, speedMul);   // (dry, loopSum) — two outputs, see aloop.dsp's fold mix

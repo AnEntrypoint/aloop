@@ -22,6 +22,7 @@
 #include <atomic>
 #include <vector>
 #include <memory>
+#include <algorithm>
 
 // ALSA is present in the build container (see build-binary.yml). Guarded so the
 // design compiles for review even where ALSA headers are absent; the real device
@@ -222,7 +223,21 @@ static void* worker(void*) {
     // Always folded in (not SHIFT-gated) since glitch is a momentary
     // performance effect the user explicitly engages via its own latch
     // button, unlike the fold which is deliberately SHIFT-held-only.
-    std::vector<float> prevGlitchTap((size_t)N, 0.0f);
+    // Previous block's FULLY-EFFECTED mix output (pitch/delay/reverb/
+    // microrepeat/filters, aloop.dsp's 4th process() output "recordTap"),
+    // same one-block-lag native-mix technique as prevLoopSum (and the now-
+    // removed prevGlitchTap, which this supersedes -- see below)
+    // above. User-confirmed requirement: recording must ALWAYS capture the
+    // fully-effected signal, not raw pre-fx input, unconditionally (not just
+    // under SHIFT). Feeds loop.dsp's record-only input directly (REPLACING
+    // the old glitchIn wiring -- prevFiltOut already contains post-glitch
+    // content one block later since microStage is upstream of filterStage in
+    // effects_runtime.dsp, making a separate glitch term redundant). Never
+    // added into `fin`/dry -- only passed as its own dedicated Faust input --
+    // so it structurally cannot re-enter `fx` on any later block (the exact
+    // whine bug class dafa945 fixed for glitch specifically, now would be a
+    // worse surface covering the whole fx chain if done wrong).
+    std::vector<float> prevFiltOut((size_t)N, 0.0f);
 
     // Instantiate the Faust home stack (loop engine + effects). Its compute()
     // runs the whole home DSP per block — the loop record/play + the effects.
@@ -245,20 +260,45 @@ static void* worker(void*) {
     AloopLoopDsp& faustHome = *faustHomePtr;
     faustHome.init((int)g_cfg.sampleRate);
     FaustUI fui; faustHome.buildUserInterface(&fui);
-    // aloop.dsp's process() now takes 2 inputs: (in, glitchIn) -- glitchIn is
-    // the previous block's post-glitch tap, routed to loop.dsp's DEDICATED
-    // record-only input (see loop.dsp's oneLooper + aloop.dsp's top-of-file
-    // GLITCH RECORDABILITY comment) so it can never re-enter `fx`/microStage.
-    float* fins[2]  = { fin.data(), prevGlitchTap.data() };
-    // aloop.dsp's process() now outputs 3 signals: (wet mix, rawGlitchTap,
-    // rawLoopSum) -- two native taps (the loop engine's own raw output, and
-    // microrepeat's own post-glitch/pre-filter output) so the SHIFT-fold AND
-    // the glitch-recordability fold can each feed next block's input without
-    // compounding effects every block they're held (see aloop.dsp's
-    // top-of-file comment).
+    // aloop.dsp's process() now takes 4 inputs: (in, prevFiltIn, clearAll,
+    // speedMul) -- prevFiltIn is the previous block's FULLY-EFFECTED mix
+    // output, routed to loop.dsp's DEDICATED record-only input (see
+    // loop.dsp's oneLooper + aloop.dsp's top-of-file RECORD-ALWAYS-EFFECTED
+    // comment) so it can never re-enter `fx`. clearAll/speedMul are the
+    // momentary global commands (hardware CLEAR_ALL, HALFSPEED/DOUBLESPEED),
+    // pushed as plain constant-per-block signal inputs INSTEAD of Faust UI
+    // zones -- see loop.dsp's ROOT CAUSE comment above oneLooper: a UI
+    // control (button()/hslider()) passed as an argument into oneLooper,
+    // which par() instantiates 20 times, gets re-elaborated (UI declaration
+    // included) at each of the 20 call sites, silently producing 20
+    // DUPLICATE zones even when the declaration text is hoisted outside the
+    // par/vgroup -- WITNESSED via the generated C++ (build/loop.cpp):
+    // `grep -c '"speed"'`/`'"clear"'` both returned 20, each occurrence
+    // still inside its own "looper N" vgroup, meaning the 382e775 "fix" was
+    // cosmetic in the .dsp source and never actually collapsed to one zone,
+    // which is why half/double-speed and clear-all kept only affecting one
+    // of 20 loopers even after that commit. A signal input threaded through
+    // par() is just a wire (no UI primitive to duplicate), so every looper
+    // now genuinely reads the identical sample-accurate value every block.
+    // clearBuf/speedBuf are filled with a CONSTANT value across the block
+    // each iteration below (these are momentary step commands, not
+    // audio-rate signals -- no interpolation needed, matching the previous
+    // hslider/button zones' own block-constant behavior).
+    std::vector<float> clearBuf((size_t)N, 0.0f);
+    std::vector<float> speedBuf((size_t)N, 1.0f);
+    float* fins[4]  = { fin.data(), prevFiltOut.data(), clearBuf.data(), speedBuf.data() };
+    // aloop.dsp's process() now outputs 4 signals: (wet mix, rawGlitchTap,
+    // rawLoopSum, recordTap) -- native taps so the SHIFT-fold, the
+    // glitch-loop-routing fold, AND the always-effected record path can each
+    // feed next block's input without compounding effects every block
+    // they're held (see aloop.dsp's top-of-file comment). recordTap is
+    // numerically identical to fout (output 1) -- duplicated as its own
+    // output solely so it can be snapshotted into prevFiltOut without
+    // touching the live audible fout buffer.
     std::vector<float> rawGlitchTap((size_t)N, 0.0f);
     std::vector<float> rawLoopSum((size_t)N, 0.0f);
-    float* fouts[3] = { fout.data(), rawGlitchTap.data(), rawLoopSum.data() };
+    std::vector<float> rawFiltTap((size_t)N, 0.0f);
+    float* fouts[4] = { fout.data(), rawGlitchTap.data(), rawLoopSum.data(), rawFiltTap.data() };
 #endif
 
 #ifdef ALOOP_HAVE_FAUST_LOOP
@@ -449,13 +489,17 @@ static void* worker(void*) {
                     if (!zone.empty()) fui.set(zone.c_str(), g_params->get(target));
                 });
                 // Global commands (cmd/*) are NOT per-looper Faust zones — they drive
-                // the engine-wide `clear` button and `speed` multiplier directly (the
+                // the engine-wide clear/speed process() SIGNAL INPUTS directly (the
                 // hardware's CLEARALL + momentary HALFSPEED/DOUBLESPEED). Held (value
                 // 1) = active; released = neutral. Double wins if both are somehow
-                // held. These labels are engine-global in loop.dsp (not under a
-                // looper group), so set() resolves them by their plain name.
+                // held. Filled as a CONSTANT across the whole block into
+                // clearBuf/speedBuf (fins[2]/fins[3]) rather than via fui.set() --
+                // see fins[] comment above for why: a UI zone here would be
+                // duplicated 20x by loop.dsp's par() replication (WITNESSED via
+                // generated C++ even after 382e775's earlier attempted fix), a
+                // plain signal input cannot be.
                 bool clearAllHeld = g_params->get("cmd/clearall") > 0.5f;
-                fui.set("clear", clearAllHeld ? 1.0f : 0.0f);
+                std::fill(clearBuf.begin(), clearBuf.end(), clearAllHeld ? 1.0f : 0.0f);
                 // CLEAR_ALL also resets the locally-established phrase length
                 // (cmd/master_len, set by apc_grid.cpp's applyRecPlayCycle) so
                 // the NEXT standalone recording re-establishes a fresh phrase
@@ -467,7 +511,7 @@ static void* worker(void*) {
                 float speed = 1.0f;
                 if (g_params->get("cmd/halfspeed")   > 0.5f) speed = 0.5f;
                 if (g_params->get("cmd/doublespeed") > 0.5f) speed = 2.0f;
-                fui.set("speed", speed);
+                std::fill(speedBuf.begin(), speedBuf.end(), speed);
                 // NOTE: LOOP_IMMEDIATE / SET_LOOP_START / CLEAR_LOOP_START (mark-point
                 // restart) are NOT wired — they need an addressable read head, which
                 // the Faust feedback-delay looper does not have (a preserve-on-hold
@@ -661,23 +705,28 @@ static void* worker(void*) {
                 // engagement instead.
                 fui.set("GLITCHFOLD", glitchFoldGain);
             }
-            // Glitch (microrepeat) recordability: FIXED via a dedicated
-            // record-only Faust input instead of folding into `fin`.
-            // WITNESSED-BROKEN prior approach: feeding prevGlitchTap into
-            // `fin` made it become `dry` for `loop` next block, which then
-            // flows through `fx` (hence microStage) AGAIN every block --
-            // microStage re-processing its own ring-replay output every pass
-            // produced a fast, aliased, high-pitched whine even at the
-            // COARSEST division (DIV=1), confirmed NOT a division-specific
-            // edge case but structural. Fixed instead by giving loop.dsp's
-            // process() a SECOND input (glitchIn, see fins[1] above) that
+            // Recording: ALWAYS captures the fully-effected mix, via a
+            // dedicated record-only Faust input, never by folding into
+            // `fin`. WITNESSED-BROKEN prior approach (this file's history,
+            // originally for glitch alone): feeding a post-fx tap into `fin`
+            // made it become `dry` for `loop` next block, which then flows
+            // through `fx` AGAIN every block -- stages re-processing their
+            // own prior output produced a fast, aliased whine, confirmed
+            // structural, not stage-specific. Fixed by giving loop.dsp's
+            // process() a SECOND input (prevFiltIn, see fins[1] above) that
             // ONLY the record-capture term consumes (dsp/loop.dsp's
-            // oneLooper: record=(in+glitchIn)*recN) -- glitchIn never joins
-            // the dry/live path, so it can never flow back through
-            // `fx`/microStage on this or any later block. prevGlitchTap is
-            // passed directly as fins[1] to compute() below (no fin[i] +=
-            // needed, unlike the SHIFT-fold above, since it targets a
-            // separate Faust input, not `fin` itself).
+            // oneLooper: record = prevFiltIn * recN) -- prevFiltOut never
+            // joins the dry/live path, so it can never flow back through
+            // `fx` on this or any later block. This REPLACES the old
+            // glitch-only prevGlitchTap wiring: prevFiltOut already contains
+            // post-glitch content one block later (microStage feeds both
+            // filterStage and rawGlitchTap in effects_runtime.dsp, so
+            // microStage's output is upstream of and baked into filtOut),
+            // so a separate glitch term would have double-counted glitch
+            // content once both taps were live. prevFiltOut is passed
+            // directly as fins[1] to compute() below (no fin[i] += needed,
+            // unlike the SHIFT-fold above, since it targets a separate Faust
+            // input, not `fin` itself).
             // Time the DSP work vs the block budget → home-core busy % telemetry.
             timespec t0, t1;
             clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -693,11 +742,15 @@ static void* worker(void*) {
             // accumulate a compounding extra pass through the effects chain
             // every block the fold is held.
             prevLoopSum = rawLoopSum;
-            // Snapshot this block's post-glitch/pre-filter tap (rawGlitchTap,
-            // aloop.dsp's second process() output) for NEXT block's
-            // glitch-recordability fold-in (see prevGlitchTap's declaration
-            // comment above).
-            prevGlitchTap = rawGlitchTap;
+            // Snapshot this block's fully-effected mix output (rawFiltTap,
+            // aloop.dsp's 4th process() output) for NEXT block's
+            // always-effected record fold-in (see prevFiltOut's declaration
+            // comment above). Deliberately a SEPARATE tap from fout (never
+            // read fout here) even though they're numerically identical --
+            // keeps the live audible path and the record-tap snapshot
+            // structurally independent, matching the same discipline as
+            // prevLoopSum above.
+            prevFiltOut = rawFiltTap;
             clock_gettime(CLOCK_MONOTONIC, &t1);
             // busy fraction = work / block-period. Smoothed (EWMA) so the readout is
             // stable. Stored on the home-FX core index; a spike toward 100% warns of
