@@ -355,6 +355,27 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps) {
         setLooper(ps, looper, "play", 0.0f);   // stop the Faust play gate too, not just the shadow (see onClearAll's matching fix)
         forgetLooperFromPresets(looper);
     }
+    // WITNESSED live: clearing via per-looper long-hold erase (not the PLAY
+    // button) left m_masterLenSamples/cmd/master_len UNCHANGED -- only
+    // onClearAll ever reset those. So erasing the rig's last remaining
+    // looper this way, then recording again, reused the STALE phrase length
+    // from before the clear (the `else` quantize branch in
+    // applyRecPlayCycle, not the FIRST-establish branch) -- reported as "the
+    // second loop became a continuation of what the first loop was set up
+    // to do instead of starting a new song... cut the loop short and the
+    // start of the loop was not where we started recording, the end was
+    // correct" (a too-long stale length, tapped from the wrong point,
+    // truncated to what was actually just recorded). Mirror onClearAll's
+    // reset here too: once erasing this way leaves NO looper with content
+    // anywhere in the rig, the master phrase is genuinely gone (matching
+    // looper's masterLoopBlocks==0 empty-rig case) and must reset so the
+    // next recording re-establishes a fresh phrase from scratch.
+    bool anyHasContent = false;
+    for (int lp = 0; lp < kLooperCount; lp++) if (m_looperHasContent[lp]) { anyHasContent = true; break; }
+    if (!anyHasContent && m_masterLenSamples != 0) {
+        m_masterLenSamples = 0;
+        ps.setByName("cmd/master_len", 0.0f);
+    }
     for (int p = 0; p < kPresetCount; p++) {
         if (!m_presetHeld[p] || m_presetCaptured[p]) continue;
         if (now_ms - m_presetHoldStart[p] < kHoldEraseMs) continue;
