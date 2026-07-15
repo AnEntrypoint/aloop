@@ -220,11 +220,20 @@ with {
     // its own start (matching the old ring's hard capacity ceiling). Once
     // NOT recording (recN==0, after FINISH), writeIdx's value is dead --
     // nothing writes again until the next armEdge resets it -- so the idle
-    // branch's own modulo-wrapLen behavior is a don't-care, kept simply for
-    // definitional totality (ba.if requires an else-branch expression).
+    // branch just HOLDS the last value (no wrapLen reference at all) rather
+    // than wrapping it: referencing wrapLen here would make wrapLen and
+    // writeIdx MUTUALLY recursive (wrapLen's own recursion above reads
+    // writeIdx via writeIdxForLatch), which Faust's evaluator genuinely
+    // cannot resolve -- WITNESSED live via CI: "after 5200 evaluation
+    // steps, the compiler has detected an endless evaluation cycle of 19
+    // steps", the exact RMW-class rejection this file's own top-of-file ADR
+    // already documents for a different, earlier attempt. Holding (not
+    // wrapping) the idle value is semantically identical for this file's
+    // purposes: idle writeIdx is provably dead (nothing reads or writes
+    // through it again until the next armEdge unconditionally resets it to
+    // 0), so what it holds in between literally cannot matter.
     writeIdxStep(prev) = ba.if(armEdge, 0,
-                          ba.if(recN > 0.5, min(prev + 1, MAXLEN - 1),
-                                (prev + 1) % wrapLen));
+                          ba.if(recN > 0.5, min(prev + 1, MAXLEN - 1), prev));
     writeIdx = writeIdxStep ~ _;
     // record: capture the PREVIOUS block's fully-effected mix (prevFiltIn),
     // one-block-lag, so every recording is ALWAYS effected (pitch/delay/
