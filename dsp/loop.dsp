@@ -290,14 +290,34 @@ with {
     // cross-stage recursion.
     wrapLenStep(prev) = ba.if(finishEdge, writeIdxForLatch, prev);
     wrapLen = max(1, wrapLenStep ~ _);
-    // writeIdxForLatch: writeIdx's value AT the finishEdge sample -- reading
-    // writeIdx here (rather than re-deriving it) is safe because writeIdx's
-    // own recursion is defined below using `wrapLen` only for the
-    // NOT-recording (idle) case; while `recN` is held (armEdge already
-    // fired, finishEdge not yet), writeIdx counts up unconditionally, so by
-    // the time finishEdge fires, writeIdx already holds the exact elapsed
-    // sample count for this take, with no additional latching needed here.
-    writeIdxForLatch = writeIdx;
+    // WITNESSED live: "we caught it phrasing in non multiples repeating 2
+    // and 1/2 times etc" -- ROOT CAUSE: in the BACKDATE case (raw recording
+    // already past the quantized target when finish was requested),
+    // recordingGate correctly stops writeIdx from advancing further, but
+    // writeIdx's HELD value is whatever it happened to be AT THAT INSTANT
+    // (the overshot raw count), never pulled back down to the clean
+    // finishTargetN -- so wrapLen latched to an arbitrary, un-quantized
+    // length instead of the intended clean multiple/division, exactly
+    // matching "repeating 2 and 1/2 times" (a wrapLen that's ~2.5x the
+    // intended target instead of landing on 2x or 4x). FIX: prefer
+    // finishTargetN directly over writeIdx's raw value whenever a finish
+    // was genuinely requested (finishRequested) -- correct for BOTH cases
+    // uniformly: in the extend case writeIdx already lands exactly on
+    // finishTargetN by construction (recordingGate's own stop condition),
+    // so this is a no-op there; in the backdate case it's what actually
+    // fixes the bug, discarding the overshot raw count in favor of the
+    // clean target. Falls back to raw writeIdx only if no finish was ever
+    // requested (should not happen in normal operation now that
+    // apc_grid.cpp always pulses finishreq, but keeps this file correct if
+    // some future caller ever skips it).
+    // (fallback-path note: when finishRequested is false, writeIdx's
+    // CURRENT value is used directly -- safe because writeIdx's own
+    // recursion, defined below, uses `wrapLen` only for the NOT-recording
+    // (idle) case; while `recN` is held, writeIdx counts up
+    // unconditionally, so by the time finishEdge fires in this fallback
+    // path, writeIdx already holds the exact elapsed sample count for this
+    // take, with no additional latching needed.)
+    writeIdxForLatch = ba.if(finishRequested, finishTargetN, writeIdx);
     // WRITE side: counts up from 0 (reset at armEdge) while actively
     // recording, uncapped by any wrapLen (that modulus isn't known yet --
     // it's only DERIVED from this same counter once FINISH latches it
