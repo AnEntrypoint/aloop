@@ -119,6 +119,12 @@ public:
                                                // ba.slidingMax envelope) -- drives the APC grid's real
                                                // 3-tier VU-meter LED coloring (apc_leds.cpp), matching
                                                // looper's vuLow/vuMid/vuHigh peak-based PLAY color tiers.
+        // ARM-QUANTIZATION compensation: writeIdx's current sample-accurate
+        // value (dsp/loop.dsp's "writeidx" hbargraph) -- the TRUE elapsed
+        // sample count since the real (grid-quantized) arm instant, letting
+        // apc_grid.cpp compute finish-quantization's rawSamples precisely
+        // instead of estimating from wall-clock press-to-press timing.
+        float    looperWriteIdx[kLoopers] = {};
     };
     Telemetry snapshotTelemetry() const;
 

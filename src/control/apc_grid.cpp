@@ -15,12 +15,17 @@
 // just stay paused" (recording forever look identical to "not playing" from
 // the outside). This module tracks a local shadow of record/content/playing
 // state (written whenever WE send a command) so tap can cycle correctly
-// without reading back audio state cross-thread — the same shape looper's
-// publicTrack read serves, but sourced locally since aloop's control thread
-// doesn't have a state channel into the audio thread's Faust zones.
+// without reading back audio state cross-thread FOR MOST fields — the same
+// shape looper's publicTrack read serves. UPDATED (ARM-QUANTIZATION, this
+// session): applyRecPlayCycle now DOES read back one piece of audio-thread
+// state (writeIdx telemetry, via AudioThread::snapshotTelemetry(), the same
+// read-only cross-thread channel midi.cpp already uses for LED refresh) --
+// specifically to compensate for ARM-quantization's press-to-grid-tick
+// timing gap, which a purely-local wall-clock estimate cannot see.
 
 #include "apc_grid.h"
 #include "../dsp/sampler/sampler.h"
+#include "../dsp/audio_thread.h"
 #include "../link/link_bridge.h"
 #include <cstdio>
 #include <cstring>
@@ -116,7 +121,7 @@ static TempoSolveResult deriveTempoQuant(double seconds) {
 // rearchitecture, tracked separately).
 static double deriveTempoBpm(double seconds) { return deriveTempoQuant(seconds).bpm; }
 
-void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, LinkBridge* link) {
+void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, LinkBridge* link, AudioThread* audio) {
     // Real 3-state cycle (apcKey25Notes.cpp:61-84):
     //   empty                 -> ARM: rec=1 (HELD -- stays 1 for the whole
     //                             recording pass, this press only starts it)
@@ -273,8 +278,26 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             // common musical cases without over-fitting a formula looper's
             // own C++ never fully specified in a way this session could
             // verify exactly).
-            unsigned elapsedMs = now_ms - m_recordStartMs[looper];
-            long rawSamples = (long)elapsedMs * kSampleRate / 1000;
+            // ARM-QUANTIZATION compensation: this branch's recordings go
+            // through the grid-tick-quantized ARM (masterLen already
+            // established, see dsp/loop.dsp's armEdge/gridTickCrossed) --
+            // the true recording start can land up to ~1/16 phrase AFTER
+            // the press, which a wall-clock press-to-press estimate cannot
+            // see. Prefer reading writeIdx's own telemetry (the TRUE
+            // elapsed sample count since the real, grid-aligned arm
+            // instant, confirmed via cross-codebase research this session
+            // that ../looper itself measures duration this same way --
+            // from the post-latch start, never the press) when available;
+            // fall back to the wall-clock estimate only if audio/telemetry
+            // isn't reachable (defensive, should not happen in practice).
+            long rawSamples;
+            if (audio) {
+                auto t = audio->snapshotTelemetry();
+                rawSamples = (long)t.looperWriteIdx[looper];
+            } else {
+                unsigned elapsedMs = now_ms - m_recordStartMs[looper];
+                rawSamples = (long)elapsedMs * kSampleRate / 1000;
+            }
             // WITNESSED live, two rounds of feedback this session:
             // (1) "it works just fine unless the division loop is short, we
             //     must just support some shorter divisions" -- the smallest
@@ -386,7 +409,7 @@ void ApcGrid::forgetLooperFromPresets(int looper) {
     }
 }
 
-void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps, LinkBridge* link) {
+void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps, LinkBridge* link, AudioThread* audio) {
     int row = note / kApcCols, col = note % kApcCols;
 
     int looper = gridLooperIndex(row, col);
@@ -440,7 +463,7 @@ void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps, LinkBridge* 
         // the start or the end of the take). All other transitions (pause/
         // resume) stay on release.
         if (!m_looperHasContent[looper] || m_looperRecording[looper]) {
-            applyRecPlayCycle(looper, now_ms, ps, link);
+            applyRecPlayCycle(looper, now_ms, ps, link, audio);
             m_looperArmedOnPress[looper] = true;
         } else {
             m_looperArmedOnPress[looper] = false;
@@ -456,7 +479,7 @@ void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps, LinkBridge* 
     }
 }
 
-void ApcGrid::onPadRelease(int note, unsigned now_ms, ParamStore& ps, LinkBridge* link) {
+void ApcGrid::onPadRelease(int note, unsigned now_ms, ParamStore& ps, LinkBridge* link, AudioThread* audio) {
     int row = note / kApcCols, col = note % kApcCols;
 
     int looper = gridLooperIndex(row, col);
@@ -468,7 +491,7 @@ void ApcGrid::onPadRelease(int note, unsigned now_ms, ParamStore& ps, LinkBridge
             return;
         }
         if (m_looperHeld[looper] && !m_looperErased[looper]) {
-            applyRecPlayCycle(looper, now_ms, ps, link);
+            applyRecPlayCycle(looper, now_ms, ps, link, audio);
         }
         m_looperHeld[looper] = false;
         return;

@@ -112,7 +112,7 @@ NLOOPERS = 20;            // 20 independent loopers (the hardware setup)
 // post-glitch content (effects_runtime.dsp: microStage feeds both
 // filterStage and rawGlitchTap, so microStage's output is upstream of and
 // already baked into filtOut/recordTap).
-oneLooper(in, prevFiltIn, clearAll, effSpeed, masterPhase) = out : attachLevel
+oneLooper(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen) = out : attachLevel
 with {
     recN  = button("rec");
     playN = checkbox("play");
@@ -196,7 +196,55 @@ with {
     // 0. A redundant wipe-triggered reset would be a no-op given ARM always
     // follows wipe before any real write happens again.
     recPrev = recN : mem;
-    armEdge = (recN > 0.5) & (recPrev < 0.5);      // recN this sample, NOT last sample: rising edge
+    // ARM-QUANTIZATION (user, this turn): "quanting recordings to multiples,
+    // not 2/3 etc" -- every recording's actual START should land exactly on
+    // a sub-phrase GRID TICK (a power-of-2 division of the shared master
+    // phrase, masterLen/16), not fire immediately on press, mirroring
+    // ../looper's real track_latch mechanism (loopMachine.cpp:1081-1087,
+    // confirmed via cross-codebase research this session: "a pending
+    // RECORD only latches when masterPhase % gridStep == 0"). armPulse is
+    // the RAW C++ press edge (recN 0->1, renamed from the old armEdge --
+    // recN itself still flips to 1 immediately on press, unchanged C++
+    // button semantics); armPending latches "waiting for the next grid
+    // tick" until the REAL armEdge (below) actually fires. EXCEPTION: the
+    // very FIRST recording ever on a clear rig (masterLen==0, no grid
+    // exists yet to snap to) arms IMMEDIATELY and unquantized -- it is the
+    // one that DEFINES the grid, matching ../looper's own design where the
+    // first clip always defines the phrase, later clips align to it.
+    armPulse = (recN > 0.5) & (recPrev < 0.5);
+    // gridStep: masterLen/16, a power-of-2 (1/16) division of the shared
+    // phrase -- genuinely a "multiple", never an arbitrary fraction like
+    // 1/3, matching the user's explicit requirement. Floored at 1 sample so
+    // a pathologically short masterLen can never produce a zero/negative
+    // step. wrapAbs (defined further below, in the READ side) is reused
+    // here too -- both this grid-tick detector and absPos's own wrap need
+    // the identical "wrap p into [0,len)" arithmetic, so it's hoisted to a
+    // shared helper rather than duplicated (see its own definition).
+    gridStep = max(1.0, masterLen / 16.0);
+    phaseInGrid = wrapAbs(masterPhase, gridStep);
+    phaseInGridPrev = phaseInGrid : mem;
+    // A grid tick was just CROSSED the instant phaseInGrid wraps backward
+    // (from near-gridStep back down near 0) -- the same "detect a wrap by
+    // comparing against the previous sample" idiom armPulse/finishEdge
+    // already use, just applied to a continuously-wrapping phase instead of
+    // a binary control signal.
+    gridTickCrossed = phaseInGrid < phaseInGridPrev;
+    // armPending/armEdge: same same-instant-cycle risk already caught once
+    // this session (finishRequested/finishEdge/writeIdx) -- armEdge must
+    // NOT depend on armPending's CURRENT-instant value if armPending's own
+    // recursion in turn depends on armEdge, or the two become mutually
+    // recursive. Fixed the identical way: armPendingStep folds its OWN
+    // reset condition inline using `prev` (its own recursion parameter,
+    // i.e. armPending's PREVIOUS-sample value) rather than referencing the
+    // outer `armEdge` identifier, and armEdge itself is derived from
+    // armPending's OUTPUT via a one-sample-delayed read (`: mem`), the same
+    // edge-detection idiom used for recPrev/finishRequested elsewhere in
+    // this file -- never a same-instant circular read.
+    armPendingStep(prev) = ba.if(masterLen < 0.5, 0,
+                            ba.if(prev & gridTickCrossed, 0, ba.if(armPulse, 1, prev)));
+    armPending = armPendingStep ~ _;
+    armPendingPrev = armPending : mem;
+    armEdge = ba.if(masterLen < 0.5, armPulse, armPendingPrev & gridTickCrossed);
     // finishRequested: latches the instant a finish is PULSED (finishReqN,
     // pushed by apc_grid.cpp the same block as the finish press, alongside
     // finishTargetN), stays true until the NEXT armEdge. Its own recursion
@@ -448,7 +496,27 @@ with {
     // maxN is the compile-time buffer-size bound (n <= maxN). Window ~4096
     // samples (~85ms @48kHz), bound equal to the window since it's a fixed
     // compile-time constant here, not runtime-variable.
-    attachLevel(x) = attach(x, abs(x) : ba.slidingMax(4096, 4096) : levelMeter);
+    // writeidx telemetry: exposes writeIdx's CURRENT sample-accurate value
+    // read-only via fui.get() (same working pattern as levelMeter above --
+    // NOT the readposdiag/wraplendiag idiom that failed twice earlier this
+    // session, since attach()-chaining directly onto the real output signal
+    // is the one proven to actually survive Faust's dead-code elimination:
+    // the hbargraph's argument must GENUINELY derive from the attached
+    // signal, not merely be evaluated nearby). Lets apc_grid.cpp read the
+    // TRUE elapsed sample count since the real (grid-quantized) arm instant
+    // at the moment a finish is requested -- compensating for
+    // ARM-quantization's press-to-grid-tick timing gap in the
+    // finish-quantization math, instead of estimating duration from
+    // wall-clock press-to-press timing alone (which would be biased by
+    // however long the grid-tick wait took). writeIdx itself doesn't
+    // mathematically depend on `out`, so it's folded in via a genuine
+    // (if numerically inert, *0) dependency on `out` -- the SAME technique
+    // wrapLenDiag used successfully once fixed (attach(x, x*0+something :
+    // hbargraph)), proven this session to survive DCE when the dependency
+    // is real, unlike the FIRST (rejected) readposdiag attempt.
+    writeIdxMeter = hbargraph("writeidx", 0.0, float(MAXLEN));
+    attachWriteIdx(x) = attach(x, x*0.0 + float(writeIdx) : writeIdxMeter);
+    attachLevel(x) = attach(x, abs(x) : ba.slidingMax(4096, 4096) : levelMeter) : attachWriteIdx;
 };
 
 // The engine outputs (dry-thru, loop-sum) SEPARATELY rather than pre-summed, so
@@ -488,6 +556,6 @@ with {
 // in here, so every looper anchors its own recordStartPhaseOffset to the
 // SAME reference and can never drift apart from another looper regardless
 // of glitch/repeat/varispeed engagement.
-loopEngine(in, prevFiltIn, clearAll, effSpeed, masterPhase) = in, (par(i, NLOOPERS, vgroup("looper%2i", oneLooper(in, prevFiltIn, clearAll, effSpeed, masterPhase))) :> _);
+loopEngine(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen) = in, (par(i, NLOOPERS, vgroup("looper%2i", oneLooper(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen))) :> _);
 
-process(in, prevFiltIn, clearAll, effSpeed, masterPhase) = loopEngine(in, prevFiltIn, clearAll, effSpeed, masterPhase);   // (dry, loopSum) — two outputs, see aloop.dsp's fold mix
+process(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen) = loopEngine(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen);   // (dry, loopSum) — two outputs, see aloop.dsp's fold mix

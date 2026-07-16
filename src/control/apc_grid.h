@@ -13,7 +13,8 @@
 
 namespace aloop {
 
-class Sampler;   // dsp/sampler/sampler.h -- forward-declared, ApcGrid only ever holds a pointer
+class Sampler;      // dsp/sampler/sampler.h -- forward-declared, ApcGrid only ever holds a pointer
+class AudioThread;  // dsp/audio_thread.h -- forward-declared, for ARM-quantization telemetry reads
 
 constexpr int kApcRows = 5;
 constexpr int kApcCols = 8;
@@ -60,10 +61,14 @@ public:
     // A pad (note 0..39, channel 0) was pressed. Writes commands into `ps`.
     // `link` (may be null): the finish-recording transition proposes the
     // just-established master phrase's tempo to the Link session (two-way
-    // integration -- see applyRecPlayCycle).
-    void onPadPress(int note, unsigned now_ms, ParamStore& ps, class LinkBridge* link = nullptr);
+    // integration -- see applyRecPlayCycle). `audio` (may be null):
+    // ARM-QUANTIZATION compensation -- reads the looper's TRUE elapsed
+    // sample count (dsp/loop.dsp's writeIdx telemetry) at the finish press,
+    // instead of estimating duration from wall-clock press-to-press timing
+    // (which would be biased by however long the grid-tick wait took).
+    void onPadPress(int note, unsigned now_ms, ParamStore& ps, class LinkBridge* link = nullptr, class AudioThread* audio = nullptr);
     // A pad (note 0..39, channel 0) was released. Writes commands into `ps`.
-    void onPadRelease(int note, unsigned now_ms, ParamStore& ps, class LinkBridge* link = nullptr);
+    void onPadRelease(int note, unsigned now_ms, ParamStore& ps, class LinkBridge* link = nullptr, class AudioThread* audio = nullptr);
     // Poll for long-holds that must fire without waiting for release (erase
     // trigger at >= kHoldEraseMs, and preset-capture at the same threshold).
     // Call once per control-thread tick (e.g. on every MIDI byte, cheap).
@@ -195,7 +200,7 @@ private:
     // 0 = no master phrase established yet (mirrors looper's masterLoopBlocks==0).
     long m_masterLenSamples = 0;
 
-    void applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, class LinkBridge* link);
+    void applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, class LinkBridge* link, class AudioThread* audio = nullptr);
     void capturePreset(int p, ParamStore& ps);
     void applyPreset(int p, ParamStore& ps);
     void forgetLooperFromPresets(int looper);

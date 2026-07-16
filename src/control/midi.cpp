@@ -323,8 +323,8 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onSamplerBtn66Release(audio ? audio->sampler() : nullptr); continue; }
             }
             if (d1 < kApcRows * kApcCols) {                                            // 5x8 pad grid
-                if (type == 0x90 && d2 > 0) { grid.onPadPress((int)d1, now, ps, link); continue; }
-                if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onPadRelease((int)d1, now, ps, link); continue; }
+                if (type == 0x90 && d2 > 0) { grid.onPadPress((int)d1, now, ps, link, audio); continue; }
+                if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onPadRelease((int)d1, now, ps, link, audio); continue; }
             }
             // SHIFT-gated transport button reroute (apcKey25Notes.cpp:170-175):
             // STOP_ALL (note 0x51/81) unshifted = quantized stop (aloop: the

@@ -324,7 +324,16 @@ static void* worker(void*) {
     // same masterPhase can never drift apart from each other. See the
     // "Master phase clock" block below for how this value is computed.
     std::vector<float> masterPhaseBuf((size_t)N, 0.0f);
-    float* fins[5]  = { fin.data(), prevFiltOut.data(), clearBuf.data(), speedBuf.data(), masterPhaseBuf.data() };
+    // masterLenBuf: the shared phrase length itself (6th process() signal
+    // input), needed by dsp/loop.dsp's NEW arm-quantization grid-tick
+    // detector (gridStep = masterLen/16) -- distinct from masterPhase
+    // (position within the phrase) and each looper's own wrapLen (which can
+    // differ per looper); this is the ONE shared length every looper's
+    // grid-tick check must reference identically. Block-constant per block,
+    // same technique as clearBuf/speedBuf (this is a slow-changing value,
+    // only updated at FINISH/clear, not audio-rate).
+    std::vector<float> masterLenBuf((size_t)N, 0.0f);
+    float* fins[6]  = { fin.data(), prevFiltOut.data(), clearBuf.data(), speedBuf.data(), masterPhaseBuf.data(), masterLenBuf.data() };
     // aloop.dsp's process() now outputs 4 signals: (wet mix, rawGlitchTap,
     // rawLoopSum, recordTap) -- native taps so the SHIFT-fold, the
     // glitch-loop-routing fold, AND the always-effected record path can each
@@ -612,6 +621,16 @@ static void* worker(void*) {
                     snprintf(z, sizeof z, "looper%2d/play", lp); g_telem.looperPlay[lp] = fui.get(z) > 0.5f;
                     snprintf(z, sizeof z, "looper%2d/vol",  lp); g_telem.looperVol[lp]  = fui.get(z, 1.0f);
                     snprintf(z, sizeof z, "looper%2d/level", lp); g_telem.looperLevel[lp] = fui.get(z, 0.0f);
+                    // writeIdx telemetry (ARM-QUANTIZATION compensation, see
+                    // dsp/loop.dsp's writeIdxMeter comment): the TRUE elapsed
+                    // sample count since the real (grid-quantized) arm
+                    // instant, read at the control thread's own poll rate --
+                    // apc_grid.cpp reads this at the FINISH press to compute
+                    // rawSamples precisely instead of estimating from
+                    // wall-clock press-to-press timing (which would be
+                    // biased by however long ARM-quantization's grid-tick
+                    // wait took).
+                    snprintf(z, sizeof z, "looper%2d/writeidx", lp); g_telem.looperWriteIdx[lp] = fui.get(z, 0.0f);
                 }
             }
             // REMOVED (dsp/loop.dsp's readposdiag/wraplendiag no longer
@@ -801,6 +820,10 @@ static void* worker(void*) {
                 } else {
                     std::fill(masterPhaseBuf.begin(), masterPhaseBuf.end(), 0.0f);
                 }
+                // masterLenBuf: block-constant, feeds dsp/loop.dsp's new
+                // arm-quantization gridStep calculation (see masterLenBuf's
+                // own declaration comment above).
+                std::fill(masterLenBuf.begin(), masterLenBuf.end(), masterLen);
             }
             // Deinterleave the stereo wire -> mono DSP input: average the wire
             // channels (mono content is identical L/R; a stereo source is summed to
