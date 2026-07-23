@@ -21,7 +21,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Faust + LV2 dev headers
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Install Faust (host codegen only -- see the cross-compile step below)
         run: |
           sudo apt-get update
           # libboost-dev: the Faust lv2.cpp architecture uses boost/circular_buffer.
@@ -40,14 +44,31 @@ jobs:
             exit 1
           fi
 
-      - name: Build the full home stack (loop engine + effects) as the LV2
+      # WITNESSED live on a real Pi 4 (this session): plain `faust2lv2 aloop.dsp`
+      # compiles the .so with the HOST's own g++ (glibc/x86_64, ubuntu-latest),
+      # but the device boots Alpine/musl/aarch64. The resulting .so dlopen()s
+      # with no bundle-discovery error, but fails at load time with "Error
+      # relocating .../aloop.so: unsupported relocation type 7" -- confirmed on
+      # real hardware logs, "loaded 0 effect(s)". This home-FX bundle has
+      # NEVER actually loaded on the device -- CI staying green only ever meant
+      # "faust2lv2 didn't error on Ubuntu", never "the .so loads on target".
+      #
+      # Fix: same split as build-binary.yml's own proven pattern (and now
+      # guitar-lofi-fx-lv2's job below) -- faust2lv2's own script (`which
+      # faust2lv2`) shows `faust -i -a lv2.cpp ...` emits a SELF-CONTAINED
+      # .cpp (no Faust includes needed to compile it), and a SEPARATE
+      # $HOST_CXX compile+run of that same .cpp emits the .ttl metadata
+      # (runs on the host, never touches musl/aarch64). Only the FINAL
+      # -shared .so link needs to target the real device.
+      - name: Build the full home stack (loop engine + effects) as a musl/aarch64 LV2
         run: |
+          set -e
+          FAUSTLIB=$(dirname "$(ls -f /usr/share/faust/lv2ui.cpp /usr/local/share/faust/lv2ui.cpp 2>/dev/null | tail -1)")
           # The home-FX bundle is the WHOLE home stack: the Faust loop engine
-          # (dsp/loop.dsp) composed with the dubfx effect chain (effects/home/
-          # faust/chain.dsp) — one Faust program (dsp/aloop.dsp). We stage all the
-          # pieces in one dir so faust2lv2's include resolution (it adds the .dsp
-          # dir to the C++ include path) finds both loop.dsp and the ffunction
-          # pitch engine headers.
+          # (dsp/loop.dsp) composed with the dubfx effect chain — one Faust
+          # program (dsp/aloop.dsp). Stage all the pieces in one dir so Faust's
+          # own include resolution (-I below) finds both loop.dsp and the
+          # ffunction pitch engine headers.
           mkdir -p /tmp/homestack
           # aloop.dsp components loop.dsp AND effects_runtime.dsp — stage BOTH (the
           # missing effects_runtime.dsp was why faust2lv2 failed "unable to open
@@ -61,12 +82,58 @@ jobs:
           sed -i 's#effects/home/faust/##g' /tmp/homestack/effects_runtime.dsp
           sed -i 's#\.\./effects/home/faust/chain\.dsp#chain.dsp#' /tmp/homestack/aloop.dsp
           cd /tmp/homestack
-          faust2lv2 aloop.dsp
-          ls -R *.lv2 || (echo "::error::no .lv2 bundle produced" && exit 1)
+          CLSNAME=aloop
+          WORK=/tmp/lv2work
+          mkdir -p "$WORK/$CLSNAME.lv2"
+
+          # Faust codegen (real Faust, Ubuntu host) -- -i inlines the
+          # architecture file so the result has no external Faust dependency.
+          faust -i -a "$FAUSTLIB/lv2.cpp" -cn "$CLSNAME" aloop.dsp -o "$WORK/$CLSNAME.cpp"
+
+          CPPFLAGS="-DPLUGIN_URI=\"https://faustlv2.bitbucket.io/$CLSNAME\" -DFAUST_META=1 -DFAUST_MIDICC=1 -DFAUST_MTS=1 -DFAUST_UI=0 -DVOICE_CTRLS=1 -DNVOICES=-1"
+
+          # .ttl metadata: compile+run NATIVELY on the host (matches faust2lv2's
+          # own $HOST_CXX step) -- prints static metadata only, never touches
+          # musl/aarch64.
+          g++ -std=c++11 -fvisibility=hidden -O3 -DDLLEXT="\".so\"" $CPPFLAGS \
+            -I"$(pwd)" "$WORK/$CLSNAME.cpp" -o "$WORK/$CLSNAME.meta"
+          "$WORK/$CLSNAME.meta" > "$WORK/$CLSNAME.lv2/$CLSNAME.ttl"
+
+          # manifest.ttl (faust2lv2's static-manifest branch, no GUI).
+          printf '%s\n' \
+            '@prefix doap: <http://usefulinc.com/ns/doap#> .' \
+            '@prefix foaf: <http://xmlns.com/foaf/0.1/> .' \
+            '@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .' \
+            '@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .' \
+            '' \
+            "<https://faustlv2.bitbucket.io/$CLSNAME>" \
+            '    a lv2:Plugin ;' \
+            "    lv2:binary <$CLSNAME.so> ;" \
+            "    rdfs:seeAlso <$CLSNAME.ttl> ." \
+            > "$WORK/$CLSNAME.lv2/manifest.ttl"
+
+          # The ACTUAL shared library: cross-compiled to musl/aarch64 inside a
+          # real Alpine container (QEMU-emulated), matching build-binary.yml.
+          # CPPFLAGS passed via -e, not string-interpolated into the outer
+          # sh -c "..." -- interpolating loses its embedded escaped quotes
+          # across the nested-shell boundary (WITNESSED: PLUGIN_URI expanded to
+          # bare unquoted text, "'https' was not declared in this scope").
+          cp "$WORK/$CLSNAME.cpp" .
+          docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w \
+            -e CPPFLAGS="$CPPFLAGS" -e CLSNAME="$CLSNAME" \
+            alpine:3.20 sh -c '
+              set -e
+              apk add --no-cache build-base lv2-dev boost-dev
+              g++ -shared -std=c++11 -fvisibility=hidden -O3 -fPIC -DDLLEXT="\".so\"" $CPPFLAGS \
+                -I. "$CLSNAME.cpp" -o "$CLSNAME.so"
+              file "$CLSNAME.so"
+            '
+          cp "$CLSNAME.so" "$WORK/$CLSNAME.lv2/"
+
+          ls -R "$WORK/$CLSNAME.lv2" || (echo "::error::no .lv2 bundle produced" && exit 1)
           # place the bundle where the image build expects it
           mkdir -p "$GITHUB_WORKSPACE/effects/home"
-          cp -r *.lv2 "$GITHUB_WORKSPACE/effects/home/"
-          cd "$GITHUB_WORKSPACE/effects/home/faust"
+          cp -r "$WORK/$CLSNAME.lv2" "$GITHUB_WORKSPACE/effects/home/"
 
       - name: Validate the LV2 bundle
         run: |
@@ -106,18 +173,99 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Faust + LV2 dev headers
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Install Faust (host codegen only -- see the cross-compile step below)
         run: |
           sudo apt-get update
           sudo apt-get install -y faust lv2-dev pkg-config build-essential libboost-dev
 
-      - name: Build guitar_lofi_fx.dsp as its own LV2 bundle
+      # WITNESSED live on a real Pi 4 (this session): plain `faust2lv2 guitar_lofi_fx.dsp`
+      # compiles the .so with the HOST's own g++ (glibc/x86_64, ubuntu-latest) --
+      # the device boots Alpine/musl/aarch64 (see build-binary.yml's own ADR-001
+      # comment: "Alpine's arm64 repos don't reliably package faust", which is
+      # exactly why this job never ran faust2lv2 INSIDE the Alpine container to
+      # begin with). The resulting .so genuinely dlopen()s on the device with NO
+      # error at the LV2-bundle-discovery level, but fails at load time with
+      # "Error relocating .../guitar_lofi_fx.so: unsupported relocation type 7" --
+      # confirmed on real hardware logs, loaded 0 effects. This means guitar/
+      # lofi-fx's effects (and the pre-existing home-fx bundle, same bug) never
+      # actually reached the device's audio path at all, despite CI staying
+      # green the whole time (green only means "faust2lv2 didn't error on
+      # Ubuntu", never "the .so loads on the real target").
+      #
+      # Fix: faust2lv2 itself cleanly separates concerns once you read its
+      # actual script (`which faust2lv2`) -- `faust -i -a lv2.cpp ...` emits a
+      # SELF-CONTAINED .cpp (no Faust-specific includes needed to compile it,
+      # verified: only libc/libstdc++/lv2/boost headers), and a SEPARATE
+      # $HOST_CXX compile+run of that same .cpp emits the plugin's own .ttl
+      # metadata (runs on the host, never touches musl/aarch64). Only the FINAL
+      # -shared .so link needs to target the real device -- so replicate
+      # build-binary.yml's exact split: Faust codegen here on Ubuntu, the
+      # actual .so cross-compiled inside a real Alpine aarch64 QEMU container.
+      - name: Build guitar_lofi_fx.dsp as its own musl/aarch64 LV2 bundle
         run: |
+          set -e
+          FAUSTLIB=$(dirname "$(ls -f /usr/share/faust/lv2ui.cpp /usr/local/share/faust/lv2ui.cpp 2>/dev/null | tail -1)")
           cd effects/home/faust
-          faust2lv2 guitar_lofi_fx.dsp
-          ls -R *.lv2 || (echo "::error::no .lv2 bundle produced" && exit 1)
+          CLSNAME=guitar_lofi_fx
+          WORK=/tmp/lv2work
+          mkdir -p "$WORK/$CLSNAME.lv2"
+
+          # Faust codegen (real Faust, Ubuntu host) -- matches faust2lv2's own
+          # `faust -i -a lv2.cpp ...` line exactly, -i inlines the architecture
+          # file so the result has no external Faust dependency to compile.
+          faust -i -a "$FAUSTLIB/lv2.cpp" -cn "$CLSNAME" "$CLSNAME.dsp" -o "$WORK/$CLSNAME.cpp"
+
+          CPPFLAGS="-DPLUGIN_URI=\"https://faustlv2.bitbucket.io/$CLSNAME\" -DFAUST_META=1 -DFAUST_MIDICC=1 -DFAUST_MTS=1 -DFAUST_UI=0 -DVOICE_CTRLS=1 -DNVOICES=-1"
+
+          # .ttl metadata: compile+run NATIVELY on the host (matches faust2lv2's
+          # own $HOST_CXX step) -- this binary only ever prints static metadata,
+          # it never touches musl/aarch64.
+          g++ -std=c++11 -fvisibility=hidden -O3 -DDLLEXT="\".so\"" $CPPFLAGS \
+            -I"$(pwd)" "$WORK/$CLSNAME.cpp" -o "$WORK/$CLSNAME.meta"
+          "$WORK/$CLSNAME.meta" > "$WORK/$CLSNAME.lv2/$CLSNAME.ttl"
+
+          # manifest.ttl (faust2lv2's static-manifest branch, no GUI -- this
+          # project's LV2 bundles are headless, matching the existing home-fx
+          # bundle's own manifest shape).
+          printf '%s\n' \
+            '@prefix doap: <http://usefulinc.com/ns/doap#> .' \
+            '@prefix foaf: <http://xmlns.com/foaf/0.1/> .' \
+            '@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .' \
+            '@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .' \
+            '' \
+            "<https://faustlv2.bitbucket.io/$CLSNAME>" \
+            '    a lv2:Plugin ;' \
+            "    lv2:binary <$CLSNAME.so> ;" \
+            "    rdfs:seeAlso <$CLSNAME.ttl> ." \
+            > "$WORK/$CLSNAME.lv2/manifest.ttl"
+
+          # The ACTUAL shared library: cross-compiled to musl/aarch64 inside a
+          # real Alpine container (QEMU-emulated), matching build-binary.yml's
+          # proven pattern exactly. CPPFLAGS passed via -e (not string-
+          # interpolated into the outer sh -c "...") so its embedded escaped
+          # quotes (-DPLUGIN_URI=\"...\") survive into the container verbatim --
+          # WITNESSED: interpolating it into the outer string loses those
+          # escapes across the nested-shell boundary, expanding PLUGIN_URI to
+          # bare unquoted text ("'https' was not declared in this scope").
+          cp "$WORK/$CLSNAME.cpp" .
+          docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w \
+            -e CPPFLAGS="$CPPFLAGS" -e CLSNAME="$CLSNAME" \
+            alpine:3.20 sh -c '
+              set -e
+              apk add --no-cache build-base lv2-dev boost-dev
+              g++ -shared -std=c++11 -fvisibility=hidden -O3 -fPIC -DDLLEXT="\".so\"" $CPPFLAGS \
+                -I. "$CLSNAME.cpp" -o "$CLSNAME.so"
+              file "$CLSNAME.so"
+            '
+          cp "$CLSNAME.so" "$WORK/$CLSNAME.lv2/"
+
+          ls -R "$WORK/$CLSNAME.lv2" || (echo "::error::no .lv2 bundle produced" && exit 1)
           mkdir -p "$GITHUB_WORKSPACE/effects/home"
-          cp -r *.lv2 "$GITHUB_WORKSPACE/effects/home/"
+          cp -r "$WORK/$CLSNAME.lv2" "$GITHUB_WORKSPACE/effects/home/"
 
       - name: Validate the LV2 bundle
         run: |
