@@ -593,7 +593,15 @@ static void* worker(void*) {
             }
             lastReadTs = nowTs;
             haveLastReadTs = true;
+            timespec readStartTs; clock_gettime(CLOCK_MONOTONIC, &readStartTs);
             snd_pcm_sframes_t r = snd_pcm_readi(cap, buf.data(), N);
+            timespec readEndTs; clock_gettime(CLOCK_MONOTONIC, &readEndTs);
+            {
+                double readMs = (readEndTs.tv_sec - readStartTs.tv_sec) * 1000.0 + (readEndTs.tv_nsec - readStartTs.tv_nsec) / 1e6;
+                if (readMs > kExpectedPeriodMs * 1.5) {
+                    fprintf(stderr, "[diag-gap] readi ITSELF took=%.3fms (expected ~%.3fms)\n", readMs, kExpectedPeriodMs);
+                }
+            }
             if (r < 0) { g_telem.xruns++; snd_pcm_recover(cap, (int)r, 1); continue; }
 
             // === run the Faust home stack (loop engine + effects) this block ===
@@ -1146,7 +1154,15 @@ static void* worker(void*) {
             g_telem.outPeak = outPeak;
 #endif
 
+            timespec writeStartTs; clock_gettime(CLOCK_MONOTONIC, &writeStartTs);
             snd_pcm_sframes_t w = snd_pcm_writei(play, buf.data(), N);
+            timespec writeEndTs; clock_gettime(CLOCK_MONOTONIC, &writeEndTs);
+            {
+                double writeMs = (writeEndTs.tv_sec - writeStartTs.tv_sec) * 1000.0 + (writeEndTs.tv_nsec - writeStartTs.tv_nsec) / 1e6;
+                if (writeMs > kExpectedPeriodMs * 1.5) {
+                    fprintf(stderr, "[diag-gap] writei ITSELF took=%.3fms (expected ~%.3fms)\n", writeMs, kExpectedPeriodMs);
+                }
+            }
             if (w < 0) { g_telem.xruns++; snd_pcm_recover(play, (int)w, 1); }
 
             // OTG mirror: best-effort, never allowed to affect the instrument
