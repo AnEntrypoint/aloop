@@ -39,6 +39,7 @@ tmp/
 # host-side netboot serving scratch (artifacts + WSL adhoc scripts)
 .netboot-stage/
 .netboot-serve/
+.netboot-serve.new.*/
 .netboot-serve.log
 .netboot-serve.err.log
 .netboot-update-sha
