@@ -63,7 +63,16 @@ sweepHz = SWEEP_MIN_HZ + lfoUni * (SWEEP_MAX_HZ - SWEEP_MIN_HZ);
 // not a fixed-frequency filter).
 SR = 48000.0;
 PI = 3.14159265;
-apCoeff(fc) = (tan(PI * fc / SR) - 1.0) / (tan(PI * fc / SR) + 1.0);
+// tan(PI*fc/SR) was computed TWICE per sample (once in the numerator, once
+// in the denominator) -- a real, free win: compute it once via a `with`
+// binding. tan() is a genuinely expensive transcendental call (unlike the
+// PI*fc/SR argument itself, which Faust already constant-folds where
+// possible since PI/SR are compile-time constants) -- halving the tan()
+// call count here is a correctness-preserving optimization, not a
+// behavioral change (same math, same result, computed once instead of
+// twice).
+apCoeff(fc) = (t - 1.0) / (t + 1.0)
+with { t = tan(PI * fc / SR); };
 
 // blk(xprev_state, yprev_state) takes the fed-back previous-x and
 // previous-y, plus the current input x, and emits (x, y) as the new state —
