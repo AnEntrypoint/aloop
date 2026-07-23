@@ -57,14 +57,23 @@ jobs:
 
           # Step 4 (Alpine aarch64, QEMU): the ACTUAL shared library, cross-compiled
           # to musl/aarch64 -- the one piece that must match the device's real libc+arch.
+          # WITNESSED: string-interpolating $CPPFLAGS (which itself contains escaped
+          # quotes, e.g. -DPLUGIN_URI=\"...\") into the OUTER sh -c "..." string loses
+          # those escapes across the nested-shell boundary, so PLUGIN_URI expanded to
+          # bare unquoted text and the C++ compiler tried to parse the URL as code
+          # ("'https' was not declared in this scope"). Passing CPPFLAGS via -e
+          # instead avoids re-parsing it through any shell at all -- Docker hands the
+          # container's shell the value verbatim.
           cp "$WORK/$CLSNAME.cpp" .
-          docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w alpine:3.20 sh -c "
+          docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w \
+            -e CPPFLAGS="$CPPFLAGS" -e CLSNAME="$CLSNAME" \
+            alpine:3.20 sh -c '
             set -e
             apk add --no-cache build-base lv2-dev boost-dev
-            g++ -shared -std=c++11 -fvisibility=hidden -O3 -fPIC -DDLLEXT='\".so\"' $CPPFLAGS \
-              -I. '$CLSNAME.cpp' -o '$CLSNAME.so'
-            file '$CLSNAME.so'
-          "
+            g++ -shared -std=c++11 -fvisibility=hidden -O3 -fPIC -DDLLEXT="\".so\"" $CPPFLAGS \
+              -I. "$CLSNAME.cpp" -o "$CLSNAME.so"
+            file "$CLSNAME.so"
+          '
           cp "$CLSNAME.so" "$WORK/$CLSNAME.lv2/"
           ls -la "$WORK/$CLSNAME.lv2/"
           file "$WORK/$CLSNAME.lv2/$CLSNAME.so"
