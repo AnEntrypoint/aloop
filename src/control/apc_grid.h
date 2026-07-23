@@ -41,13 +41,19 @@ constexpr int kApcBtnShift = 0x62;         // apcKey25.h APC_BTN_SHIFT (98) -- c
 // but remain two independently-stored values).
 enum class FxBank : uint8_t { Dub = 0, Guitar = 1, LofiFx = 2 };
 constexpr int kFxBankCount = 3;
-// Free note assignments for the 3 new bank-select buttons (positions 4/5/6 of
-// the 8-button row) -- picked from the unused note range above the existing
-// microrepeat latch (82-86) and sampler buttons (65/66), channel 0 only,
-// matching this codebase's existing note-space allocation convention.
-constexpr int kApcBtnDubFx    = 87;
-constexpr int kApcBtnGuitarFx = 88;
-constexpr int kApcBtnLofiFx   = 89;
+// WITNESSED BUG (live, real Pi 4): originally assigned 87/88/89, picked from
+// an assumed-free note range above the microrepeat latch (82-86) WITHOUT
+// ever confirming what the real APC Key25 hardware actually transmits for
+// these 3 physical buttons -- the same class of mistake this codebase's own
+// controls.conf comments already warn about for halfspeed/doublespeed
+// (notes, not CCs, discovered only by watching real hardware). Live log
+// capture (real button presses, isolated one at a time, [midi] note decoded
+// lines read directly) showed the actual notes are 67/68/69, not 87/88/89 --
+// the 3 assumed-unused notes were never actually reached by any physical
+// press, so every bank-select press before this fix silently did nothing.
+constexpr int kApcBtnDubFx    = 67;
+constexpr int kApcBtnGuitarFx = 68;
+constexpr int kApcBtnLofiFx   = 69;
 // Per-bank Faust zone label for each of the 7 CC-mapped dub-bank knobs, so
 // ApcGrid can look up "whichever bank is active's stored value" generically.
 // index order matches config/controls.conf's cc48/49/50/51/54/55/57 bindings

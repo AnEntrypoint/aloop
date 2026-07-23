@@ -98,8 +98,13 @@ note70/71 speed-scrub). Positions 4-6 are 3 new, symmetric bank-select buttons �
 **FULLY WIRED** in `ApcGrid`/`midi.cpp` (confirmed by reading both), unlike the
 per-bank effect chains themselves (see the DSP-wiring status below).
 
-- **dub-fx** = note 87, **guitar-fx** = note 88, **lofi-fx** = note 89 (channel 0
-  only, free notes above the microrepeat latch 82-86 and sampler buttons 65/66).
+- **dub-fx** = note 67, **guitar-fx** = note 68, **lofi-fx** = note 69 (channel 0
+  only) — WITNESSED live on real APC Key25 hardware (originally assumed 87/88/89
+  from an unverified "free note range" guess; real button presses, isolated one
+  at a time and read from the live `[midi] note decoded` log, showed 67/68/69 —
+  which also makes physical sense: they sit immediately before notes 70/71
+  (the varispeed scrub buttons), i.e. these ARE "positions 4/5/6 of the row,
+  left of the two varispeed controls" exactly as originally specified).
 - Tap-to-select, radio-button style — no cycling, no hold-preview. Pressing one
   makes it the `activeBank()` immediately (`ApcGrid::onDubFxPress`/
   `onLofiFxPress`/`onGuitarFxPress`) and re-pushes every one of that bank's 7
