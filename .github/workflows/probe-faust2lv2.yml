@@ -1,0 +1,12 @@
+name: probe-faust2lv2
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install faust and inspect faust2lv2
+        run: |
+          sudo apt-get update && sudo apt-get install -y faust
+          which faust2lv2
+          echo "--- script content ---"
+          cat "$(which faust2lv2)"
