@@ -315,7 +315,19 @@ async function checkAndUpdate() {
     const work = path.join(path.dirname(ROOT), '.netboot-update-work');
     fs.rmSync(work, { recursive: true, force: true });
     const binDir = await downloadRunArtifact(binRun.id, 'aloop-aarch64-musl', path.join(work, 'bin'));
+    // Both LV2 artifacts land in the SAME lv2Dir -- lib-boot-tree.sh's own
+    // packing step (`find "${LV2_DIR}" -maxdepth 2 -name '*.lv2' -exec cp -r
+    // ...`) already copies every *.lv2 bundle it finds under this one dir, so
+    // downloading a second artifact here needs no downstream script change.
+    // guitar-lofi-fx-lv2 (Core-3 redesign: guitar_lofi_fx.dsp, the always-on
+    // guitar+lofi-fx chain moved off Core 1) is a SEPARATE build-lv2.yml job
+    // from home-fx-lv2 (see .github/workflows/build-lv2.yml) — WITNESSED:
+    // before this fix, checkAndUpdate only ever fetched home-fx-lv2, so the
+    // real device never received guitar_lofi_fx.lv2 at all even after a
+    // successful rebuild+reboot cycle (confirmed live: apkovl only ever
+    // contained aloop.lv2, guitar_lofi_fx.lv2 missing on the running device).
     const lv2Dir = await downloadRunArtifact(lv2Run.id, 'home-fx-lv2', path.join(work, 'lv2'));
+    await downloadRunArtifact(lv2Run.id, 'guitar-lofi-fx-lv2', lv2Dir);
     const aloopBin = path.join(binDir, 'aloop');
     if (!fs.existsSync(aloopBin)) throw new Error('aloop binary not found in downloaded artifact at ' + aloopBin);
 
