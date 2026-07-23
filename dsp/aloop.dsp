@@ -240,4 +240,8 @@ with {
 // slow-changing values, not per-sample-varying control), and they reach
 // every looper identically via loop.dsp's par() without ever being
 // independently instantiated.
-process(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen) = loop(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen) : mixAndFx;
+// sidechainEnv: 7th process() input, see loop.dsp's own oneLooper/loopEngine
+// comments -- the sidechain-pump multi-source ducking envelope, computed
+// natively in audio_thread.cpp from every currently-designated source
+// looper's own level telemetry (looperLevel[]) and broadcast here unchanged.
+process(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen, sidechainEnv) = loop(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen, sidechainEnv) : mixAndFx;

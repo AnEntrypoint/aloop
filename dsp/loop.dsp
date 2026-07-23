@@ -112,12 +112,31 @@ NLOOPERS = 20;            // 20 independent loopers (the hardware setup)
 // post-glitch content (effects_runtime.dsp: microStage feeds both
 // filterStage and rawGlitchTap, so microStage's output is upstream of and
 // already baked into filtOut/recordTap).
-oneLooper(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen) = out : attachLevel
+oneLooper(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen, sidechainEnv) = out : attachLevel
 with {
     recN  = button("rec");
     playN = checkbox("play");
-    lenN  = hslider("len", 48000, 64, MAXLEN, 1);
     volN  = hslider("vol", 1.0, 0.0, 1.0, 0.001);
+    // SIDECHAIN-PUMP (LOFI feature, guitar-fx hold + looper-press designates
+    // sources, apc_grid.cpp's onSidechainLooperToggle): isSourceN is a
+    // per-looper flag (this looper's own UI zone, safe to declare inside the
+    // par()-replicated vgroup exactly like rec/play/vol/erase above -- it is
+    // NOT a shared broadcast value, so it does not hit the par()-duplication
+    // bug loop.dsp's own ROOT CAUSE comment documents for clearAll/effSpeed/
+    // masterPhase/masterLen; those are shared-across-all-20 values and MUST
+    // stay plain process()-level signal inputs, while isSourceN is
+    // deliberately per-instance and therefore fine as an ordinary checkbox).
+    // sidechainEnv IS a shared broadcast value (the multi-source max/peak-
+    // combined envelope, computed natively in audio_thread.cpp from every
+    // currently-designated source looper's own level telemetry) -- the 7th
+    // process()-level signal input, same par()-duplication-avoidance
+    // technique as masterPhase/masterLen/effSpeed/clearAll.
+    // Ducking: every NON-source looper's output is multiplied by
+    // (1 - sidechainEnv), a source looper is excluded from its own ducking
+    // (isSourceN gates the duck factor back to 1 for the source itself) so a
+    // source never ducks itself while still being audible at full volume.
+    isSourceN = checkbox("sidechainsrc");
+    duckGain  = 1.0 - sidechainEnv * (1.0 - isSourceN);
     // FINISH-QUANTIZATION (user, this turn): "when our second loop is short,
     // it doesnt take the start and stop timing it its making it longer and
     // offsetting the position instead of matching it" / "when the loops are
@@ -498,7 +517,13 @@ with {
     // matching the old ring's same-point read=write behavior.
     record = writeVal;
     loopSig = record + hold;
-    out = loopSig * playN * volN;
+    // duckGain is applied only to the PLAYBACK term (hold, via loopSig*playN*volN
+    // below), never to the record path (writeVal/record above) -- ducking is a
+    // live-mix/monitoring effect, recording must still capture the undupped signal
+    // exactly like every other effect this file's own record term already excludes
+    // (see prevFiltIn's own comment: recording captures the fully-effected mix
+    // upstream of this looper's own output stage, not a second post-duck pass).
+    out = loopSig * playN * volN * duckGain;
     // LEVEL meter: an hbargraph UI OUTPUT (never fui.set() from ParamStore --
     // read-only via fui.get(), same pattern as the existing rec/play/vol
     // telemetry reads in audio_thread.cpp), fed via Faust's attach() idiom so
@@ -576,6 +601,11 @@ with {
 // in here, so every looper anchors its own recordStartPhaseOffset to the
 // SAME reference and can never drift apart from another looper regardless
 // of glitch/repeat/varispeed engagement.
-loopEngine(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen) = in, (par(i, NLOOPERS, vgroup("looper%2i", oneLooper(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen))) :> _);
+// sidechainEnv: 7th process()-level signal input (see oneLooper's own
+// sidechain-pump comment) -- the multi-source max/peak-combined ducking
+// envelope, broadcast identically to every looper instance the exact same
+// way masterPhase/masterLen/effSpeed/clearAll already are (a plain wire,
+// never a UI-declared control, so par() cannot duplicate it into 20 zones).
+loopEngine(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen, sidechainEnv) = in, (par(i, NLOOPERS, vgroup("looper%2i", oneLooper(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen, sidechainEnv))) :> _);
 
-process(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen) = loopEngine(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen);   // (dry, loopSum) — two outputs, see aloop.dsp's fold mix
+process(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen, sidechainEnv) = loopEngine(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen, sidechainEnv);   // (dry, loopSum) — two outputs, see aloop.dsp's fold mix

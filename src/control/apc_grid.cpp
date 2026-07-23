@@ -40,20 +40,16 @@ void ApcGrid::bindAll(ParamStore& ps) {
             snprintf(name, sizeof name, "looper%d/%s", looper, field);
             ps.bind(name);
         }
-        // "len" bound separately with dsp/loop.dsp's actual hslider default
-        // (48000 = 1 second) -- matches the zero-default bug class fixed
-        // elsewhere (ParamStore::bind's own doc comment): any bound target
-        // whose Faust zone has a non-zero default must be seeded correctly,
-        // or it gets silently forced to 0 (here: a 0-length loop) every
-        // block from process start until applyRecPlayCycle's finish-press
-        // sets a real value.
-        snprintf(name, sizeof name, "looper%d/len", looper);
-        ps.bind(name, 48000.0f);
         // finishtarget: the quantized sample-count target for
         // finish-quantization (see dsp/loop.dsp's oneLooper comment) --
         // 0 default matches Faust's own hslider("finishtarget", 0, ...)
         // compiled default.
         snprintf(name, sizeof name, "looper%d/finishtarget", looper);
+        ps.bind(name, 0.0f);
+        // sidechainsrc: per-looper sidechain-pump source designation (LOFI
+        // feature) -- matches dsp/loop.dsp's oneLooper isSourceN checkbox,
+        // 0 default (not a source), toggled via onSidechainLooperToggle.
+        snprintf(name, sizeof name, "looper%d/sidechainsrc", looper);
         ps.bind(name, 0.0f);
     }
     ps.bind("fx/pitchbend");
@@ -63,6 +59,23 @@ void ApcGrid::bindAll(ParamStore& ps) {
     ps.bind("fx/formant");
     ps.bind("cmd/master_len", 0.0f);   // local master-phrase length (samples), 0 = none established yet
     ps.bind("cmd/recorded_bpm", 0.0f); // TRUE varispeed: BPM the shared phrase was recorded at, 0 = none established yet
+
+    // --- 3-bank fx control-surface (LOFI feature) ---------------------------
+    // fx/reverb, fx/delay, fx/time, fx/hp, fx/lpres, fx/lp, fx/pitch are now
+    // bound HERE (moved out of controls.conf's flat map -- see
+    // config/controls.conf's own updated comment) with the Dub bank's
+    // defaults, since ApcGrid now owns which bank's stored value currently
+    // drives each shared Faust zone (see m_fxBankValues/pushBankValuesToZones)
+    // -- these 7 targets must never ALSO be bound by the flat map's own
+    // ps.bind() loop in midi.cpp, or the two competing default-seed values
+    // would race at startup with no defined winner.
+    ps.bind("fx/reverb",  0.0f);
+    ps.bind("fx/delay",   0.0f);
+    ps.bind("fx/time",    0.5f);
+    ps.bind("fx/hp",      0.0f);
+    ps.bind("fx/lpres",   0.0f);
+    ps.bind("fx/lp",      1.0f);
+    ps.bind("fx/pitch",   0.0f);
 }
 
 static void setLooper(ParamStore& ps, int looper, const char* field, float v) {
@@ -234,11 +247,14 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             m_masterLenSamples = quantizedLenSamples;
             ps.setByName("cmd/master_len", (float)m_masterLenSamples);
             ps.setByName("cmd/recorded_bpm", (float)solved.bpm);
-            // Propagate the newly-established phrase to every looper (this
-            // one included) so a second, third, ... looper recorded next
-            // joins the SAME shared grid, matching looper's single
-            // masterLoopBlocks used by the whole rig, not a per-looper value.
-            for (int lp = 0; lp < kLooperCount; lp++) setLooper(ps, lp, "len", (float)m_masterLenSamples);
+            // NOTE: no longer writes looperN/len here -- dsp/loop.dsp's oneLooper
+            // no longer has a "len" zone at all (removed, dead code: wrapLen is
+            // derived purely from writeIdx/finishTargetN at finishEdge, not from
+            // any lenN control -- see loop.dsp's own "ROOT CAUSE (silence ever
+            // since TRUE varispeed's rwtable redesign)" comment). cmd/master_len
+            // above is the one shared value every looper's gridStep calculation
+            // actually reads (masterLenBuf, audio_thread.cpp's 6th process()
+            // input) -- nothing per-looper is needed for phrase propagation.
             // TWO-WAY LINK INTEGRATION: the first recorded loop ACTIVELY
             // STEERS the Link session's tempo toward the solver's chosen BPM
             // (nearest 120, at a clean multiple/division of the 4-bar
@@ -441,6 +457,16 @@ void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps, LinkBridge* 
         // start, run the press-time dispatch) when the pad was not already
         // marked held; a repeat note-on for an already-held pad is a no-op
         // here, exactly as a real key-repeat/aftertouch event should be.
+        // Sidechain-pump gesture (LOFI feature): while guitar-fx is held, a
+        // looper press is REDIRECTED entirely to toggling that looper's
+        // sidechain-source designation -- it never reaches the normal ARM/
+        // FINISH dispatch below at all, and never touches m_looperHeld/
+        // m_looperHoldStart (this press is not a "hold this pad" gesture,
+        // it's a one-shot toggle consumed by guitar-fx being held instead).
+        if (m_guitarFxHeld) {
+            onSidechainLooperToggle(looper, ps);
+            return;
+        }
         bool alreadyHeld = m_looperHeld[looper];
         m_looperHeld[looper] = true;
         if (alreadyHeld) {
@@ -508,6 +534,13 @@ void ApcGrid::onPadRelease(int note, unsigned now_ms, ParamStore& ps, LinkBridge
 }
 
 void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps) {
+    // Clear the bank-select LED flash once its brief window elapses (see
+    // onDubFxPress/onGuitarFxPress/onLofiFxPress and kBankFlashMs) -- same
+    // momentary-pulse pattern as the erase/finishreq releases below, just
+    // for a UI indicator rather than a DSP gate.
+    if (m_bankFlashReleaseAt != 0 && now_ms >= m_bankFlashReleaseAt) {
+        m_bankFlashReleaseAt = 0;
+    }
     // Release any pending erase gate whose delay has elapsed (see the
     // erase-fire branch below for why this can't be an immediate set-then-
     // clear in the same call).
@@ -586,6 +619,13 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps) {
         m_looperPlaying[looper] = false;
         setLooper(ps, looper, "play", 0.0f);   // stop the Faust play gate too, not just the shadow (see onClearAll's matching fix)
         forgetLooperFromPresets(looper);
+        // Sidechain-pump source designation auto-clears on erase (confirmed
+        // in the design session): a source tied to specific recorded content
+        // shouldn't silently survive that content being wiped -- a fresh
+        // recording into this same slot later starts clean, not silently
+        // excluded from ducking as a leftover designation.
+        m_looperIsSidechainSource[looper] = false;
+        setLooper(ps, looper, "sidechainsrc", 0.0f);
     }
     // WITNESSED live: clearing via per-looper long-hold erase (not the PLAY
     // button) left m_masterLenSamples/cmd/master_len UNCHANGED -- only
@@ -715,6 +755,10 @@ void ApcGrid::onClearAll(bool held, ParamStore& ps) {
         m_looperHasContent[lp] = false;
         m_looperRecording[lp] = false;
         m_recordStartMs[lp] = 0;
+        // Sidechain-pump source designation auto-clears on CLEAR_ALL too,
+        // same reasoning as the per-looper long-hold erase path above.
+        m_looperIsSidechainSource[lp] = false;
+        setLooper(ps, lp, "sidechainsrc", 0.0f);
         // WITNESSED live (real-audio test, after the erase-gate release fix
         // landed): "clearing doesn't stop them" -- this loop only ever reset
         // the C++ SHADOW state (m_looperPlaying=false) and never told the
@@ -895,6 +939,102 @@ void ApcGrid::onFormantCC(uint8_t data2, ParamStore& ps) {
     float v = (((float)(int)data2 - 64.0f) / 63.0f) * range;
     if (v > 3.0f) v = 3.0f; else if (v < -3.0f) v = -3.0f;
     ps.setByName("fx/formant", v);
+}
+
+// --- 3-bank fx control-surface (LOFI feature) -------------------------------
+// Shared Faust zone name for each of the 7 CC-mapped knob positions, index-
+// matched to m_fxBankValues' second dimension. This is the ONE place that
+// mapping is spelled out; every bank-switch/knob-write path below indexes
+// through this array rather than repeating the 7 literal zone names.
+static const char* const kFxZoneNames[kFxKnobCount] = {
+    "fx/reverb", "fx/delay", "fx/time", "fx/hp", "fx/lpres", "fx/lp", "fx/pitch"
+};
+// The real APC Key25 CC number for each of the 7 knob positions above, index-
+// matched -- must stay in sync with kFxZoneNames and config/controls.conf's
+// own documented cc48/49/50/51/54/55/57 assignment.
+static const int kFxKnobCcNumbers[kFxKnobCount] = { 48, 49, 50, 51, 54, 55, 57 };
+
+void ApcGrid::onFxKnobCC(int ccNumber, uint8_t data2, ParamStore& ps) {
+    int knobIdx = -1;
+    for (int k = 0; k < kFxKnobCount; k++) {
+        if (kFxKnobCcNumbers[k] == ccNumber) { knobIdx = k; break; }
+    }
+    if (knobIdx < 0) return;   // not one of the 7 known knob CCs
+    float v = (float)data2 / 127.0f;
+    m_fxBankValues[(int)m_activeBank][knobIdx] = v;
+    ps.setByName(kFxZoneNames[knobIdx], v);
+}
+
+void ApcGrid::pushBankValuesToZones(FxBank bank, ParamStore& ps) {
+    // Re-push every stored value of the NEWLY-active bank into the shared
+    // Faust zones immediately on switch, rather than waiting for each knob to
+    // be physically touched again -- otherwise switching to guitar-fx would
+    // leave the audible effect chain still showing whatever the DUB bank's
+    // values happened to be until the user retouches every single knob,
+    // which would look and sound like the bank switch silently failed.
+    int b = (int)bank;
+    for (int k = 0; k < kFxKnobCount; k++) {
+        ps.setByName(kFxZoneNames[k], m_fxBankValues[b][k]);
+    }
+}
+
+// now_ms==0 is a valid real timestamp only in theory (process start) -- to
+// keep bankFlashActive()'s "!= 0 means active" check unambiguous even in
+// that edge instant, treat a would-be-zero deadline as 1ms instead. This
+// mirrors ApcLeds::refresh's own bootMs_ zero-is-sentinel handling elsewhere
+// in this control surface for the identical reason.
+static unsigned nonZeroDeadline(unsigned now_ms, unsigned windowMs) {
+    unsigned d = now_ms + windowMs;
+    return d != 0 ? d : 1;
+}
+
+void ApcGrid::onDubFxPress(unsigned now_ms, ParamStore& ps) {
+    m_activeBank = FxBank::Dub;
+    pushBankValuesToZones(m_activeBank, ps);
+    m_bankFlashWhich = FxBank::Dub;
+    m_bankFlashReleaseAt = nonZeroDeadline(now_ms, kBankFlashMs);
+}
+void ApcGrid::onLofiFxPress(unsigned now_ms, ParamStore& ps) {
+    m_activeBank = FxBank::LofiFx;
+    pushBankValuesToZones(m_activeBank, ps);
+    m_bankFlashWhich = FxBank::LofiFx;
+    m_bankFlashReleaseAt = nonZeroDeadline(now_ms, kBankFlashMs);
+}
+void ApcGrid::onGuitarFxPress(unsigned now_ms, ParamStore& ps) {
+    // Press-time bank-select fires immediately (matching dub-fx/lofi-fx's own
+    // press-time switch) -- the hold-for-sidechain gesture is layered on TOP
+    // of this, not instead of it, exactly mirroring how the main pad grid's
+    // ARM/FINISH already fires on press while a SEPARATE flag
+    // (m_looperArmedOnPress) suppresses only the matching RELEASE's tap.
+    // Selecting the bank on every guitar-fx press (even ones that turn out to
+    // be sidechain-holds) is deliberately harmless: if the user is about to
+    // hold it for sidechain toggling, they typically want to be looking at
+    // the guitar bank's own knobs anyway, and re-selecting the SAME bank a
+    // press already had active is a no-op past the redundant zone re-push.
+    m_activeBank = FxBank::Guitar;
+    pushBankValuesToZones(m_activeBank, ps);
+    m_bankFlashWhich = FxBank::Guitar;
+    m_bankFlashReleaseAt = nonZeroDeadline(now_ms, kBankFlashMs);
+    m_guitarFxHeld = true;
+    m_guitarFxConsumedByLooperPress = false;
+}
+void ApcGrid::onGuitarFxRelease(ParamStore& /*ps*/) {
+    m_guitarFxHeld = false;
+    m_guitarFxConsumedByLooperPress = false;
+}
+
+void ApcGrid::onSidechainLooperToggle(int looper, ParamStore& ps) {
+    // Toggle (not just set) per the confirmed design: press once while
+    // guitar-fx is held to ADD this looper as a source, press again (still
+    // held) to REMOVE it. Persists after guitar-fx is released. Multiple
+    // simultaneous sources are allowed -- their envelopes combine via max/peak
+    // in audio_thread.cpp's sidechain-envelope computation, reading this same
+    // looperN/sidechainsrc zone (pushed generically via targetToZone/forEach,
+    // no special-cased per-block C++ needed) alongside looperLevel[] telemetry.
+    if (looper < 0 || looper >= kLooperCount) return;
+    m_looperIsSidechainSource[looper] = !m_looperIsSidechainSource[looper];
+    setLooper(ps, looper, "sidechainsrc", m_looperIsSidechainSource[looper] ? 1.0f : 0.0f);
+    m_guitarFxConsumedByLooperPress = true;   // suppress guitar-fx's own release-tap bank-reselect noise, matching m_looperArmedOnPress's shape
 }
 
 } // namespace aloop

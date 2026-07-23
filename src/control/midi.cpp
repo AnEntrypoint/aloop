@@ -306,9 +306,37 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
             if (type == 0xB0 && d1 == 1)  { grid.onModWheel(d2, ps); continue; }       // CC1 mod-wheel live-pitch
             if (type == 0xB0 && d1 == 52) { grid.onAbsolutePitch(d2, ps); continue; }  // CC52 absolute live-pitch
             if (type == 0xB0 && d1 == 53) { grid.onFormantCC(d2, ps); continue; }      // CC53 formant (deadzone + SHIFT range)
+            // The 7 dub-bank fx knobs (CC48/49/50/51/54/55/57 -- fx/reverb,
+            // fx/delay, fx/time, fx/hp, fx/lpres, fx/lp, fx/pitch) used to hit
+            // the flat map at the bottom of this loop directly. The 3-bank fx
+            // control-surface feature (LOFI) removed that flat binding (see
+            // config/controls.conf's comment) so ApcGrid can redirect each
+            // turn to whichever bank -- Dub, Guitar, or Lofi-Fx -- is
+            // currently active. Must intercept here, before the flat-map
+            // fallback, since that fallback no longer has anything bound for
+            // these targets.
+            if (type == 0xB0 && (d1 == 48 || d1 == 49 || d1 == 50 || d1 == 51 || d1 == 54 || d1 == 55 || d1 == 57)) {
+                grid.onFxKnobCC((int)d1, d2, ps);
+                continue;
+            }
             if (d1 >= 82 && d1 <= 86) {                                                // microrepeat latch notes
                 if (type == 0x90 && d2 > 0) { grid.onMicrorepeatOn((int)d1, ps); continue; }
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onMicrorepeatOff((int)d1, ps); continue; }
+            }
+            // 3-bank fx control-surface bank-select buttons (LOFI feature,
+            // notes 87/88/89, positions 4/5/6 of the 8-button control row --
+            // see apc_grid.h's kApcBtnDubFx/GuitarFx/LofiFx). Tap-to-select,
+            // radio-button style. guitar-fx ALSO gates the sidechain-pump
+            // hold-modifier (see ApcGrid::onGuitarFxPress/Release and
+            // onPadPress's guitar-fx-held redirect) -- its release must
+            // always be dispatched (never `continue`d past) so
+            // m_guitarFxHeld correctly clears even after a sidechain-toggling
+            // hold, not just a plain bank-select tap.
+            if (d1 == kApcBtnDubFx    && type == 0x90 && d2 > 0) { grid.onDubFxPress(now, ps); continue; }
+            if (d1 == kApcBtnLofiFx   && type == 0x90 && d2 > 0) { grid.onLofiFxPress(now, ps); continue; }
+            if (d1 == kApcBtnGuitarFx) {
+                if (type == 0x90 && d2 > 0) { grid.onGuitarFxPress(now, ps); continue; }
+                if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onGuitarFxRelease(ps); continue; }
             }
             // Sampler record-arm buttons (apcKey25.cpp:157-168,198-208), built
             // per explicit request -- previously entirely unimplemented

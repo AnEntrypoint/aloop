@@ -1,4 +1,5 @@
 # gm plugkit runtime
+.agentplug-kv/
 .gm/pw-sock-*/
 .gm/exec-spool/
 .gm/witness/

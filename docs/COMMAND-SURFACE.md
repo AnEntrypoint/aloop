@@ -90,6 +90,134 @@ signal the way it duplicates a UI primitive. `audio_thread.cpp` fills
   keybed sampler) is NOT ported — see `docs/DECISIONS.md` ADR-012.
 - the 8×5 grid → track/clip select + state display
 
+## 3-bank fx control-surface (LOFI feature — src/control/apc_grid.h/.cpp, midi.cpp)
+The 8-button control row above the pad grid is transpose / sample / drum-sample /
+dub-fx / guitar-fx / lofi-fx / varispeed / varispeed. The first three and last two
+are the existing, unchanged buttons (`onLiveEngageToggle`, `onSamplerBtn65/66Press`,
+note70/71 speed-scrub). Positions 4-6 are 3 new, symmetric bank-select buttons —
+**FULLY WIRED** in `ApcGrid`/`midi.cpp` (confirmed by reading both), unlike the
+per-bank effect chains themselves (see the DSP-wiring status below).
+
+- **dub-fx** = note 87, **guitar-fx** = note 88, **lofi-fx** = note 89 (channel 0
+  only, free notes above the microrepeat latch 82-86 and sampler buttons 65/66).
+- Tap-to-select, radio-button style — no cycling, no hold-preview. Pressing one
+  makes it the `activeBank()` immediately (`ApcGrid::onDubFxPress`/
+  `onLofiFxPress`/`onGuitarFxPress`) and re-pushes every one of that bank's 7
+  stored knob values into the shared Faust zones right away
+  (`pushBankValuesToZones`) — otherwise switching banks would leave the audible
+  effect showing the PREVIOUS bank's values until every knob was retouched,
+  which reads as the switch silently failing.
+- Selecting a bank starts a `bankFlashActive()` window (150ms, `kBankFlashMs`),
+  cleared by `pollHolds` — a **transient** LED flash on selection, not a
+  persistent "which bank is active" indicator.
+- CC48/49/50/51/54/55/57 (the 7 physical fx knobs) are intercepted directly in
+  `midi.cpp`, ahead of the flat `config/controls.conf` map — that flat map no
+  longer binds any of these 7 targets at all (see its own comment block: a flat
+  binding here would race `ApcGrid`'s bank-aware write with no defined winner).
+  `ApcGrid::onFxKnobCC` writes the normalized `data2/127` value into the
+  **currently active bank's own stored slot** for that knob position, AND into
+  the shared Faust zone, so turning a knob still has the usual instant effect.
+
+### Per-bank independent knob storage
+Each bank stores its own value per physical knob position — switching banks
+changes what the 7 knobs currently mean/show without touching any other bank's
+stored values (`m_fxBankValues[bank][knob]`, seeded in `ApcGrid::bindAll`). The
+knob→zone mapping (index-matched `kFxZoneNames`/`kFxKnobCcNumbers` in
+apc_grid.cpp) is the same physical CC layout for every bank; only the Faust
+zone identity attached to a bank's *stored value* changes what it does:
+
+| CC | Faust zone | Dub bank meaning |
+|---|---|---|
+| 48 | `fx/reverb` | reverb amount |
+| 49 | `fx/delay` | delay amount |
+| 50 | `fx/time` | delay time |
+| 51 | `fx/hp` | HP filter |
+| 54 | `fx/lpres` | LP resonance |
+| 55 | `fx/lp` | LP filter |
+| 57 | `fx/pitch` | pitch |
+
+(CC53/formant is handled separately by `onFormantCC`, unaffected by bank
+switching — same as before this feature.) Guitar and LofiFx banks reuse this
+same 7-slot array with their own defaults (0.0 = passthrough for every new
+effect's "amount" control, `m_fxBankValues[1]`/`[2]` in apc_grid.h) but — see
+below — nothing downstream of `ApcGrid` yet turns those stored values into
+sound for those two banks.
+
+### guitar-fx's dual gesture
+guitar-fx is the one bank button with a second, independent gesture layered on
+top of plain tap-to-select:
+- **Plain tap** (press+release, no looper pad pressed in between) selects the
+  Guitar bank exactly like dub-fx/lofi-fx. The bank-select actually fires on
+  PRESS (not release) — same shape as the main pad grid's ARM/FINISH, which
+  also commits on press while a separate flag suppresses only the matching
+  release.
+- **Hold guitar-fx + press a looper pad** instead toggles that looper's
+  sidechain-pump SOURCE designation (`ApcGrid::onSidechainLooperToggle`) — the
+  press is redirected entirely away from the normal ARM/FINISH pad dispatch
+  (never touches `m_looperHeld`/hold-erase timing at all). Toggle, not set:
+  press again while still held to remove it. **Multiple loopers can be
+  sidechain sources simultaneously.** The designation persists after guitar-fx
+  is released (not cleared on release), and auto-clears if that looper is
+  erased (per-looper hold-erase) or a clear-all fires (`cmd/clearall`) — both
+  paths confirmed by reading `apc_grid.cpp` (the erase and clear-all branches
+  each explicitly reset `m_looperIsSidechainSource`).
+- `looperIsSidechainSource(int)` is the read accessor. The ducking/pump signal
+  itself IS now wired at the DSP level (see "Sidechain-pump DSP routing"
+  below) — a designated source looper's own level telemetry drives a shared
+  ducking envelope applied to every OTHER looper's output.
+
+### Guitar/LofiFx bank DSP wiring — LANDED
+`dsp/effects_runtime.dsp` now consumes the same 7 shared `fx/*` zones the Dub
+bank always used, reinterpreted per-bank via a new 8th zone, `fx/bank`
+(`nentry`, 0=Dub/1=Guitar/2=LofiFx, matching `FxBank`'s own enum values) —
+`ApcGrid` writes this zone whenever `activeBank()` changes, alongside the
+existing per-bank knob-value re-push.
+
+- `guitarChain = flanger -> tremolo -> phaser`, reading `REVAMT->FLANGEAMT`,
+  `DELAYAMT->TREMOLOAMT`, `TIME->BANKSPEED` (shared tremolo/phaser rate),
+  `HPCUT->PHASERAMT`.
+- `lofiFxChain = bitcrush -> vinyl -> flutter -> samplerate`, reading
+  `REVAMT->BITCRUSHAMT`, `DELAYAMT->VINYLAMT`, `TIME->FLUTTERAMT`,
+  `HPCUT->SRRAMT`.
+- The 3 banks' fully-computed chains are blended by `fx/bank`, smoothed via
+  `si.smoo` (same idiom/time-constant class as `aloop.dsp`'s existing
+  `MONITORFOLD`/`GLITCHFOLD` ramps) into a continuous triangular crossfade —
+  not a hard switch — so a bank change mid-performance does not click/pop.
+  Verified: `fx/bank=0.5` produces a genuine partial blend, not a
+  discontinuity.
+- Verified byte-exact passthrough at each bank's own true stored defaults
+  (Dub: unchanged from before this feature; Guitar: `TIME=0.5`, others 0;
+  LofiFx: `TIME=0.0`, others 0 — note the LofiFx default for that shared slot
+  deliberately differs from Dub's) via the CLI DSP harness.
+- `effects/home/faust/compressor.dsp` (the guitar bank's "compress" bottom-row
+  control) exists as a standalone file but is **NOT YET wired** into
+  `guitarChain` — it has no assigned slot in the current 7-knob array
+  (`apc_grid.h`'s own comment: "compress lives outside this 7-knob array"), so
+  it needs its own zone/CC assignment before it can be reached from the
+  control surface at all. Its internal gain-staging (byte-exact passthrough
+  at 0, monotonic loudness increase with no clipping across the full dial
+  sweep) was still being iterated on as of this write — treat its behavior as
+  unconfirmed until both the internal math and its chain wiring land.
+
+### Sidechain-pump DSP routing — LANDED
+`dsp/loop.dsp`'s `oneLooper` gained a 7th `process()`-level signal input,
+`sidechainEnv` — broadcast identically to all 20 loopers via the same
+par()-duplication-avoidance technique as `masterPhase`/`masterLen`/
+`effSpeed`/`clearAll` (confirmed safe scaling from 6 to 7 signal inputs via a
+standalone Faust repro this session, no zone duplication, correct per-
+instance broadcast) — plus a per-looper `sidechainsrc` checkbox (safe as a
+per-instance UI control, unlike the shared broadcast signal). `audio_thread.cpp`
+computes `sidechainEnv` each block as the max/peak of every currently-
+source-designated looper's own `level` telemetry (one-block-lag, same
+staleness class already accepted for `prevFiltIn`/`prevLoopSum`'s own
+one-block-lag folds). Ducking: `out = loopSig * playN * volN * duckGain`,
+where `duckGain = 1.0 - sidechainEnv*(1.0-isSourceN)` — a source looper's own
+`isSourceN` gates the duck factor back to 1 so it is never ducked by its own
+signal. Verified via a standalone Faust repro isolating the exact formula: a
+non-source looper's RMS dropped under a full-envelope step while a source
+looper's RMS stayed byte-identical to its unducked value under the identical
+step.
+
 ## Link / transport
 Ableton Link tempo/phase drives the loop grid; loop record start quantizes to the
 Link phase; the first loop can propose the tempo to the session (ported logic).

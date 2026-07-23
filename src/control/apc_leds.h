@@ -81,6 +81,21 @@ public:
         }
         sendCoalesced(kApcBtnPlay, grid.shiftHeld() ? kLedYellow : kLedOff, write);
         sendCoalesced(kApcLiveLedNote, liveEngaged ? 127 : 0, write);
+        // 3-bank fx control-surface bank-select flash (LOFI feature): a
+        // TRANSIENT indication during the act of selecting a bank (dub-fx/
+        // guitar-fx/lofi-fx, notes 87/88/89) -- confirmed scope is
+        // flash-only, NOT a persistent always-on "which bank is active"
+        // display (see ApcGrid::bankFlashActive/bankFlashWhich's own doc
+        // comment). Only the JUST-PRESSED button lights during the flash
+        // window; the other two stay off, same as every other button here
+        // that has no persistent-state LED of its own.
+        {
+            bool flash = grid.bankFlashActive();
+            FxBank which = grid.bankFlashWhich();
+            sendCoalesced(kApcBtnDubFx,    (flash && which == FxBank::Dub)    ? kLedGreen : kLedOff, write);
+            sendCoalesced(kApcBtnGuitarFx, (flash && which == FxBank::Guitar) ? kLedGreen : kLedOff, write);
+            sendCoalesced(kApcBtnLofiFx,   (flash && which == FxBank::LofiFx) ? kLedGreen : kLedOff, write);
+        }
     }
 
     // Force a full re-send next refresh (looper: invalidateLedCache, called on

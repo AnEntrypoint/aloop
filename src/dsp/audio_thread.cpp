@@ -333,7 +333,14 @@ static void* worker(void*) {
     // same technique as clearBuf/speedBuf (this is a slow-changing value,
     // only updated at FINISH/clear, not audio-rate).
     std::vector<float> masterLenBuf((size_t)N, 0.0f);
-    float* fins[6]  = { fin.data(), prevFiltOut.data(), clearBuf.data(), speedBuf.data(), masterPhaseBuf.data(), masterLenBuf.data() };
+    // sidechainEnvBuf: 7th process()-level signal input (LOFI feature,
+    // sidechain-pump). Block-constant per block, same technique as
+    // clearBuf/speedBuf/masterLenBuf -- computed each block from the PREVIOUS
+    // block's looperLevel[] telemetry (one-block-lag, same staleness class
+    // already accepted for prevFiltIn/prevLoopSum's own one-block-lag fold;
+    // see the "Sidechain envelope" computation below, right before compute()).
+    std::vector<float> sidechainEnvBuf((size_t)N, 0.0f);
+    float* fins[7]  = { fin.data(), prevFiltOut.data(), clearBuf.data(), speedBuf.data(), masterPhaseBuf.data(), masterLenBuf.data(), sidechainEnvBuf.data() };
     // aloop.dsp's process() now outputs 4 signals: (wet mix, rawGlitchTap,
     // rawLoopSum, recordTap) -- native taps so the SHIFT-fold, the
     // glitch-loop-routing fold, AND the always-effected record path can each
@@ -982,6 +989,37 @@ static void* worker(void*) {
             // directly as fins[1] to compute() below (no fin[i] += needed,
             // unlike the SHIFT-fold above, since it targets a separate Faust
             // input, not `fin` itself).
+            // Sidechain envelope (LOFI feature, 7th process() input): the
+            // multi-source max/peak-combined ducking envelope. Sources are
+            // designated via ApcGrid::onSidechainLooperToggle (guitar-fx hold
+            // + looper press), which writes looperN/sidechainsrc into
+            // ParamStore -- read back here the SAME way looperN/rec etc are
+            // read (g_params->get, cheap map lookup, no lock). Combined with
+            // g_telem.looperLevel[] (this PREVIOUS block's own peak-envelope
+            // telemetry, populated further up in this same loop) via max(),
+            // matching the confirmed multi-source design: any active source
+            // pumping loud enough ducks every non-source looper, sources
+            // combine by whichever is currently louder, never summed (which
+            // would double-duck when multiple sources hit simultaneously).
+            // One-block-lag (this block's envelope reflects last block's
+            // levels) -- the same staleness class already accepted for
+            // prevFiltIn/prevLoopSum's own one-block-lag folds above, and
+            // inaudible at audio rates for an envelope follower's own natural
+            // smoothing time constant.
+            {
+                float sidechainEnv = 0.0f;
+                if (g_params) {
+                    char z[32];
+                    for (int lp = 0; lp < AudioThread::Telemetry::kLoopers; lp++) {
+                        snprintf(z, sizeof z, "looper%d/sidechainsrc", lp);
+                        if (g_params->get(z) > 0.5f) {
+                            float lvl = g_telem.looperLevel[lp];
+                            if (lvl > sidechainEnv) sidechainEnv = lvl;
+                        }
+                    }
+                }
+                std::fill(sidechainEnvBuf.begin(), sidechainEnvBuf.end(), sidechainEnv);
+            }
             // Time the DSP work vs the block budget → home-core busy % telemetry.
             timespec t0, t1;
             clock_gettime(CLOCK_MONOTONIC, &t0);

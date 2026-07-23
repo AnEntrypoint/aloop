@@ -25,6 +25,35 @@ constexpr int kSampleRate = 48000;        // dsp/loop.dsp's SR -- fixed througho
 constexpr int kMaxLoopSamples = 48000 * 60;  // dsp/loop.dsp's MAXLEN -- the delay ring's hard ceiling
 constexpr int kApcBtnShift = 0x62;         // apcKey25.h APC_BTN_SHIFT (98) -- channel 0 only, see onShiftPress
 
+// --- 3-bank fx control-surface indirection (LOFI feature) -------------------
+// The 8-button control row (transpose | sample | drum-sample | dub-fx |
+// guitar-fx | lofi-fx | varispeed | varispeed) as confirmed in a design
+// session: transpose/sample/drum-sample are the EXISTING onLiveEngageToggle/
+// onSamplerBtn65/onSamplerBtn66 buttons (unchanged, no new code). dub-fx/
+// guitar-fx/lofi-fx are 3 NEW, symmetric, tap-to-select bank buttons -- tap
+// switches which bank the 7 physical fx knobs (CC48/49/50/51/54/55/57, plus
+// CC53 formant, handled separately in onFormantCC) currently drive, radio-
+// button style (no cycling, no hold-preview). Each bank stores its OWN
+// independent value per knob position -- switching banks changes what the
+// physical controls currently MEAN without touching other banks' stored
+// values (confirmed explicitly, including the one exception: guitar bank's
+// "speed" knob and dub bank's "TIME" knob share the same physical CC/slot
+// but remain two independently-stored values).
+enum class FxBank : uint8_t { Dub = 0, Guitar = 1, LofiFx = 2 };
+constexpr int kFxBankCount = 3;
+// Free note assignments for the 3 new bank-select buttons (positions 4/5/6 of
+// the 8-button row) -- picked from the unused note range above the existing
+// microrepeat latch (82-86) and sampler buttons (65/66), channel 0 only,
+// matching this codebase's existing note-space allocation convention.
+constexpr int kApcBtnDubFx    = 87;
+constexpr int kApcBtnGuitarFx = 88;
+constexpr int kApcBtnLofiFx   = 89;
+// Per-bank Faust zone label for each of the 7 CC-mapped dub-bank knobs, so
+// ApcGrid can look up "whichever bank is active's stored value" generically.
+// index order matches config/controls.conf's cc48/49/50/51/54/55/57 bindings
+// (fx/reverb, fx/delay, fx/time, fx/hp, fx/lpres, fx/lp, fx/pitch).
+constexpr int kFxKnobCount = 7;
+
 // row*8+col grid index -> looper index (cols 2-5) or -1 (apcKey25Notes.cpp _looperFromPad)
 inline int gridLooperIndex(int row, int col) {
     if (row < 0 || row >= kApcRows) return -1;
@@ -152,6 +181,57 @@ public:
     // can't be expressed as a static 1:1 binding.
     void onFormantCC(uint8_t data2, ParamStore& ps);
 
+    // --- 3-bank fx control-surface (LOFI feature) ---------------------------
+    // dub-fx/lofi-fx are plain tap-to-select bank buttons -- no secondary
+    // gesture, unlike guitar-fx below. Switching the active bank re-pushes
+    // every one of that bank's 7 stored knob values into the shared Faust
+    // zones immediately (see pushBankValuesToZones's impl comment for why
+    // this must happen eagerly rather than waiting for the next CC touch on
+    // each knob). `now_ms` starts the brief LED flash window (see
+    // bankFlashActive/pollHolds).
+    void onDubFxPress(unsigned now_ms, ParamStore& ps);
+    void onLofiFxPress(unsigned now_ms, ParamStore& ps);
+    // guitar-fx is a dual-gesture button: a quick tap (press+release with NO
+    // looper pad pressed in between) selects the guitar bank, exactly like
+    // dub-fx/lofi-fx above. HOLDING guitar-fx while pressing a looper pad
+    // instead toggles that looper's sidechain-pump SOURCE designation (see
+    // onSidechainLooperToggle) and suppresses the bank-select tap for this
+    // press, mirroring the EXISTING m_looperArmedOnPress press/release-
+    // suppression pattern this file already uses for the ARM-vs-tap
+    // disambiguation on the main pad grid.
+    void onGuitarFxPress(unsigned now_ms, ParamStore& ps);
+    void onGuitarFxRelease(ParamStore& ps);
+    // Dispatch for the 7 physical fx knobs (CC48/49/50/51/54/55/57 on real
+    // APC Key25 hardware, per config/controls.conf's own comment on why these
+    // moved out of the flat map) -- `ccNumber` must be one of those 7; writes
+    // the normalized (data2/127) value into the CURRENTLY ACTIVE bank's
+    // stored slot for that knob position AND the shared Faust zone
+    // immediately (so turning a knob has the usual instant effect), matching
+    // the confirmed design: each bank stores its own independent value per
+    // knob position, only the ACTIVE bank's write reaches the audible chain.
+    // No-op if ccNumber isn't one of the 7 known knob CCs.
+    void onFxKnobCC(int ccNumber, uint8_t data2, ParamStore& ps);
+    FxBank activeBank() const { return m_activeBank; }
+    // True only in the brief window right after a dub-fx/guitar-fx/lofi-fx
+    // press, for the LED module's flash-on-select feedback (confirmed scope:
+    // TRANSIENT indication during the act of selecting, not a persistent
+    // always-on "which bank is active" display) -- pollHolds clears this
+    // once the flash window elapses.
+    bool bankFlashActive() const { return m_bankFlashReleaseAt != 0; }
+    FxBank bankFlashWhich() const { return m_bankFlashWhich; }
+
+    // Called from onPadPress when guitar-fx is currently held (see
+    // onGuitarFxPress) instead of the normal ARM/FINISH pad dispatch --
+    // toggles looper `looper`'s sidechain-source designation (multiple
+    // simultaneous sources are allowed, confirmed in the design session).
+    // Persists after guitar-fx is released (not cleared on release).
+    void onSidechainLooperToggle(int looper, ParamStore& ps);
+    bool looperIsSidechainSource(int looper) const { return m_looperIsSidechainSource[looper]; }
+    // True while guitar-fx is held AND at least one looper press has already
+    // been consumed as a source-toggle this hold -- suppresses the matching
+    // bank-select tap on release, same shape as m_looperArmedOnPress.
+    bool guitarFxHeldConsumedByLooper() const { return m_guitarFxConsumedByLooperPress; }
+
     // Read-only state accessors for the LED module (apc_leds.h) — it needs the
     // same per-pad classification ApcGrid already tracks (has this looper
     // recorded anything, is it playing, is a preset slot used) to compute
@@ -200,10 +280,45 @@ private:
     // 0 = no master phrase established yet (mirrors looper's masterLoopBlocks==0).
     long m_masterLenSamples = 0;
 
+    // --- 3-bank fx control-surface state (LOFI feature) ---------------------
+    // Per-bank stored value for each of the 7 CC-mapped knobs -- [bank][knob].
+    // Defaults match the EXISTING dub-bank Faust zone defaults exactly (see
+    // midi.cpp's kFxDefaults table) for bank 0 (Dub); guitar/lofi-fx banks
+    // default every knob to whatever value makes THAT bank's own effect chain
+    // a byte-exact passthrough (0.0 for every new effect's "amount" control,
+    // per the confirmed guitar-fx-bank-defaults-passthrough / lofi-fx-bank-
+    // defaults-passthrough design requirement) -- set once here, re-verified
+    // against the real Faust defaults once effects_runtime.dsp's new stages
+    // land (a later integration step reads these same array indices).
+    float m_fxBankValues[kFxBankCount][kFxKnobCount] = {
+        // Dub bank: fx/reverb, fx/delay, fx/time, fx/hp, fx/lpres, fx/lp, fx/pitch
+        {0.0f, 0.0f, 0.5f, 0.0f, 0.0f, 1.0f, 0.0f},
+        // Guitar bank: flange, tremolo, speed, phaser, attack, release, (compress lives outside this 7-knob array, see below)
+        {0.0f, 0.0f, 0.5f, 0.0f, 0.0f, 0.0f, 0.0f},
+        // Lofi-fx bank: bitcrush, vinyl, flutter, samplerate, (4 granulator knobs live in sampler.h, not here)
+        {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+    };
+    FxBank m_activeBank = FxBank::Dub;
+    unsigned m_bankFlashReleaseAt = 0;   // 0 = no flash pending; else wall-clock ms to clear bankFlashActive() (see pollHolds)
+    FxBank m_bankFlashWhich = FxBank::Dub;
+    static constexpr unsigned kBankFlashMs = 150;   // brief, per the confirmed "flash only during selection" scope
+
+    // Sidechain-pump (guitar-fx hold + looper press): multiple simultaneous
+    // sources allowed, persists after guitar-fx release, auto-clears on
+    // erase/clear (all confirmed in the design session).
+    bool m_guitarFxHeld = false;
+    bool m_guitarFxConsumedByLooperPress = false;
+    bool m_looperIsSidechainSource[kLooperCount] = {};
+
     void applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, class LinkBridge* link, class AudioThread* audio = nullptr);
     void capturePreset(int p, ParamStore& ps);
     void applyPreset(int p, ParamStore& ps);
     void forgetLooperFromPresets(int looper);
+    // Re-pushes every stored knob value of `bank` into the shared Faust
+    // zones (fx/reverb, fx/delay, ...) -- called on every bank switch so the
+    // audible effect jumps to the newly-selected bank's last-left values
+    // immediately, not only once each knob is next physically touched.
+    void pushBankValuesToZones(FxBank bank, ParamStore& ps);
 };
 
 } // namespace aloop
