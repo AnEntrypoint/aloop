@@ -76,6 +76,16 @@ void ApcGrid::bindAll(ParamStore& ps) {
     ps.bind("fx/lpres",   0.0f);
     ps.bind("fx/lp",      1.0f);
     ps.bind("fx/pitch",   0.0f);
+    // WITNESSED BUG (live, real Pi 4): bank-select buttons never actually
+    // switched the audible chain -- dub-fx/guitar-fx/lofi-fx all correctly
+    // updated m_activeBank and re-pushed the 7 knob values, but NOTHING ever
+    // wrote effects_runtime.dsp's "fx/bank" selector zone (added when that
+    // file's bank-crossfade was wired), so the Faust zone stayed pinned at
+    // its compiled-in default (0 = Dub) forever regardless of which button
+    // was pressed. Bind it here so it's a live zone from startup; the actual
+    // per-press write is pushBankValuesToZones's job now (see its own
+    // updated comment).
+    ps.bind("fx/bank", 0.0f);
 }
 
 static void setLooper(ParamStore& ps, int looper, const char* field, float v) {
@@ -976,6 +986,14 @@ void ApcGrid::pushBankValuesToZones(FxBank bank, ParamStore& ps) {
     for (int k = 0; k < kFxKnobCount; k++) {
         ps.setByName(kFxZoneNames[k], m_fxBankValues[b][k]);
     }
+    // WITNESSED BUG (live, real Pi 4): this method updated the 7 shared knob
+    // zones but never wrote effects_runtime.dsp's "fx/bank" selector zone
+    // (0=Dub/1=Guitar/2=LofiFx) -- so the DSP's own bank-crossfade never saw
+    // any change and stayed pinned at its compiled-in default (Dub) forever,
+    // regardless of which bank button was actually pressed. This is the
+    // ACTUAL bank switch -- everything above this line only prepares the
+    // knob values the newly-selected bank will show, it never selects it.
+    ps.setByName("fx/bank", (float)b);
 }
 
 // now_ms==0 is a valid real timestamp only in theory (process start) -- to

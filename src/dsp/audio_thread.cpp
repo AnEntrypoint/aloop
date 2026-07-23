@@ -161,6 +161,18 @@ static std::string targetToZone(const std::string& target) {
     if (target == "fx/time")    return "TIME";
     if (target == "fx/formant") return "FORMANT";
     if (target == "fx/pitch")   return "SEMIS";
+    // fx/bank (LOFI feature, 3-bank fx control surface): unlike the 7 knobs
+    // above, this Faust zone is declared under its OWN literal name
+    // (nentry("fx/bank", ...) in effects_runtime.dsp), not a renamed control
+    // label -- so the mapping is a straight passthrough, not a rename.
+    // WITNESSED BUG (live, real Pi 4): this mapping was MISSING entirely,
+    // so even after ApcGrid::pushBankValuesToZones started writing
+    // ParamStore's "fx/bank" target (see its own updated comment), this
+    // function's fallthrough `return ""` meant the generic forEach-push
+    // below silently never forwarded it into the real Faust zone at all --
+    // bank-select buttons updated C++ state correctly but the DSP's own
+    // bank-crossfade never saw the change, staying pinned on Dub forever.
+    if (target == "fx/bank")    return "fx/bank";
     // fx/monitorfold has NO Faust zone anymore -- the SHIFT-held fold is a
     // native block-rate mix (see the prevLoopSum/foldGain code in worker()
     // and aloop.dsp's top-of-file comment for why), so it's read directly via
