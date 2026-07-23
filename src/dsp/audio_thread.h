@@ -14,6 +14,7 @@ namespace aloop {
 struct ParamStore;   // control values from MIDI (control/midi.h)
 class  LinkBridge;   // Ableton Link tempo/phase (link/link_bridge.h)
 class  Sampler;       // sampler subsystem (dsp/sampler/sampler.h)
+class  Lv2Host;       // in-process LV2 host (host/lv2_host.h)
 
 struct AudioConfig {
     int sampleRate = 48000;
@@ -135,6 +136,12 @@ public:
     // can push events into it without a header dependency on the sampler's
     // own event-ring layout.
     Sampler* sampler() const;
+
+    // The permanent Core-3 guitar+lofi-fx LV2 host (Core-3 redesign): loaded
+    // from AudioConfig::homeDir, always active, never hot-swapped. ApcGrid's
+    // fx-knob dispatch pushes guitar/lofi-fx bank values into its fx2/* ports
+    // via Lv2Host::setControl, the same way sampler() reaches the sampler.
+    Lv2Host* homeFx() const;
 
 private:
     void workerLoop();              // the per-block RT loop

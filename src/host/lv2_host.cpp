@@ -296,6 +296,22 @@ void Lv2Host::process(float* buf, int nframes) {
     for (int i = 0; i < n; i++) buf[i] = ioBuffer_[(size_t)i];
 }
 
+void Lv2Host::setControl(const std::string& symbol, float value) {
+    // Flat scan, matched by symbol == LV2 port symbol (connectPorts()'s own
+    // documented ParamStore-bind-key convention). Every guitar/lofi-fx zone name
+    // (fx2/FLANGEAMT etc) is unique across the whole loaded bundle set, so the
+    // first match per plugin is the only match; still applied to every plugin in
+    // case more than one loaded bundle happens to share a symbol.
+    for (auto& p : plugins_) {
+        for (size_t i = 0; i < p.controlPortIdx.size(); i++) {
+            size_t portIdx = p.controlPortIdx[i];
+            if (portIdx < p.ports.size() && p.ports[portIdx].symbol == symbol) {
+                p.controlValues[portIdx] = value;
+            }
+        }
+    }
+}
+
 void Lv2Host::rescanUser(const std::string& userDir) {
     // Control-thread only. Reload the user dir; the audio thread picks up the new
     // set via the same double-buffer-flip discipline as the param snapshot.

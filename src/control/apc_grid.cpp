@@ -26,6 +26,7 @@
 #include "apc_grid.h"
 #include "../dsp/sampler/sampler.h"
 #include "../dsp/audio_thread.h"
+#include "../host/lv2_host.h"
 #include "../link/link_bridge.h"
 #include <cstdio>
 #include <cstring>
@@ -76,16 +77,15 @@ void ApcGrid::bindAll(ParamStore& ps) {
     ps.bind("fx/lpres",   0.0f);
     ps.bind("fx/lp",      1.0f);
     ps.bind("fx/pitch",   0.0f);
-    // WITNESSED BUG (live, real Pi 4): bank-select buttons never actually
-    // switched the audible chain -- dub-fx/guitar-fx/lofi-fx all correctly
-    // updated m_activeBank and re-pushed the 7 knob values, but NOTHING ever
-    // wrote effects_runtime.dsp's "fx/bank" selector zone (added when that
-    // file's bank-crossfade was wired), so the Faust zone stayed pinned at
-    // its compiled-in default (0 = Dub) forever regardless of which button
-    // was pressed. Bind it here so it's a live zone from startup; the actual
-    // per-press write is pushBankValuesToZones's job now (see its own
-    // updated comment).
-    ps.bind("fx/bank", 0.0f);
+    // NOTE: this used to also ps.bind("fx/bank", ...) -- a selector zone for
+    // an in-Faust 3-way crossfade in effects_runtime.dsp. WITNESSED live on a
+    // real Pi 4 this session: that crossfade computed all 3 banks' full
+    // effect chains every block regardless of which was "selected" (Faust
+    // has no runtime branching), a real ~7pp core_busy regression causing
+    // continuous audio dropouts. effects_runtime.dsp is restored to its
+    // pre-LOFI dub-only chain and has no fx/bank zone anymore -- guitar and
+    // lofi-fx's effects moved to their own permanent Core-3 LV2 bundle
+    // (guitar_lofi_fx.dsp) instead, always active, never gated by a selector.
 }
 
 static void setLooper(ParamStore& ps, int looper, const char* field, float v) {
@@ -952,19 +952,84 @@ void ApcGrid::onFormantCC(uint8_t data2, ParamStore& ps) {
 }
 
 // --- 3-bank fx control-surface (LOFI feature) -------------------------------
-// Shared Faust zone name for each of the 7 CC-mapped knob positions, index-
-// matched to m_fxBankValues' second dimension. This is the ONE place that
-// mapping is spelled out; every bank-switch/knob-write path below indexes
-// through this array rather than repeating the 7 literal zone names.
-static const char* const kFxZoneNames[kFxKnobCount] = {
-    "fx/reverb", "fx/delay", "fx/time", "fx/hp", "fx/lpres", "fx/lp", "fx/pitch"
-};
-// The real APC Key25 CC number for each of the 7 knob positions above, index-
-// matched -- must stay in sync with kFxZoneNames and config/controls.conf's
-// own documented cc48/49/50/51/54/55/57 assignment.
+// The real APC Key25 CC number for each of the 7 knob positions, index-
+// matched to m_fxBankValues' second dimension and to every kXxxTargets table
+// below -- must stay in sync with config/controls.conf's own documented
+// cc48/49/50/51/54/55/57 assignment.
 static const int kFxKnobCcNumbers[kFxKnobCount] = { 48, 49, 50, 51, 54, 55, 57 };
 
-void ApcGrid::onFxKnobCC(int ccNumber, uint8_t data2, ParamStore& ps) {
+// Per-bank permanent target for each of the 7 knob positions (see
+// FxKnobTarget's declaration in apc_grid.h for the full redesign rationale:
+// unlike the old shared-7-zones model, each bank's knobs now have their OWN
+// permanent target, always live regardless of which bank is "selected").
+static const FxKnobTarget kDubTargets[kFxKnobCount] = {
+    { FxKnobKind::FaustZone, "fx/reverb" },
+    { FxKnobKind::FaustZone, "fx/delay"  },
+    { FxKnobKind::FaustZone, "fx/time"   },
+    { FxKnobKind::FaustZone, "fx/hp"     },
+    { FxKnobKind::FaustZone, "fx/lpres"  },
+    { FxKnobKind::FaustZone, "fx/lp"     },
+    { FxKnobKind::FaustZone, "fx/pitch"  },
+};
+static const FxKnobTarget kGuitarTargets[kFxKnobCount] = {
+    { FxKnobKind::Lv2Control, "fx2/FLANGEAMT"   },
+    { FxKnobKind::Lv2Control, "fx2/TREMOLOAMT"  },
+    { FxKnobKind::Lv2Control, "fx2/BANKSPEED"   },
+    { FxKnobKind::Lv2Control, "fx2/PHASERAMT"   },
+    { FxKnobKind::SamplerAttackMs,  nullptr },
+    { FxKnobKind::SamplerReleaseMs, nullptr },
+    { FxKnobKind::Lv2Control, "fx2/COMPRESSAMT" },
+};
+static const FxKnobTarget kLofiFxTargets[kFxKnobCount] = {
+    { FxKnobKind::Lv2Control, "fx2/BITCRUSHAMT" },
+    { FxKnobKind::Lv2Control, "fx2/VINYLAMT"    },
+    { FxKnobKind::Lv2Control, "fx2/FLUTTERAMT"  },
+    { FxKnobKind::Lv2Control, "fx2/SRRAMT"      },
+    { FxKnobKind::SamplerGrainSizeMs,    nullptr },
+    { FxKnobKind::SamplerGrainDensityHz, nullptr },
+    { FxKnobKind::SamplerScanRate,       nullptr },
+};
+
+// Attack/release/grain-size/grain-density/scan-rate are Sampler-native
+// controls whose real ranges (ms/Hz/multiplier) are NOT 0..1 like every
+// other knob here -- each knob's raw 0..1 CC value is mapped to that
+// control's own natural range before calling into Sampler, matching the
+// range each setter already documents/clamps to in sampler.h.
+static void applySamplerFxKnob(FxKnobKind kind, float v01, Sampler* sampler) {
+    if (!sampler) return;
+    switch (kind) {
+        case FxKnobKind::SamplerAttackMs:       sampler->setAttackMs(v01 * 2000.0f); break;
+        case FxKnobKind::SamplerReleaseMs:      sampler->setReleaseMs(v01 * 2000.0f); break;
+        // Touching any granulator knob turns the granulator on -- matching
+        // setAttackMs/setReleaseMs's own "calling this at all is a one-way
+        // switch off the legacy default" pattern in sampler.h. Without this,
+        // dialing grain size/density/scan rate would silently do nothing
+        // audible (m_granOn defaults off and nothing else ever enables it).
+        case FxKnobKind::SamplerGrainSizeMs:
+            sampler->setGranulatorEnabled(true);
+            sampler->setGrainSizeMs(5.0f + v01 * 495.0f);
+            break;
+        case FxKnobKind::SamplerGrainDensityHz:
+            sampler->setGranulatorEnabled(true);
+            sampler->setGrainDensityHz(0.5f + v01 * 199.5f);
+            break;
+        case FxKnobKind::SamplerScanRate:
+            sampler->setGranulatorEnabled(true);
+            sampler->setScanRate(v01 * 8.0f);
+            break;
+        default: break;
+    }
+}
+
+static void applyFxKnobTarget(const FxKnobTarget& t, float v01, ParamStore& ps, Sampler* sampler, Lv2Host* homeFx) {
+    switch (t.kind) {
+        case FxKnobKind::FaustZone:  ps.setByName(t.name, v01); break;
+        case FxKnobKind::Lv2Control: if (homeFx) homeFx->setControl(t.name, v01); break;
+        default: applySamplerFxKnob(t.kind, v01, sampler); break;
+    }
+}
+
+void ApcGrid::onFxKnobCC(int ccNumber, uint8_t data2, ParamStore& ps, Sampler* sampler, Lv2Host* homeFx) {
     int knobIdx = -1;
     for (int k = 0; k < kFxKnobCount; k++) {
         if (kFxKnobCcNumbers[k] == ccNumber) { knobIdx = k; break; }
@@ -972,28 +1037,10 @@ void ApcGrid::onFxKnobCC(int ccNumber, uint8_t data2, ParamStore& ps) {
     if (knobIdx < 0) return;   // not one of the 7 known knob CCs
     float v = (float)data2 / 127.0f;
     m_fxBankValues[(int)m_activeBank][knobIdx] = v;
-    ps.setByName(kFxZoneNames[knobIdx], v);
-}
-
-void ApcGrid::pushBankValuesToZones(FxBank bank, ParamStore& ps) {
-    // Re-push every stored value of the NEWLY-active bank into the shared
-    // Faust zones immediately on switch, rather than waiting for each knob to
-    // be physically touched again -- otherwise switching to guitar-fx would
-    // leave the audible effect chain still showing whatever the DUB bank's
-    // values happened to be until the user retouches every single knob,
-    // which would look and sound like the bank switch silently failed.
-    int b = (int)bank;
-    for (int k = 0; k < kFxKnobCount; k++) {
-        ps.setByName(kFxZoneNames[k], m_fxBankValues[b][k]);
-    }
-    // WITNESSED BUG (live, real Pi 4): this method updated the 7 shared knob
-    // zones but never wrote effects_runtime.dsp's "fx/bank" selector zone
-    // (0=Dub/1=Guitar/2=LofiFx) -- so the DSP's own bank-crossfade never saw
-    // any change and stayed pinned at its compiled-in default (Dub) forever,
-    // regardless of which bank button was actually pressed. This is the
-    // ACTUAL bank switch -- everything above this line only prepares the
-    // knob values the newly-selected bank will show, it never selects it.
-    ps.setByName("fx/bank", (float)b);
+    const FxKnobTarget* targets =
+        m_activeBank == FxBank::Dub ? kDubTargets :
+        m_activeBank == FxBank::Guitar ? kGuitarTargets : kLofiFxTargets;
+    applyFxKnobTarget(targets[knobIdx], v, ps, sampler, homeFx);
 }
 
 // now_ms==0 is a valid real timestamp only in theory (process start) -- to
@@ -1006,31 +1053,31 @@ static unsigned nonZeroDeadline(unsigned now_ms, unsigned windowMs) {
     return d != 0 ? d : 1;
 }
 
-void ApcGrid::onDubFxPress(unsigned now_ms, ParamStore& ps) {
+// REDESIGN (Core-3 move): bank switches are now a PURE UI/state change --
+// see apc_grid.h's updated comment on why there is nothing left to re-push.
+// Each press only flips m_activeBank (which knob targets the next CC touch
+// reaches) and starts the LED flash window.
+void ApcGrid::onDubFxPress(unsigned now_ms, ParamStore& /*ps*/) {
     m_activeBank = FxBank::Dub;
-    pushBankValuesToZones(m_activeBank, ps);
     m_bankFlashWhich = FxBank::Dub;
     m_bankFlashReleaseAt = nonZeroDeadline(now_ms, kBankFlashMs);
 }
-void ApcGrid::onLofiFxPress(unsigned now_ms, ParamStore& ps) {
+void ApcGrid::onLofiFxPress(unsigned now_ms, ParamStore& /*ps*/) {
     m_activeBank = FxBank::LofiFx;
-    pushBankValuesToZones(m_activeBank, ps);
     m_bankFlashWhich = FxBank::LofiFx;
     m_bankFlashReleaseAt = nonZeroDeadline(now_ms, kBankFlashMs);
 }
-void ApcGrid::onGuitarFxPress(unsigned now_ms, ParamStore& ps) {
+void ApcGrid::onGuitarFxPress(unsigned now_ms, ParamStore& /*ps*/) {
     // Press-time bank-select fires immediately (matching dub-fx/lofi-fx's own
     // press-time switch) -- the hold-for-sidechain gesture is layered on TOP
     // of this, not instead of it, exactly mirroring how the main pad grid's
     // ARM/FINISH already fires on press while a SEPARATE flag
     // (m_looperArmedOnPress) suppresses only the matching RELEASE's tap.
     // Selecting the bank on every guitar-fx press (even ones that turn out to
-    // be sidechain-holds) is deliberately harmless: if the user is about to
-    // hold it for sidechain toggling, they typically want to be looking at
-    // the guitar bank's own knobs anyway, and re-selecting the SAME bank a
-    // press already had active is a no-op past the redundant zone re-push.
+    // be sidechain-holds) is deliberately harmless: re-selecting the SAME
+    // bank a press already had active is now simply a no-op (nothing to
+    // re-push under the Core-3 redesign).
     m_activeBank = FxBank::Guitar;
-    pushBankValuesToZones(m_activeBank, ps);
     m_bankFlashWhich = FxBank::Guitar;
     m_bankFlashReleaseAt = nonZeroDeadline(now_ms, kBankFlashMs);
     m_guitarFxHeld = true;

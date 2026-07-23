@@ -15,6 +15,7 @@ namespace aloop {
 
 class Sampler;      // dsp/sampler/sampler.h -- forward-declared, ApcGrid only ever holds a pointer
 class AudioThread;  // dsp/audio_thread.h -- forward-declared, for ARM-quantization telemetry reads
+class Lv2Host;      // host/lv2_host.h -- forward-declared, for the permanent Core-3 guitar+lofi-fx bundle
 
 constexpr int kApcRows = 5;
 constexpr int kApcCols = 8;
@@ -59,6 +60,39 @@ constexpr int kApcBtnLofiFx   = 69;
 // index order matches config/controls.conf's cc48/49/50/51/54/55/57 bindings
 // (fx/reverb, fx/delay, fx/time, fx/hp, fx/lpres, fx/lp, fx/pitch).
 constexpr int kFxKnobCount = 7;
+
+// REDESIGN (Core-3 guitar+lofi-fx move): the OLD design had all 3 banks share
+// ONE 7-slot array of Faust zone names (kFxZoneNames in apc_grid.cpp), only
+// relabeling what each bank's stored value MEANT -- correct under the
+// abandoned in-Faust 3-way crossfade (only the "active" bank's write ever
+// reached the audible chain), wrong now that all 3 banks' effects are
+// simultaneously, permanently live (confirmed: "Both guitar and lofi-fx
+// always stack together with dub"). So guitar/lofi-fx no longer share dub's
+// fx/* zone identities at all -- each of their knob positions has its own
+// permanent target, resolved per-bank in onFxKnobCC/pushBankValuesToZones.
+//
+// Slot layout per bank (7 physical knob positions, CC48/49/50/51/54/55/57):
+//   Dub:     fx/reverb, fx/delay, fx/time, fx/hp, fx/lpres, fx/lp, fx/pitch
+//            (unchanged Faust zones on Core 1, via ParamStore as always)
+//   Guitar:  fx2/FLANGEAMT, fx2/TREMOLOAMT, fx2/BANKSPEED, fx2/PHASERAMT,
+//            [sampler attack ms], [sampler release ms], fx2/COMPRESSAMT
+//            (guitar_lofi_fx.dsp's own LV2 control ports on Core 3, via
+//            Lv2Host::setControl; attack/release are native Sampler setters,
+//            not Faust/LV2 zones at all, per the confirmed "attack/release
+//            live natively in sampler.h" design)
+//   LofiFx:  fx2/BITCRUSHAMT, fx2/VINYLAMT, fx2/FLUTTERAMT, fx2/SRRAMT,
+//            [granulator grain size ms], [granulator grain density Hz],
+//            [granulator scan rate]
+//            (grid slots 4-6 are native Sampler granulator setters, not
+//            Faust/LV2 zones -- pitch-spray and position-jitter stay fixed at
+//            their passthrough defaults, per the confirmed 3-of-5 granulator
+//            knob mapping: only 7 physical knobs exist, no 8th slot)
+enum class FxKnobKind : uint8_t { FaustZone, Lv2Control, SamplerAttackMs, SamplerReleaseMs,
+                                   SamplerGrainSizeMs, SamplerGrainDensityHz, SamplerScanRate };
+struct FxKnobTarget {
+    FxKnobKind kind;
+    const char* name;   // Faust zone name (FaustZone) or LV2 port symbol (Lv2Control); unused otherwise
+};
 
 // row*8+col grid index -> looper index (cols 2-5) or -1 (apcKey25Notes.cpp _looperFromPad)
 inline int gridLooperIndex(int row, int col) {
@@ -189,12 +223,17 @@ public:
 
     // --- 3-bank fx control-surface (LOFI feature) ---------------------------
     // dub-fx/lofi-fx are plain tap-to-select bank buttons -- no secondary
-    // gesture, unlike guitar-fx below. Switching the active bank re-pushes
-    // every one of that bank's 7 stored knob values into the shared Faust
-    // zones immediately (see pushBankValuesToZones's impl comment for why
-    // this must happen eagerly rather than waiting for the next CC touch on
-    // each knob). `now_ms` starts the brief LED flash window (see
-    // bankFlashActive/pollHolds).
+    // gesture, unlike guitar-fx below. REDESIGN (Core-3 move): switching the
+    // active bank is now a PURE UI/state change -- it does NOT push any
+    // values anywhere. Every bank's 7 knob targets are their OWN permanent
+    // zones/ports/sampler-setters, already continuously live regardless of
+    // which bank is "selected" (confirmed: "Both guitar and lofi-fx always
+    // stack together with dub" / "bank buttons only select which knobs to
+    // edit"). The old design's eager re-push existed only because the 3
+    // banks used to SHARE one set of zones and only the active bank's write
+    // reached the audible chain -- that sharing no longer exists, so there is
+    // nothing left to re-push on a bank switch. `now_ms` starts the brief LED
+    // flash window (see bankFlashActive/pollHolds).
     void onDubFxPress(unsigned now_ms, ParamStore& ps);
     void onLofiFxPress(unsigned now_ms, ParamStore& ps);
     // guitar-fx is a dual-gesture button: a quick tap (press+release with NO
@@ -211,12 +250,16 @@ public:
     // APC Key25 hardware, per config/controls.conf's own comment on why these
     // moved out of the flat map) -- `ccNumber` must be one of those 7; writes
     // the normalized (data2/127) value into the CURRENTLY ACTIVE bank's
-    // stored slot for that knob position AND the shared Faust zone
-    // immediately (so turning a knob has the usual instant effect), matching
-    // the confirmed design: each bank stores its own independent value per
-    // knob position, only the ACTIVE bank's write reaches the audible chain.
+    // stored slot for that knob position, AND into that slot's own permanent
+    // target (Dub -> ParamStore Faust zone; Guitar/LofiFx -> homeFx's LV2
+    // control port or a native Sampler setter), per FxKnobTarget above --
+    // every bank's target is ALWAYS live now (Core-3 redesign), so writing a
+    // non-active bank's stored value still audibly applies, unlike the old
+    // "only the active bank reaches the chain" design. `sampler`/`homeFx` may
+    // be null (matches onKeybedNoteOn's existing null-tolerant convention);
+    // a null target for the knob's current bank is silently skipped.
     // No-op if ccNumber isn't one of the 7 known knob CCs.
-    void onFxKnobCC(int ccNumber, uint8_t data2, ParamStore& ps);
+    void onFxKnobCC(int ccNumber, uint8_t data2, ParamStore& ps, Sampler* sampler, Lv2Host* homeFx);
     FxBank activeBank() const { return m_activeBank; }
     // True only in the brief window right after a dub-fx/guitar-fx/lofi-fx
     // press, for the LED module's flash-on-select feedback (confirmed scope:
@@ -287,21 +330,29 @@ private:
     long m_masterLenSamples = 0;
 
     // --- 3-bank fx control-surface state (LOFI feature) ---------------------
-    // Per-bank stored value for each of the 7 CC-mapped knobs -- [bank][knob].
+    // Per-bank stored value for each of the 7 CC-mapped knobs -- [bank][knob],
+    // in raw 0..1 CC-normalized space regardless of target kind (Faust zone,
+    // LV2 control port, or Sampler-native setter -- see FxKnobTarget/
+    // applyFxKnobTarget in apc_grid.cpp for the per-kind range mapping).
     // Defaults match the EXISTING dub-bank Faust zone defaults exactly (see
     // midi.cpp's kFxDefaults table) for bank 0 (Dub); guitar/lofi-fx banks
     // default every knob to whatever value makes THAT bank's own effect chain
     // a byte-exact passthrough (0.0 for every new effect's "amount" control,
     // per the confirmed guitar-fx-bank-defaults-passthrough / lofi-fx-bank-
-    // defaults-passthrough design requirement) -- set once here, re-verified
-    // against the real Faust defaults once effects_runtime.dsp's new stages
-    // land (a later integration step reads these same array indices).
+    // defaults-passthrough design requirement) -- verified against
+    // guitar_lofi_fx.dsp's real Faust defaults via the CLI harness.
+    // NOTE: these are only the STORED shadow values ApcGrid itself tracks for
+    // knob display/re-edit -- they are NOT pushed into the sampler at startup
+    // (see bindAll's comment: the sampler's attack/release/granulator knobs
+    // apply only once a knob is physically touched, so the legacy auto-
+    // scaled-attack/off-by-default-granulator behavior stays exactly
+    // unchanged until then).
     float m_fxBankValues[kFxBankCount][kFxKnobCount] = {
         // Dub bank: fx/reverb, fx/delay, fx/time, fx/hp, fx/lpres, fx/lp, fx/pitch
         {0.0f, 0.0f, 0.5f, 0.0f, 0.0f, 1.0f, 0.0f},
-        // Guitar bank: flange, tremolo, speed, phaser, attack, release, (compress lives outside this 7-knob array, see below)
+        // Guitar bank: flange, tremolo, speed, phaser, attack, release, compress
         {0.0f, 0.0f, 0.5f, 0.0f, 0.0f, 0.0f, 0.0f},
-        // Lofi-fx bank: bitcrush, vinyl, flutter, samplerate, (4 granulator knobs live in sampler.h, not here)
+        // Lofi-fx bank: bitcrush, vinyl, flutter, samplerate, grain size, grain density, scan rate
         {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
     };
     FxBank m_activeBank = FxBank::Dub;
@@ -320,11 +371,6 @@ private:
     void capturePreset(int p, ParamStore& ps);
     void applyPreset(int p, ParamStore& ps);
     void forgetLooperFromPresets(int looper);
-    // Re-pushes every stored knob value of `bank` into the shared Faust
-    // zones (fx/reverb, fx/delay, ...) -- called on every bank switch so the
-    // audible effect jumps to the newly-selected bank's last-left values
-    // immediately, not only once each knob is next physically touched.
-    void pushBankValuesToZones(FxBank bank, ParamStore& ps);
 };
 
 } // namespace aloop

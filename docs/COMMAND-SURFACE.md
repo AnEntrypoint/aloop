@@ -95,8 +95,8 @@ The 8-button control row above the pad grid is transpose / sample / drum-sample 
 dub-fx / guitar-fx / lofi-fx / varispeed / varispeed. The first three and last two
 are the existing, unchanged buttons (`onLiveEngageToggle`, `onSamplerBtn65/66Press`,
 note70/71 speed-scrub). Positions 4-6 are 3 new, symmetric bank-select buttons —
-**FULLY WIRED** in `ApcGrid`/`midi.cpp` (confirmed by reading both), unlike the
-per-bank effect chains themselves (see the DSP-wiring status below).
+**FULLY WIRED** in `ApcGrid`/`midi.cpp`, and (per the Core-3 redesign below)
+so is every bank's own effect chain — all 3 banks are simultaneously live.
 
 - **dub-fx** = note 67, **guitar-fx** = note 68, **lofi-fx** = note 69 (channel 0
   only) — WITNESSED live on real APC Key25 hardware (originally assumed 87/88/89
@@ -126,27 +126,35 @@ per-bank effect chains themselves (see the DSP-wiring status below).
 ### Per-bank independent knob storage
 Each bank stores its own value per physical knob position — switching banks
 changes what the 7 knobs currently mean/show without touching any other bank's
-stored values (`m_fxBankValues[bank][knob]`, seeded in `ApcGrid::bindAll`). The
-knob→zone mapping (index-matched `kFxZoneNames`/`kFxKnobCcNumbers` in
-apc_grid.cpp) is the same physical CC layout for every bank; only the Faust
-zone identity attached to a bank's *stored value* changes what it does:
+stored values (`m_fxBankValues[bank][knob]`, seeded in `ApcGrid::bindAll`).
 
-| CC | Faust zone | Dub bank meaning |
-|---|---|---|
-| 48 | `fx/reverb` | reverb amount |
-| 49 | `fx/delay` | delay amount |
-| 50 | `fx/time` | delay time |
-| 51 | `fx/hp` | HP filter |
-| 54 | `fx/lpres` | LP resonance |
-| 55 | `fx/lp` | LP filter |
-| 57 | `fx/pitch` | pitch |
+**REDESIGN (Core-3 move, superseding an earlier in-Faust 3-bank crossfade
+design — see "Guitar/LofiFx bank DSP wiring" below for why that was
+abandoned):** each bank's 7 knob positions now have their OWN permanent
+target (`FxKnobTarget`/`kDubTargets`/`kGuitarTargets`/`kLofiFxTargets` in
+apc_grid.cpp) — Dub's targets are unchanged Core-1 Faust zones; Guitar/LofiFx
+targets are either an `fx2/*` LV2 control port on the new permanent Core-3
+`guitar_lofi_fx.dsp` bundle, or (for attack/release/granulator) a native
+`Sampler` setter call. All 3 banks' targets are simultaneously, permanently
+live — switching banks is now a pure UI/state change (which bank's stored
+values the physical knobs currently show/edit), never a DSP-routing change:
+
+| CC | Dub target | Guitar target | LofiFx target |
+|---|---|---|---|
+| 48 | `fx/reverb` (Faust) | `fx2/FLANGEAMT` (LV2) | `fx2/BITCRUSHAMT` (LV2) |
+| 49 | `fx/delay` (Faust) | `fx2/TREMOLOAMT` (LV2) | `fx2/VINYLAMT` (LV2) |
+| 50 | `fx/time` (Faust) | `fx2/BANKSPEED` (LV2) | `fx2/FLUTTERAMT` (LV2) |
+| 51 | `fx/hp` (Faust) | `fx2/PHASERAMT` (LV2) | `fx2/SRRAMT` (LV2) |
+| 54 | `fx/lpres` (Faust) | attack ms (Sampler) | grain size ms (Sampler) |
+| 55 | `fx/lp` (Faust) | release ms (Sampler) | grain density Hz (Sampler) |
+| 57 | `fx/pitch` (Faust) | `fx2/COMPRESSAMT` (LV2) | scan rate (Sampler) |
 
 (CC53/formant is handled separately by `onFormantCC`, unaffected by bank
-switching — same as before this feature.) Guitar and LofiFx banks reuse this
-same 7-slot array with their own defaults (0.0 = passthrough for every new
-effect's "amount" control, `m_fxBankValues[1]`/`[2]` in apc_grid.h) but — see
-below — nothing downstream of `ApcGrid` yet turns those stored values into
-sound for those two banks.
+switching — same as before this feature.) Granulator's pitch-spray and
+position-jitter controls stay fixed at their passthrough defaults — only 7
+physical knobs exist, so lofi-fx's bottom row picked 3 of the sampler's 5
+granulator params (grain size/density/scan rate), matching guitar bank's 4+3
+knob shape exactly (both decisions made explicitly, not silently guessed).
 
 ### guitar-fx's dual gesture
 guitar-fx is the one bank button with a second, independent gesture layered on
@@ -171,38 +179,52 @@ top of plain tap-to-select:
   below) — a designated source looper's own level telemetry drives a shared
   ducking envelope applied to every OTHER looper's output.
 
-### Guitar/LofiFx bank DSP wiring — LANDED
-`dsp/effects_runtime.dsp` now consumes the same 7 shared `fx/*` zones the Dub
-bank always used, reinterpreted per-bank via a new 8th zone, `fx/bank`
-(`nentry`, 0=Dub/1=Guitar/2=LofiFx, matching `FxBank`'s own enum values) —
-`ApcGrid` writes this zone whenever `activeBank()` changes, alongside the
-existing per-bank knob-value re-push.
+### Guitar/LofiFx bank DSP wiring — LANDED (Core-3 redesign)
+**Superseded design, kept here for history:** an earlier iteration of this
+feature made `dsp/effects_runtime.dsp` compute all 3 banks' effect chains
+every block and blend them via an 8th `fx/bank` Faust zone (a continuous
+`si.smoo`-smoothed triangular crossfade). **WITNESSED live on a real Pi 4:**
+Faust has no runtime branching — `select2`/crossfade math chooses among
+ALREADY-COMPUTED signals, it never skips computing the other banks — so this
+design computed guitar+lofi-fx's 8 effects on Core 1 continuously regardless
+of which bank was "selected," a real ~7 percentage-point `core_busy`
+regression (23%→30%) that caused audible continuous audio dropouts. Confirmed
+via a real CI-built pre-feature baseline (zero xruns) vs the crossfade build
+(continuous dropouts), and via a second isolated A/B test reverting only that
+file.
 
-- `guitarChain = flanger -> tremolo -> phaser`, reading `REVAMT->FLANGEAMT`,
-  `DELAYAMT->TREMOLOAMT`, `TIME->BANKSPEED` (shared tremolo/phaser rate),
-  `HPCUT->PHASERAMT`.
-- `lofiFxChain = bitcrush -> vinyl -> flutter -> samplerate`, reading
-  `REVAMT->BITCRUSHAMT`, `DELAYAMT->VINYLAMT`, `TIME->FLUTTERAMT`,
-  `HPCUT->SRRAMT`.
-- The 3 banks' fully-computed chains are blended by `fx/bank`, smoothed via
-  `si.smoo` (same idiom/time-constant class as `aloop.dsp`'s existing
-  `MONITORFOLD`/`GLITCHFOLD` ramps) into a continuous triangular crossfade —
-  not a hard switch — so a bank change mid-performance does not click/pop.
-  Verified: `fx/bank=0.5` produces a genuine partial blend, not a
-  discontinuity.
-- Verified byte-exact passthrough at each bank's own true stored defaults
-  (Dub: unchanged from before this feature; Guitar: `TIME=0.5`, others 0;
-  LofiFx: `TIME=0.0`, others 0 — note the LofiFx default for that shared slot
-  deliberately differs from Dub's) via the CLI DSP harness.
-- `effects/home/faust/compressor.dsp` (the guitar bank's "compress" bottom-row
-  control) exists as a standalone file but is **NOT YET wired** into
-  `guitarChain` — it has no assigned slot in the current 7-knob array
-  (`apc_grid.h`'s own comment: "compress lives outside this 7-knob array"), so
-  it needs its own zone/CC assignment before it can be reached from the
-  control surface at all. Its internal gain-staging (byte-exact passthrough
-  at 0, monotonic loudness increase with no clipping across the full dial
-  sweep) was still being iterated on as of this write — treat its behavior as
-  unconfirmed until both the internal math and its chain wiring land.
+**Current, landed design:** `dsp/effects_runtime.dsp` is restored to its
+pre-feature dub-only chain (`pitchStage : delayStage : reverbStage :
+microStage <: (filterStage, _)`) — Core 1's cost is back to its original
+budget. Guitar+lofi-fx's 8 effects moved to their own standalone Faust
+program, `effects/home/faust/guitar_lofi_fx.dsp`, compiled by CI
+(`.github/workflows/build-lv2.yml`'s `guitar-lofi-fx-lv2` job) into its own
+LV2 bundle under `/effects/home`, and hosted in-process on Core 3 (previously
+fully idle) via a SECOND, PERMANENT `Lv2Host` instance (`audio_thread.cpp`'s
+`homeFx`, distinct from the existing swappable `userFx`) — running in series
+after Core 1's full dub-chain output, every block, unconditionally:
+`homeFx.process(fout.data(), N); userFx.process(fout.data(), N);`. Per the
+confirmed design, this is a genuinely free capacity win, not a
+redistribution: all 3 banks' effects are now simultaneously, permanently
+active (never gated by bank selection), matching "Both guitar and lofi-fx
+always stack together with dub."
+
+- `guitar_lofi_fx.dsp`'s chain: `flanger -> tremolo -> phaser -> compressor ->
+  bitcrush -> vinyl -> flutter -> samplerate`, each stage reading its own
+  permanent `fx2/*` zone directly (no shared-zone reinterpretation).
+- `Lv2Host::setControl(symbol, value)` (new) pushes a live control value into
+  every loaded plugin's matching LV2 port by symbol — `ApcGrid::onFxKnobCC`
+  calls this for every Guitar/LofiFx knob whose target is `FxKnobKind::
+  Lv2Control` (see the per-bank target table above), the same way it calls
+  `ParamStore::setByName` for Dub's Faust zones.
+- `effects/home/faust/compressor.dsp` (guitar bank's "compress" control) is
+  now wired to CC57/`fx2/COMPRESSAMT`, filling the 7th guitar-bank knob slot
+  the earlier design left unassigned.
+- Verified via `dsp_cli`: `guitar_lofi_fx.dsp` compiles clean, exposes
+  exactly the 9 expected `fx2/*` zones, byte-exact passthrough at all
+  defaults, and audibly engages when driven (flange+bitcrush test case).
+  CI-built and confirmed green (`guitar-lofi-fx-lv2` artifact uploads
+  alongside the existing `home-fx-lv2` job).
 
 ### Sidechain-pump DSP routing — LANDED
 `dsp/loop.dsp`'s `oneLooper` gained a 7th `process()`-level signal input,

@@ -93,6 +93,15 @@ public:
     // flows through the user plugin. RT-safe (no alloc in the per-block path).
     void process(float* buf, int nframes);
 
+    // Push a live control value into every loaded plugin's port matching `symbol`
+    // (the LV2 port symbol == the ParamStore bind key, per connectPorts()'s own
+    // documented convention). RT-safe: a flat linear scan over already-resolved
+    // controlPortIdx entries, no allocation, no lookup structure — the same class
+    // of cost the sidechain lookup fix elsewhere in this codebase established as
+    // acceptable for small, fixed per-block call counts (here: 8 guitar/lofi-fx
+    // knobs, called once per control-map update, not per audio block).
+    void setControl(const std::string& symbol, float value);
+
     // Rescan the user dir for added/removed bundles (hot-swap). Called from the
     // CONTROL thread, never the audio thread; the audio thread sees the new set
     // via the same double-buffer-flip discipline as the param snapshot.

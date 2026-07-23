@@ -316,7 +316,7 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
             // fallback, since that fallback no longer has anything bound for
             // these targets.
             if (type == 0xB0 && (d1 == 48 || d1 == 49 || d1 == 50 || d1 == 51 || d1 == 54 || d1 == 55 || d1 == 57)) {
-                grid.onFxKnobCC((int)d1, d2, ps);
+                grid.onFxKnobCC((int)d1, d2, ps, audio ? audio->sampler() : nullptr, audio ? audio->homeFx() : nullptr);
                 continue;
             }
             if (d1 >= 82 && d1 <= 86) {                                                // microrepeat latch notes

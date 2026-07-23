@@ -120,6 +120,10 @@ LinkBridge* g_link = nullptr;     // Ableton Link (tempo/phase); read each block
 // stack-local for the same reason AloopLoopDsp was moved to the heap -- see
 // ADR-013) and published here for the MIDI thread to reach.
 aloop::Sampler* g_sampler = nullptr;
+// Published the same way as g_sampler: the permanent Core-3 guitar+lofi-fx
+// LV2 host, so ApcGrid's fx-knob dispatch can push live control values into
+// its fx2/* ports without a header dependency on Lv2Host's own layout.
+aloop::Lv2Host* g_homeFx = nullptr;
 
 // TRUE varispeed state (see dsp/loop.dsp's top-of-file comment + the
 // "Varispeed Link sync" block below). Mirrors looper's split exactly:
@@ -452,6 +456,22 @@ static void* worker(void*) {
     // draft of this fix introduced and caught before it shipped).
     std::vector<float> captureFin((size_t)N, 0.0f);
 #endif
+
+    // The permanent home-stack effects that don't fit Core 1's always-on Faust
+    // program: guitar+lofi-fx's 8 effects (Core-3 redesign -- WITNESSED this
+    // session: folding them into Core 1's own always-on program as a 3-bank
+    // in-Faust crossfade computed all 3 banks every block regardless of
+    // "selection", a real ~7pp core_busy regression causing continuous
+    // dropouts, since Faust has no runtime branching to skip the other two
+    // banks' compute). Loaded from /effects/home (the guitar-lofi-fx-lv2 CI
+    // bundle, effects/home/faust/guitar_lofi_fx.dsp), on the SAME free core as
+    // the user's swappable effect (Core 3 was fully idle before this change).
+    // Fixed/permanent, never hot-swapped -- unlike userFx below, nothing
+    // rescans this directory at runtime.
+    Lv2Host homeFx;
+    homeFx.loadDir(g_cfg.homeDir, g_cfg.userFxCore);   // honor aloop.conf [effects] home_dir + user_fx core
+    homeFx.connect(N, ch);
+    g_homeFx = &homeFx;
 
     // The user's swappable effect(s): an in-process LV2 host loading any bundle
     // from /effects/user, pinned to the free core (Core 3). Runs AFTER the home
@@ -1142,9 +1162,15 @@ static void* worker(void*) {
             timespec t0, t1;
             clock_gettime(CLOCK_MONOTONIC, &t0);
             faustHome.compute(N, fins, fouts);
-            // the user LV2(s) process the home-stack OUTPUT (fout) on the free
-            // core, in the same block — zero added latency, no graph (ADR-002).
-            // process() runs the plugin chain in place; passthrough if none loaded.
+            // Core-3 chain, in series, in the same block (no graph — zero added
+            // latency, ADR-002): the permanent guitar+lofi-fx home bundle runs
+            // FIRST (it's a fixed part of the home stack, conceptually "still
+            // Core 1's job", just physically hosted on the idle core), THEN the
+            // user's own swappable effect on top — matching the existing
+            // stacking order intent (home stack always underneath anything the
+            // user layers on). Both process() calls run in place on `fout`;
+            // passthrough if either has nothing loaded.
+            homeFx.process(fout.data(), N);
             userFx.process(fout.data(), N);
             // Snapshot this block's RAW loop output (rawLoopSum, aloop.dsp's
             // second process() output) for NEXT block's fold-in (see
@@ -1257,6 +1283,7 @@ void AudioThread::stop() {
 
 AudioThread::Telemetry AudioThread::snapshotTelemetry() const { return g_telem; }
 Sampler* AudioThread::sampler() const { return g_sampler; }
+Lv2Host* AudioThread::homeFx() const { return g_homeFx; }
 bool AudioThread::setRealtime(int core, int prio) { return setRealtimeSelf(core, prio); }
 void AudioThread::workerLoop() {}   // (the free function `worker` is the body)
 
