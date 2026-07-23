@@ -41,17 +41,17 @@ jobs:
           cat "$WORK/$CLSNAME.lv2/$CLSNAME.ttl"
 
           # Step 3: the manifest.ttl (faust2lv2's static-manifest branch, no GUI).
-          sed -e "s?@name@?$CLSNAME?g" -e "s?@uri@?https://faustlv2.bitbucket.io/$CLSNAME?g" -e "s?@dllext@?.so?g" > "$WORK/$CLSNAME.lv2/manifest.ttl" <<'EOF'
-@prefix doap: <http://usefulinc.com/ns/doap#> .
-@prefix foaf: <http://xmlns.com/foaf/0.1/> .
-@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .
-@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-
-<@uri@>
-    a lv2:Plugin ;
-    lv2:binary <@name@@dllext@> ;
-    rdfs:seeAlso <@name@.ttl> .
-EOF
+          printf '%s\n' \
+            '@prefix doap: <http://usefulinc.com/ns/doap#> .' \
+            '@prefix foaf: <http://xmlns.com/foaf/0.1/> .' \
+            '@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .' \
+            '@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .' \
+            '' \
+            "<https://faustlv2.bitbucket.io/$CLSNAME>" \
+            '    a lv2:Plugin ;' \
+            "    lv2:binary <$CLSNAME.so> ;" \
+            "    rdfs:seeAlso <$CLSNAME.ttl> ." \
+            > "$WORK/$CLSNAME.lv2/manifest.ttl"
 
           # Step 4 (Alpine aarch64, QEMU): the ACTUAL shared library, cross-compiled
           # to musl/aarch64 -- the one piece that must match the device's real libc+arch.
