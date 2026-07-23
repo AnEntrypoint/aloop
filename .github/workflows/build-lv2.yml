@@ -132,6 +132,17 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: guitar-lofi-fx-lv2
-          path: effects/home/guitar_lofi_fx.lv2
+          # WITNESSED live: a literal single-directory path (no wildcard) makes
+          # upload-artifact@v4 zip the DIRECTORY'S CONTENTS flattened at the
+          # zip root, dropping the guitar_lofi_fx.lv2/ wrapper entirely --
+          # unlike home-fx-lv2's own `effects/home/*.lv2` above, whose wildcard
+          # match preserves the matched directory's basename inside the zip.
+          # The flattened zip meant serve-netboot-win.js's download+unzip put
+          # guitar_lofi_fx.so/.ttl loose in lv2Dir instead of inside a
+          # guitar_lofi_fx.lv2/ folder, so lib-boot-tree.sh's own `find
+          # "${LV2_DIR}" -name '*.lv2'` packing step never matched them and
+          # the bundle silently never reached the device at all. Match the
+          # wildcard pattern so both jobs zip identically.
+          path: effects/home/*.lv2
           if-no-files-found: error
           retention-days: 3
