@@ -420,3 +420,6 @@
   subject: Update aloopvst/docs/PARAMETER-MAP.md with every new parameter this feature adds (guitar bank's 8, lofi-fx bank's 8, LOFI/bank-select state) -- matching the existing doc's table format (Faust zone / range / default / MIDI source), so the doc stays the authoritative parameter reference it already is for the dub bank.
   status: completed
   witness: 'Out of scope per explicit user instruction (grilling Q7: ''aloopvst is only an experiment, we must work on b'' -- hardware-only scope). No aloopvst doc updates are needed since no aloopvst code changes are part of this feature.'
+- subject: 'Core-3 guitar+lofi-fx redesign: build effects/home/faust/guitar_lofi_fx.dsp (standalone Faust file, 8 fx2/* zones, verified byte-exact passthrough + audible via dsp_cli) as its own LV2 bundle in CI. Added guitar-lofi-fx-lv2 job to .github/workflows/build-lv2.yml modeled on the existing home-fx-lv2 job. Not yet committed/pushed.'
+  status: in_progress
+  id: core-3-guitar-lofi-fx-redesign-build-effects-home-faust-guitar-l

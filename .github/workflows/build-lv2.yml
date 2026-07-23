@@ -88,3 +88,50 @@ jobs:
           # full incident (accumulated artifacts across every push hit the
           # account's total Actions storage quota and blocked all uploads).
           retention-days: 3
+
+  # Core-3 "always-on" guitar+lofi-fx chain -- LOFI feature, moved off Core 1
+  # (WITNESSED live regression: folding these 8 effects into Core 1's own
+  # always-on home Faust program as a 3-way crossfade was a real, measured
+  # ~7 percentage-point core_busy increase, causing audible continuous
+  # dropouts -- Faust cannot skip computing a signal path at runtime, so 3
+  # parallel chains computed every block regardless of "selection" had no
+  # in-Faust fix). effects/home/faust/guitar_lofi_fx.dsp is a genuinely
+  # standalone Faust program (only component()-imports the already-vendored
+  # individual effect stage files, no dependency on loop.dsp/aloop.dsp/
+  # effects_runtime.dsp at all), so this build is much simpler than the
+  # home-fx-lv2 job above -- no staging/sed-rewriting needed, just faust2lv2
+  # directly against the real repo path.
+  guitar-lofi-fx-lv2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Faust + LV2 dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y faust lv2-dev pkg-config build-essential libboost-dev
+
+      - name: Build guitar_lofi_fx.dsp as its own LV2 bundle
+        run: |
+          cd effects/home/faust
+          faust2lv2 guitar_lofi_fx.dsp
+          ls -R *.lv2 || (echo "::error::no .lv2 bundle produced" && exit 1)
+          mkdir -p "$GITHUB_WORKSPACE/effects/home"
+          cp -r *.lv2 "$GITHUB_WORKSPACE/effects/home/"
+
+      - name: Validate the LV2 bundle
+        run: |
+          sudo apt-get install -y lv2-dev lilv-utils || true
+          cd effects/home
+          find . -name '*.ttl' -print
+          if command -v lv2_validate >/dev/null; then
+            lv2_validate $(find . -name 'manifest.ttl') || echo "::warning::lv2_validate reported issues"
+          fi
+
+      - name: Upload guitar+lofi-fx LV2 bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: guitar-lofi-fx-lv2
+          path: effects/home/guitar_lofi_fx.lv2
+          if-no-files-found: error
+          retention-days: 3
