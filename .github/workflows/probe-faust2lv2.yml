@@ -4,9 +4,11 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Install faust and inspect faust2lv2
+      - name: Check for aarch64-musl cross toolchain
         run: |
-          sudo apt-get update && sudo apt-get install -y faust
-          which faust2lv2
-          echo "--- script content ---"
-          cat "$(which faust2lv2)"
+          apt-cache search musl 2>&1 | head -30
+          echo "--- try installing ---"
+          sudo apt-get update
+          sudo apt-get install -y musl-tools 2>&1 | tail -20
+          which aarch64-linux-musl-g++ 2>&1 || echo "not found"
+          dpkg -L musl-tools 2>&1 | head -20
