@@ -24,6 +24,11 @@
 #include <memory>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#if defined(__SSE2__) && !defined(__aarch64__)
+#include <xmmintrin.h>
+#include <pmmintrin.h>
+#endif
 
 // ALSA is present in the build container (see build-binary.yml). Guarded so the
 // design compiles for review even where ALSA headers are absent; the real device
@@ -204,8 +209,45 @@ bool setRealtimeSelf(int core, int prio) {
 // Here we implement the RT scaffolding + a clean passthrough; the DSP and host
 // calls slot in where marked once the ported source + host impl are linked (their
 // interfaces are already fixed, so this file does not change when they land).
+// Flush-to-zero + denormals-are-zero: real-world DSP performance pitfall,
+// NEVER configured in this codebase before today's LOFI feature. Denormal
+// (subnormal) floats occur naturally in any decaying IIR filter/feedback
+// loop asymptotically approaching (but never reaching) exact zero -- e.g.
+// reverb tails, delay-line feedback (flanger.dsp's FEEDBACK=0.5 loop,
+// compressor.dsp's si.smooth envelope follower decaying toward silence).
+// On both ARM and x86, denormal arithmetic can be 10-100x slower than
+// normal-range floats in hardware, because the FPU falls back to a
+// microcoded slow path instead of its normal single-cycle datapath. Today's
+// feature added 3 PARALLEL bank chains (dub/guitar/lofi-fx) computed EVERY
+// block regardless of which is audible (Faust has no runtime branching --
+// select2/ba.if choose among already-computed signals, they do not skip
+// computing them), each with its own decaying filters/delay feedback loops
+// -- so there are now 3x as many places a silent/near-silent signal can
+// spend real, sustained time in denormal territory as there were before
+// this feature landed, plausibly a real contributor to the continuous
+// audio dropouts reported live (readi() blocking ~1.7x its expected
+// duration, sustained). This sets the AArch64 FPCR's FZ bit (flush-to-zero:
+// any denormal RESULT is rounded to zero instead of computed at full
+// precision) via inline assembly (no portable C++ standard API for this on
+// ARM; the compiler-intrinsic _MM_SET_FLUSH_ZERO_MODE only exists for
+// x86 SSE) -- applied once, on the audio thread itself, before any DSP
+// compute ever runs, so it's a startup-only cost with no per-block
+// overhead of its own.
+static void setFlushToZero() {
+#if defined(__aarch64__)
+    uint64_t fpcr;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+    fpcr |= (1ULL << 24);   // FZ bit: flush denormal results to zero
+    __asm__ volatile("msr fpcr, %0" :: "r"(fpcr));
+#elif defined(__SSE2__)
+    _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+    _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+#endif
+}
+
 static void* worker(void*) {
     setRealtimeSelf(g_cfg.homeFxCore, g_cfg.rtPriority);
+    setFlushToZero();
     const int N = g_cfg.blockSize;
     const int ch = g_cfg.channels;   // DSP channel count (mono = 1), the Faust I/O.
 
