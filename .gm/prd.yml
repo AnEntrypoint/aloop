@@ -421,5 +421,7 @@
   status: completed
   witness: 'Out of scope per explicit user instruction (grilling Q7: ''aloopvst is only an experiment, we must work on b'' -- hardware-only scope). No aloopvst doc updates are needed since no aloopvst code changes are part of this feature.'
 - subject: 'Core-3 guitar+lofi-fx redesign: build effects/home/faust/guitar_lofi_fx.dsp (standalone Faust file, 8 fx2/* zones, verified byte-exact passthrough + audible via dsp_cli) as its own LV2 bundle in CI. Added guitar-lofi-fx-lv2 job to .github/workflows/build-lv2.yml modeled on the existing home-fx-lv2 job. Not yet committed/pushed.'
-  status: in_progress
+  status: completed
   id: core-3-guitar-lofi-fx-redesign-build-effects-home-faust-guitar-l
+  witness: gh run watch confirmed build-binary (aarch64-musl, real ALSA/LV2/lilv headers) and build-lv2 (guitar-lofi-fx-lv2 job) both green on commit 6c19158.
+  commit_comment: 'Core-3 wiring landed: homeFx Lv2Host loads guitar_lofi_fx.dsp bundle on Core 3, Lv2Host::setControl added, apc_grid.cpp knob dispatch reworked to per-bank permanent targets (fx2/* LV2 ports + native Sampler setters), docs updated. CI green on both build-binary and build-lv2 (commit 6c19158).'
