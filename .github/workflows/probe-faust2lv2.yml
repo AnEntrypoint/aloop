@@ -4,11 +4,16 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Check for aarch64-musl cross toolchain
+      - uses: actions/checkout@v4
+      - name: Install faust and generate lv2 cpp
         run: |
-          apt-cache search musl 2>&1 | head -30
-          echo "--- try installing ---"
-          sudo apt-get update
-          sudo apt-get install -y musl-tools 2>&1 | tail -20
-          which aarch64-linux-musl-g++ 2>&1 || echo "not found"
-          dpkg -L musl-tools 2>&1 | head -20
+          sudo apt-get update && sudo apt-get install -y faust
+          FAUSTLIB=$(dirname "$(ls -f /usr/share/faust/lv2ui.cpp /usr/local/share/faust/lv2ui.cpp 2>/dev/null | tail -1)")
+          echo "FAUSTLIB=$FAUSTLIB"
+          ls -la "$FAUSTLIB" | head -20
+          cd effects/home/faust
+          faust -i -a "$FAUSTLIB/lv2.cpp" -cn guitar_lofi_fx guitar_lofi_fx.dsp -o /tmp/guitar_lofi_fx.cpp
+          echo "--- generated cpp size ---"
+          wc -l /tmp/guitar_lofi_fx.cpp
+          echo "--- check for any non-self-contained includes ---"
+          grep -n '#include' /tmp/guitar_lofi_fx.cpp | head -30
