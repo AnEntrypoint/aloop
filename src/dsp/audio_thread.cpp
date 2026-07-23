@@ -341,6 +341,31 @@ static void* worker(void*) {
     // see the "Sidechain envelope" computation below, right before compute()).
     std::vector<float> sidechainEnvBuf((size_t)N, 0.0f);
     float* fins[7]  = { fin.data(), prevFiltOut.data(), clearBuf.data(), speedBuf.data(), masterPhaseBuf.data(), masterLenBuf.data(), sidechainEnvBuf.data() };
+    // WITNESSED live (real Pi 4, reported same day as this feature shipped):
+    // continuous xrun growth (~10-25/sec, even fully idle) traced to THIS
+    // loop originally calling g_params->get(z) with a freshly-snprintf'd
+    // "looperN/sidechainsrc" std::string, 20 times, EVERY block -- unlike
+    // every other g_params->get() call in this file (all fixed small-count,
+    // literal-keyed), this one scaled with looper count and ran unconditionally
+    // forever, the first genuinely RT-unsafe (unbounded string-construct +
+    // hash-map-lookup) hot path this codebase has had.
+    //
+    // Fixed via LAZY one-time-per-slot resolution, NOT a single up-front
+    // resolve at worker() startup: runMidiLoop's ApcGrid::bindAll (which
+    // creates these slots) runs on a SEPARATE thread (main.cpp spawns
+    // midiThread then calls audio.start() with no synchronization between
+    // them), so resolving all 20 slots once here, before bindAll has
+    // necessarily run, would permanently cache -1 (unbound) for any slot not
+    // yet registered -- silently and PERMANENTLY breaking sidechain-pump,
+    // not just delaying it a few blocks. Each element starts at -1 (unbound
+    // sentinel) and is re-attempted via getSlot() every block ONLY while
+    // still -1 (branch-predictable, cheap) -- once bindAll registers it, the
+    // very next block resolves it and caches for the process's remaining
+    // lifetime (slots are never unbound after startup), giving both RT-safety
+    // and correctness: no allocation/map-lookup once resolved, no permanent
+    // false-unbound race before bindAll runs.
+    int sidechainSrcSlot[AudioThread::Telemetry::kLoopers];
+    for (int lp = 0; lp < AudioThread::Telemetry::kLoopers; lp++) sidechainSrcSlot[lp] = -1;
     // aloop.dsp's process() now outputs 4 signals: (wet mix, rawGlitchTap,
     // rawLoopSum, recordTap) -- native taps so the SHIFT-fold, the
     // glitch-loop-routing fold, AND the always-effected record path can each
@@ -993,8 +1018,12 @@ static void* worker(void*) {
             // multi-source max/peak-combined ducking envelope. Sources are
             // designated via ApcGrid::onSidechainLooperToggle (guitar-fx hold
             // + looper press), which writes looperN/sidechainsrc into
-            // ParamStore -- read back here the SAME way looperN/rec etc are
-            // read (g_params->get, cheap map lookup, no lock). Combined with
+            // ParamStore. Slot indices are resolved lazily (see
+            // sidechainSrcSlot's own declaration comment above this loop) --
+            // getSlot() is only ever called for a still-unresolved (-1) slot,
+            // so once bindAll (a separate startup-only, non-hot-path thread
+            // event) registers all 20 names, every slot resolves within one
+            // block and the map-lookup path never runs again. Combined with
             // g_telem.looperLevel[] (this PREVIOUS block's own peak-envelope
             // telemetry, populated further up in this same loop) via max(),
             // matching the confirmed multi-source design: any active source
@@ -1009,10 +1038,13 @@ static void* worker(void*) {
             {
                 float sidechainEnv = 0.0f;
                 if (g_params) {
-                    char z[32];
                     for (int lp = 0; lp < AudioThread::Telemetry::kLoopers; lp++) {
-                        snprintf(z, sizeof z, "looper%d/sidechainsrc", lp);
-                        if (g_params->get(z) > 0.5f) {
+                        if (sidechainSrcSlot[lp] < 0) {
+                            char z[32];
+                            snprintf(z, sizeof z, "looper%d/sidechainsrc", lp);
+                            sidechainSrcSlot[lp] = g_params->getSlot(z);
+                        }
+                        if (g_params->getBySlot(sidechainSrcSlot[lp]) > 0.5f) {
                             float lvl = g_telem.looperLevel[lp];
                             if (lvl > sidechainEnv) sidechainEnv = lvl;
                         }

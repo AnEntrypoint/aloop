@@ -67,6 +67,21 @@ struct ParamStore {
         auto it = slot.find(name);
         return it != slot.end() ? value[it->second].load(std::memory_order_relaxed) : def;
     }
+    // Resolve a name to its slot index ONCE (e.g. at startup, after bind()),
+    // so a hot per-block loop can read via getBySlot() instead of a fresh
+    // string-keyed map lookup every block -- see getBySlot's own comment for
+    // why the map-lookup path is unsafe to call in a per-looper loop.
+    // Returns -1 if unbound (caller should treat as "value 0.0f").
+    int getSlot(const std::string& name) const {
+        auto it = slot.find(name);
+        return it != slot.end() ? it->second : -1;
+    }
+    // Read a value by PRE-RESOLVED slot index (audio thread hot path). Plain
+    // atomic load, no map lookup, no std::string construction -- safe to call
+    // N times per block. slotIdx == -1 (unbound) returns def.
+    float getBySlot(int slotIdx, float def = 0.0f) const {
+        return slotIdx >= 0 ? value[(size_t)slotIdx].load(std::memory_order_relaxed) : def;
+    }
     // Iterate bound names (audio thread uses this once to map names→Faust zones).
     template <typename F> void forEach(F&& f) const { for (auto& kv : slot) f(kv.first, kv.second); }
 };

@@ -46,3 +46,4 @@ tmp/
 
 # MinGW/MSYS2 subprocess crash dumps (host-tooling artifact, not repo state)
 *.stackdump
+.image-flash-work/
