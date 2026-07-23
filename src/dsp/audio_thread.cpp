@@ -568,7 +568,31 @@ static void* worker(void*) {
             if (otgPlay) { snd_pcm_close(otgPlay); otgPlay = nullptr; }
         }
 
+        // DIAGNOSTIC (temporary, this session): direct measurement of the
+        // wall-clock gap between successive snd_pcm_readi calls, to find the
+        // real stall pattern behind a live, reproducible continuous-xrun
+        // regression -- core_busy% (EWMA-smoothed) never showed a spike, no
+        // dmesg USB/ALSA errors, kernel-thread isolation (isolcpus=domain,
+        // managed_irq) made no measurable difference, buffer/period config
+        // matches the documented working 4-period setup -- so this measures
+        // the ACTUAL inter-read timing directly rather than continuing to
+        // infer it from indirect signals. Logs only gaps that exceed 1.5x
+        // the expected block period (2ms at 64 samples/48kHz), so a healthy
+        // run stays silent and this doesn't flood the log. Remove once the
+        // real cause is found and fixed -- this is instrumentation for
+        // diagnosis, not a permanent feature.
+        timespec lastReadTs{}; bool haveLastReadTs = false;
+        const double kExpectedPeriodMs = (double)N / g_cfg.sampleRate * 1000.0;
         while (g_running.load()) {
+            timespec nowTs; clock_gettime(CLOCK_MONOTONIC, &nowTs);
+            if (haveLastReadTs) {
+                double gapMs = (nowTs.tv_sec - lastReadTs.tv_sec) * 1000.0 + (nowTs.tv_nsec - lastReadTs.tv_nsec) / 1e6;
+                if (gapMs > kExpectedPeriodMs * 1.5) {
+                    fprintf(stderr, "[diag-gap] readi gap=%.3fms (expected ~%.3fms)\n", gapMs, kExpectedPeriodMs);
+                }
+            }
+            lastReadTs = nowTs;
+            haveLastReadTs = true;
             snd_pcm_sframes_t r = snd_pcm_readi(cap, buf.data(), N);
             if (r < 0) { g_telem.xruns++; snd_pcm_recover(cap, (int)r, 1); continue; }
 
