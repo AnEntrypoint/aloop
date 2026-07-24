@@ -239,14 +239,45 @@ interval produced a recorded `wraplen` of 246079 samples against an
 expected 246144 — a 65-sample (~1.35ms) difference consistent with ordinary
 MIDI-dispatch scheduling jitter, not truncation.
 
-A separate, real regression was found (not yet fixed) while verifying this
-on the live device: both home LV2 plugins now fault and get disabled by the
-crash-isolation watchdog on their very first `runOne()` call, every single
-startup, after logging `lilv found no plugin matching bundle — falling
-back to .so-only load (no port wiring)` — meaning the home guitar/lofi-fx
-bundle currently silently degrades to passthrough on every boot. Tracked
-separately; do not conflate with the readi-slowdown fix above, which is
-independently verified resolved regardless of this LV2-loading issue.
+A separate, real regression was found while verifying this on the live
+device, then fixed in two more steps — tracked separately, do not conflate
+with the readi-slowdown fix above, which is independently resolved
+regardless of either issue below:
+
+1. Both home LV2 plugins faulted and got disabled by the crash-isolation
+   watchdog on their very first `runOne()` call, every single startup,
+   after logging `lilv found no plugin matching bundle — falling back to
+   .so-only load (no port wiring)`. Cause: `readTtl()`'s bundle-matching
+   check (`src/host/lv2_host.cpp`) was a raw `bundlePath.find(bpath) == 0`
+   prefix comparison; lilv's resolved bundle path carries a trailing slash
+   the passed-in `bundlePath` never has, so the comparison silently and
+   permanently failed even for well-formed bundles — taking the no-port-
+   wiring fallback, whose first `run()` call then dereferences unconnected
+   port pointers (the same class of bug as the nullptr-features fix
+   elsewhere in this file). Fixed by stripping trailing slashes from both
+   sides before an exact-equality compare.
+
+2. Once that fix let both plugins actually load with real port wiring,
+   `core_busy` jumped from the normal ~22-27% baseline to ~63-65% with
+   xruns climbing continuously — a NEW regression exposed only by fixing
+   #1 (a crashed-and-disabled plugin costs ~nothing; a genuinely running
+   one costs whatever its real DSP does). Isolating each plugin (moving
+   one at a time out of `/effects/home`, restarting, remeasuring) showed
+   `aloop.lv2` alone reproduces the high `core_busy`/climbing xruns:
+   `build-lv2.yml`'s `home-fx-lv2` job compiles `dsp/aloop.dsp` — the exact
+   same Faust source `audio_thread.cpp`'s `faustHome` already compiles
+   NATIVELY and runs every block — into a standalone LV2 bundle, purely as
+   a CI reproducibility/packaging check (ADR-003). It was never meant to
+   run a second time in the live effects chain; `image/lib-boot-tree.sh`'s
+   packaging step copied every `*.lv2` it found under `LV2_DIR` with no
+   distinction, so `aloop.lv2` ended up deployed and loaded right alongside
+   `guitar_lofi_fx.lv2` (a genuinely standalone effect with no dependency
+   on `aloop.dsp`/`loop.dsp`). Fixed by excluding `aloop.lv2` by name from
+   that copy step. Verified live: with `aloop.lv2` removed and
+   `guitar_lofi_fx.lv2` kept, `core_busy` returned to ~23-30% with xruns at
+   0, held over a clean 15+ second window — `guitar_lofi_fx.lv2`'s own real
+   DSP cost (genuinely running for the first time after fix #1) is
+   sustainable on its own.
 
 ## Real hardware over asking the user to reproduce input
 
