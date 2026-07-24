@@ -130,7 +130,21 @@ boot_tree_apkovl() {
     echo "[boot-tree] WARNING: no ALOOP_BIN — boot tree has no aloop binary"
   fi
   if [ -n "${LV2_DIR:-}" ] && [ -d "${LV2_DIR}" ]; then
-    find "${LV2_DIR}" -maxdepth 2 -name '*.lv2' -exec cp -r {} "$OVL/effects/home/" \;
+    # EXCLUDE aloop.lv2: build-lv2.yml's home-fx-lv2 job compiles dsp/aloop.dsp
+    # (the SAME source audio_thread.cpp's faustHome already compiles NATIVELY
+    # and runs every block) into a standalone LV2 bundle purely as a CI
+    # reproducibility/packaging check (ADR-003) -- it was never meant to be
+    # loaded as a SECOND, real-time-competing copy of the home loop engine
+    # alongside the native one. WITNESSED live on a real Pi 4: once a separate
+    # lilv bundle-path-matching bug (that had silently made every LV2 plugin
+    # crash+get-disabled on its first block, every boot) was fixed, aloop.lv2
+    # started actually RUNNING for the first time -- and running the entire
+    # home Faust stack a second time, in full, every block, on top of the
+    # native compute() already running it, doubled real per-block DSP cost
+    # (core_busy jumped from ~22% to ~63%, xruns climbing continuously).
+    # guitar_lofi_fx.lv2 (a genuinely standalone, additive effect with no
+    # dependency on aloop.dsp/loop.dsp) is unaffected and still copied in.
+    find "${LV2_DIR}" -maxdepth 2 -name '*.lv2' ! -name 'aloop.lv2' -exec cp -r {} "$OVL/effects/home/" \;
     echo "[boot-tree] laid in home-FX LV2: $(ls "$OVL/effects/home")"
   else
     echo "[boot-tree] WARNING: no LV2_DIR — boot tree has no home-FX effects bundle"
