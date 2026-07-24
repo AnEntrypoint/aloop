@@ -280,3 +280,93 @@ LLM-friendly content.
   support information.
 - [About](https://faustlibraries.grame.fr/about/): License and copyright
   information.
+
+## Faust DSP compiler optimization pass — what shipped, what was rejected
+
+Following [faustdoc.grame.fr/manual/optimizing/](https://faustdoc.grame.fr/manual/optimizing/),
+a pass was made to apply every safe, behavior-preserving optimization from
+Faust's own optimizing-compiler manual plus the native C++ hot path. What
+shipped:
+
+- **`-vec -fun -dfs -vs 32 -nvi`** added to every real `faust` invocation
+  (`build-local.sh`, `.github/workflows/build-binary.yml`'s `loop.cpp`
+  codegen, both jobs in `.github/workflows/build-lv2.yml`). Pure
+  codegen-strategy flags — vectorized codegen, function inlining,
+  depth-first scheduling, no-virtual C++ backend (Faust's own docs call
+  `-nvi` "especially useful in embedded devices context", directly on point
+  for the Pi 4). Same `.dsp` source, same signal graph — only how the
+  compiler schedules/inlines it changes.
+- **`Lv2Host`'s `LV2_Descriptor*` is now cached** at `instantiate()` time
+  (`Lv2Plugin::descriptor`) instead of being re-resolved via `dlsym` +
+  URI-matching linear scan on every single `runOne()` call — that call runs
+  on the real-time audio block path (Core 1 home-fx + Core 3 user-fx) every
+  block, so eliminating a repeated symbol-scan from the hot path was a safe,
+  zero-risk win.
+
+What was evaluated and explicitly REJECTED (not silently skipped):
+
+- **`ba.tabulate`-ing `filters.dsp`'s `pow(1000.0, cutoff)` (SVF
+  cutoff-to-Hz) and `pitch.dsp`'s `pow(2.0, SEMIS/12.0)` (pitch-shift ratio)**:
+  both files' own headers explicitly claim an *exact port*/*bit-identical*
+  match to the original hardware DSP. `ba.tabulate` (even its `.cub`
+  cubic-interpolation mode) is inherently an approximation — introducing it
+  would trade a real, explicitly-claimed fidelity guarantee for a CPU saving
+  that, in `pitch.dsp`'s case, is negligible anyway (the stage's dominant
+  per-sample cost is the `dubfx_pitch_tick` ffunction call into the real C++
+  pitch engine, not the one `pow()` feeding it). Any future push to tabulate
+  either of these must first prove the tabulation error is smaller than the
+  hardware-parity tolerance already established for that file, not just
+  benchmark the CPU win in isolation.
+- **Splitting the home Faust stack (`aloop.dsp`/`loop.dsp`/
+  `effects_runtime.dsp`) or the Core-3 guitar+lofi-fx bundle into multiple
+  separate per-effect LV2 bundles** "for performance/modularity": this would
+  multiply per-plugin dispatch overhead (`findDescriptor`/`connect_port`/
+  `instantiate` once more per split-out effect) in the exact code path
+  already under live suspicion for the still-unresolved ~1Hz stall (see
+  "Diagnosing periodic audio stalls" above), directly risking the
+  never-add-latency constraint, and gives up the proven single-Faust-
+  compile-unit maintainability the home stack was deliberately designed
+  around ("change a knob mapping or a stage in Faust, rebuild, done" —
+  `aloop.dsp`'s own top-of-file comment). Do not re-attempt this without
+  re-deriving the same tradeoff from scratch.
+- **Faust's own internal multicore/`-omp`/`-sch` work-stealing scheduler**:
+  not applicable here. aloop already manually pins one Faust program per
+  physical core via `pthread_setaffinity_np` (home stack on Core 1,
+  guitar+lofi-fx on Core 3) — a coarser-grained, already-proven
+  parallelization strategy. Layering Faust's own internal scheduler on top
+  would fight that existing pinning architecture rather than complement it.
+  (Also: this specific concern turned out not to be documented on the
+  `optimizing/` manual page at all — it's covered, if anywhere, by a
+  different part of Faust's docs not consulted this pass.)
+
+What still needs real numeric verification before being considered fully
+landed (evaluate-only rows, CI-buildable but not yet proven safe):
+
+- **`-mcd`/`-dlt` (delay-line threshold tuning)** for `loop.dsp`'s 20×
+  `MAXLEN=48000*60` rwtable rings vs. `delay.dsp`/`reverb.dsp`'s much
+  smaller comb/tape delay lines — needs a real CPU/size comparison, not just
+  reading the docs.
+- **`-ct 0`** (disable Faust's table range-checking, on by default since
+  Faust v2.53.4) for every `rwtable` in the hot path — every index in this
+  codebase is already software-bounded by existing modulo/clamp logic
+  (`writeIdx`/`readIdx0`/`readIdx1` all wrapped mod `wrapLen`, microrepeat's
+  `sliceLen`-bounded `rpos`/`wpos`), so the extra check is *probably*
+  redundant — but "probably" isn't enough to disable a safety check;
+  needs an explicit per-table proof, not an assumption.
+- **`-fm`/`-mapp`** (fast-math / experimental floor-ceil-fmod replacements):
+  treated as HIGH RISK by default given this codebase's hard-won history of
+  subtle Faust arithmetic bugs (`writeIdx`/`wrapLen` mutual-recursion,
+  `armEdge`/`finishEdge` same-instant-cycle issues — see `dsp/loop.dsp`'s
+  own extensive comments). Requires an explicit A/B numerical comparison
+  (matching `compressor.dsp`'s own established raw-float-probe verification
+  pattern) proving no drift in the floor/int/modulo-heavy `loop.dsp`
+  arithmetic before ever shipping — do not ship on the strength of the docs
+  alone.
+- **Parameter-smoothing order** (`effects_runtime.dsp`'s `filterStage`/
+  `delayStage`/`reverbStage`/`pitchStage` all take raw `hslider` values
+  straight into `pow()`/`exp()`-bearing math with no `si.smoo` upstream):
+  the Faust manual's documented pattern is to smooth *after* a costly
+  conversion, at control rate. Whether this codebase's current
+  no-smoothing design is deliberate (matching exact hardware knob-response
+  timing) or an oversight has not yet been determined — needs listening/
+  measurement, not just a docs-driven guess, before changing knob feel.

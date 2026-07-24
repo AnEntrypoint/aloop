@@ -1039,6 +1039,14 @@ static void* worker(void*) {
                 static float foldGain = 0.0f;
                 float foldTarget = g_params->get("fx/monitorfold") > 0.5f ? 1.0f : 0.0f;
                 const float kFoldStep = 1.0f / 16.0f;   // reach target over ~16 blocks, matching looper's own step
+                // Hoisted out of the per-sample loop below: kFoldStep/N is
+                // invariant across the whole block (both N and kFoldStep are
+                // block-constant), but was being recomputed via division up
+                // to 4x per sample (twice for foldGain, twice for
+                // glitchFoldGain) -- multiply by the precomputed reciprocal
+                // instead, matching the "multiply rather than divide"
+                // principle for any value repeated in a hot per-sample loop.
+                const float kFoldStepPerSample = kFoldStep / (float)N;
                 // GLITCH-HELD loop-routing fold: same native one-block-lag
                 // mechanism as the SHIFT-fold immediately above (reusing the
                 // exact same prevLoopSum buffer, per user's explicit request
@@ -1053,10 +1061,10 @@ static void* worker(void*) {
                 static float glitchFoldGain = 0.0f;
                 float glitchFoldTarget = g_params->get("fx/microrepeat_div") > 0.5f ? 1.0f : 0.0f;
                 for (int i = 0; i < N; i++) {
-                    if (foldGain < foldTarget)      { foldGain += kFoldStep / N; if (foldGain > foldTarget) foldGain = foldTarget; }
-                    else if (foldGain > foldTarget) { foldGain -= kFoldStep / N; if (foldGain < foldTarget) foldGain = foldTarget; }
-                    if (glitchFoldGain < glitchFoldTarget)      { glitchFoldGain += kFoldStep / N; if (glitchFoldGain > glitchFoldTarget) glitchFoldGain = glitchFoldTarget; }
-                    else if (glitchFoldGain > glitchFoldTarget) { glitchFoldGain -= kFoldStep / N; if (glitchFoldGain < glitchFoldTarget) glitchFoldGain = glitchFoldTarget; }
+                    if (foldGain < foldTarget)      { foldGain += kFoldStepPerSample; if (foldGain > foldTarget) foldGain = foldTarget; }
+                    else if (foldGain > foldTarget) { foldGain -= kFoldStepPerSample; if (foldGain < foldTarget) foldGain = foldTarget; }
+                    if (glitchFoldGain < glitchFoldTarget)      { glitchFoldGain += kFoldStepPerSample; if (glitchFoldGain > glitchFoldTarget) glitchFoldGain = glitchFoldTarget; }
+                    else if (glitchFoldGain > glitchFoldTarget) { glitchFoldGain -= kFoldStepPerSample; if (glitchFoldGain < glitchFoldTarget) glitchFoldGain = glitchFoldTarget; }
                     // SHIFT and glitch can be held simultaneously -- combine by
                     // summing the two fold contributions into `fin`, clamped to
                     // 1.0 (matching a single hold's ramp ceiling) so a
