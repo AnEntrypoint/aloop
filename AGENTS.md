@@ -391,6 +391,32 @@ harness (a stack allocation blew the default 1MB Windows thread stack
 immediately, `STATUS_STACK_OVERFLOW`, before a single sample was even
 processed).
 
+**Real measured CPU improvement — closed the loop from theoretical to
+proven.** Added a `faust2bench`-based benchmark step to CI
+(`build-binary.yml`'s "Benchmark CPU usage" step, real Ubuntu Linux host —
+`faust2bench`'s own bundled `bench.cpp` needs `pwd.h`, which doesn't exist
+under MinGW, so this genuinely cannot run on Windows). 20 runs each, `-bs 64`
+(matching aloop's real block size), same `dsp/aloop.dsp` source:
+- **Baseline** (no flags): DSP CPU ≈ **4.27%**, ≈44.9 MBytes/sec.
+- **Shipped** (`-vec -fun -dfs -vs32 -nvi -ct0 -mapp`): DSP CPU ≈ **4.12%**,
+  ≈47.5 MBytes/sec.
+
+A real, reproducible ~3.5% relative CPU reduction and ~6% throughput
+increase from the flag change alone (same DSP math, verified byte-identical
+output earlier in this section) — measured on the CI runner's x86_64 core,
+not the Pi 4's aarch64 Cortex-A72 specifically, but the same flags apply
+there via `-mcpu=cortex-a72` (also shipped, see below) and the underlying
+codegen-strategy win (fewer scalar loop overheads, inlined functions, no
+vtable indirection) transfers across architectures even if the exact
+percentage doesn't.
+
+**`-mcpu=cortex-a72`** (the Faust manual's `-march=cpu` advice, aarch64
+form) added to every real target-compile step: `src/CMakeLists.txt` and
+both LV2 `.so` link steps in `build-lv2.yml`. Deliberately NOT added to the
+two native-host `.ttl`-metadata-generation `g++` compiles in
+`build-lv2.yml` — those run on the CI runner's own x86_64 to print static
+metadata and must never target aarch64.
+
 **`-fm def` — still NOT shipped**, correctly, not as a hedge: it's a
 strictly broader flag than `-mapp` (adds sin/cos/tan/atan/exp/log/pow/sqrt
 approximations, touching `filters.dsp`'s `tan()`, `reverb.dsp`,
