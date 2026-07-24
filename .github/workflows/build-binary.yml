@@ -52,6 +52,35 @@ jobs:
           faust -lang cpp -vec -fun -dfs -vs 32 -nvi -ct 0 -mapp -cn AloopLoopDsp -I dsp -I effects/home/faust dsp/aloop.dsp -o build/loop.cpp
           echo "generated $(wc -l < build/loop.cpp) lines of loop C++"
 
+      # Faust's own benchmarking tool (faustdoc.grame.fr/manual/optimizing/'s
+      # "Benchmarking and optimization tools" section) -- measures REAL CPU
+      # usage before/after this session's compiler-flag changes, closing the
+      # loop from theoretical optimization to a measured number. Runs here
+      # (Ubuntu host, native faust+gcc, no QEMU) because faust2bench's own
+      # bundled bench.cpp architecture file assumes a real POSIX environment
+      # (uses <pwd.h>) -- confirmed this session it does NOT compile under
+      # MinGW on Windows, so a genuine measurement needs a real Linux host;
+      # this is x86_64, not the Pi 4's aarch64 core, but still a real,
+      # reproducible before/after comparison of the SAME flag change on the
+      # SAME hardware, which is what actually answers "did these flags help."
+      - name: Benchmark CPU usage: baseline flags vs this session's shipped flags
+        run: |
+          set -e
+          mkdir -p bench
+          cp dsp/loop.dsp dsp/aloop.dsp dsp/effects_runtime.dsp bench/
+          cp effects/home/faust/*.dsp effects/home/faust/*.h bench/
+          cd bench
+          sed -i 's#effects/home/faust/##g' effects_runtime.dsp
+          echo "=== BASELINE (no optimization flags, matching pre-session codegen) ==="
+          faust2bench -cn AloopLoopDsp aloop.dsp
+          ./aloop -run 20 -bs 64   # -bs 64 matches aloop's real AudioConfig::blockSize
+          echo ""
+          echo "=== SHIPPED (-vec -fun -dfs -vs 32 -nvi -ct 0 -mapp) ==="
+          faust2bench -vec -fun -dfs -vs 32 -nvi -ct 0 -mapp -cn AloopLoopDsp aloop.dsp
+          ./aloop -run 20 -bs 64
+          echo ""
+          echo "(bench.cpp prints '<name> : <X> MBytes/sec, SD : <Y>% (DSP CPU : <Z>% at 44100 Hz)' -- read the DSP CPU % from both runs above directly from this step's log; lower is better. x86_64 host numbers, not the Pi 4's aarch64 core, but a real reproducible before/after of the SAME flag change at the real 64-sample block size.)"
+
       - name: Build in an Alpine aarch64 container
         run: |
           docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w alpine:3.20 sh -c '

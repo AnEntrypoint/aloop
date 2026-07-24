@@ -15,6 +15,16 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 add_compile_options(-O2 -Wall)
+# -mcpu=cortex-a72: the Pi 4's real CPU core (ARMv8-A/aarch64) -- the
+# aarch64-correct equivalent of the Faust optimizing-compiler manual's
+# -march=cpu advice (faustdoc.grame.fr/manual/optimizing/, "Multi-CPU
+# Compilation" section: compile with gcc/clang for the specific target
+# processor to get CPU-tuned instruction scheduling/NEON usage). Since this
+# build already cross-compiles specifically for aarch64/musl inside a real
+# Alpine container (never a generic aarch64 target), pinning the exact core
+# is a safe, additive win with no portability cost -- the binary was never
+# going to run on any other CPU anyway.
+add_compile_options(-mcpu=cortex-a72)
 
 # The aloop source — all Linux-native, no Circle/looper dependency. The effects
 # are the dubfx LV2 bundle, loaded at runtime by the in-process host (host/).
