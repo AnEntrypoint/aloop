@@ -8,9 +8,9 @@ jobs:
       - uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
-      - name: Try lilv loading the real generated bundle directly (host side, Faust codegen)
+      - name: Generate the bundle (host side, Faust codegen only)
         run: |
-          sudo apt-get update && sudo apt-get install -y faust lv2-dev lilv-utils liblilv-dev pkg-config build-essential libboost-dev
+          sudo apt-get update && sudo apt-get install -y faust
           FAUSTLIB=$(dirname "$(ls -f /usr/share/faust/lv2ui.cpp /usr/local/share/faust/lv2ui.cpp 2>/dev/null | tail -1)")
           cd effects/home/faust
           CLSNAME=guitar_lofi_fx
@@ -18,6 +18,7 @@ jobs:
           mkdir -p "$WORK/$CLSNAME.lv2"
           faust -i -a "$FAUSTLIB/lv2.cpp" -cn "$CLSNAME" "$CLSNAME.dsp" -o "$WORK/$CLSNAME.cpp"
           CPPFLAGS="-DPLUGIN_URI=\"https://faustlv2.bitbucket.io/$CLSNAME\" -DFAUST_META=1 -DFAUST_MIDICC=1 -DFAUST_MTS=1 -DFAUST_UI=0 -DVOICE_CTRLS=1 -DNVOICES=-1"
+          sudo apt-get install -y g++
           g++ -std=c++11 -fvisibility=hidden -O3 -DDLLEXT="\".so\"" $CPPFLAGS -I"$(pwd)" "$WORK/$CLSNAME.cpp" -o "$WORK/$CLSNAME.meta"
           "$WORK/$CLSNAME.meta" > "$WORK/$CLSNAME.lv2/$CLSNAME.ttl"
           printf '%s\n' \
@@ -31,48 +32,21 @@ jobs:
             "    lv2:binary <$CLSNAME.so> ;" \
             "    rdfs:seeAlso <$CLSNAME.ttl> ." \
             > "$WORK/$CLSNAME.lv2/manifest.ttl"
-          g++ -shared -std=c++11 -fvisibility=hidden -O3 -fPIC -DDLLEXT="\".so\"" $CPPFLAGS -I. "$CLSNAME.cpp" -o "$WORK/$CLSNAME.lv2/$CLSNAME.so" 2>&1 || \
-            g++ -shared -std=c++11 -fvisibility=hidden -O3 -fPIC -DDLLEXT="\".so\"" $CPPFLAGS -I. "$WORK/$CLSNAME.cpp" -o "$WORK/$CLSNAME.lv2/$CLSNAME.so"
-          echo "=== bundle contents ==="
+          cp "$WORK/$CLSNAME.cpp" .
+          echo "=== bundle contents (no .so yet -- built per-arch below) ==="
           ls -la "$WORK/$CLSNAME.lv2/"
-          echo "=== lv2ls with LV2_PATH set ==="
-          LV2_PATH="$WORK" lv2ls 2>&1 || true
-          echo "=== lv2info ==="
-          LV2_PATH="$WORK" lv2info "https://faustlv2.bitbucket.io/$CLSNAME" 2>&1 || true
-          echo "=== lilv_world_load_bundle test via a tiny C program ==="
-          cat > /tmp/lilvtest.cpp <<'CPPEOF'
-          #include <lilv/lilv.h>
-          #include <cstdio>
-          int main(int argc, char** argv) {
-              LilvWorld* w = lilv_world_new();
-              lilv_world_load_all(w);
-              std::string bundlePath = argv[1];
-              std::string uri = "file://" + bundlePath + "/";
-              printf("trying bundle uri: %s\n", uri.c_str());
-              LilvNode* bundleUri = lilv_new_uri(w, uri.c_str());
-              lilv_world_load_bundle(w, bundleUri);
-              const LilvPlugins* plugins = lilv_world_get_all_plugins(w);
-              unsigned count = 0;
-              LILV_FOREACH(plugins, i, plugins) {
-                  const LilvPlugin* pl = lilv_plugins_get(plugins, i);
-                  printf("found plugin: %s\n", lilv_node_as_uri(lilv_plugin_get_uri(pl)));
-                  const LilvNode* bundle = lilv_plugin_get_bundle_uri(pl);
-                  printf("  bundle uri: %s\n", lilv_node_as_uri(bundle));
-                  count++;
-              }
-              printf("total plugins found: %u\n", count);
-              return 0;
-          }
-          CPPEOF
-          g++ -std=c++17 /tmp/lilvtest.cpp -o /tmp/lilvtest $(pkg-config --cflags --libs lilv-0)
-          /tmp/lilvtest "$WORK/$CLSNAME.lv2"
-          cp -r "$WORK/$CLSNAME.lv2" "$GITHUB_WORKSPACE/"
+          cat "$WORK/$CLSNAME.lv2/manifest.ttl"
+          mkdir -p "$GITHUB_WORKSPACE/lv2work"
+          cp -r "$WORK/$CLSNAME.lv2" "$GITHUB_WORKSPACE/lv2work/"
+          cp "$CLSNAME.cpp" "$GITHUB_WORKSPACE/lv2work/"
 
-      - name: Same test, but inside the REAL Alpine aarch64 target (the actual device scenario)
+      - name: Build the .so AND test lilv matching inside the REAL Alpine aarch64 target
         run: |
           set -e
+          cd lv2work
           CLSNAME=guitar_lofi_fx
-          cat > /tmp/lilvtest2.cpp <<'CPPEOF'
+          CPPFLAGS="-DPLUGIN_URI=\"https://faustlv2.bitbucket.io/$CLSNAME\" -DFAUST_META=1 -DFAUST_MIDICC=1 -DFAUST_MTS=1 -DFAUST_UI=0 -DVOICE_CTRLS=1 -DNVOICES=-1"
+          cat > lilvtest.cpp <<'CPPEOF'
           #include <lilv/lilv.h>
           #include <cstdio>
           #include <string>
@@ -97,17 +71,21 @@ jobs:
               return 0;
           }
           CPPEOF
-          cp /tmp/lilvtest2.cpp .
           docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w \
-            -e CLSNAME="$CLSNAME" \
+            -e CPPFLAGS="$CPPFLAGS" -e CLSNAME="$CLSNAME" \
             alpine:3.20 sh -c '
               set -e
               apk add --no-cache build-base lv2-dev boost-dev lilv-dev pkgconf
-              g++ -std=c++17 lilvtest2.cpp -o lilvtest2 $(pkg-config --cflags --libs lilv-0)
-              echo "=== bundle path being tested ==="
+              echo "=== building the real .so ==="
+              g++ -shared -std=c++11 -fvisibility=hidden -O3 -fPIC -DDLLEXT="\".so\"" $CPPFLAGS \
+                -I. "$CLSNAME.cpp" -o "$CLSNAME.lv2/$CLSNAME.so"
+              echo "=== bundle contents ==="
               ls -la "$CLSNAME.lv2"
-              echo "=== running lilvtest2 in Alpine aarch64 ==="
-              ./lilvtest2 "$(pwd)/$CLSNAME.lv2"
-              echo "=== lilv version info ==="
-              apk info -a lilv 2>&1 || true
+              echo "=== building lilvtest ==="
+              g++ -std=c++17 lilvtest.cpp -o lilvtest $(pkg-config --cflags --libs lilv-0)
+              echo "=== running lilvtest in Alpine aarch64 (the real device scenario) ==="
+              ./lilvtest "$(pwd)/$CLSNAME.lv2"
+              echo "=== lv2info if available ==="
+              which lv2info 2>&1 || apk add --no-cache lv2-host 2>&1 || true
+              LV2_PATH="$(pwd)" lv2info "https://faustlv2.bitbucket.io/$CLSNAME" 2>&1 || true
             '
