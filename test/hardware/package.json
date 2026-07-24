@@ -1,0 +1,8 @@
+{
+  "name": "aloop-hardware-test",
+  "private": true,
+  "description": "Scripted, byte-level test/verification harnesses against the real aloop device (SSH + MIDI injection over its own tcp/9401 socket + udp/4445 telemetry). Run `npm install` in this directory once, then invoke any script directly with node.",
+  "dependencies": {
+    "ssh2": "^1.17.0"
+  }
+}
