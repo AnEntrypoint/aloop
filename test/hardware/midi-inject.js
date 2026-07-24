@@ -37,6 +37,13 @@ if (!host || !cmd) {
   process.exit(2);
 }
 
+// WITNESSED live: a bare net.connect() with no explicit timeout can hang for
+// the OS's own default TCP connect timeout (well over a minute on Windows)
+// against an unreachable host -- far too long for a script meant to fail
+// fast. sock.setTimeout() bounds this to a few seconds; 'timeout' fires
+// WITHOUT closing the socket (Node's own documented behavior), so this
+// destroys it manually to force the reject path instead of hanging past
+// the bound.
 function sendBytes(bytes) {
   return new Promise((resolve, reject) => {
     const sock = net.connect({ host, port: 9401 }, () => {
@@ -45,6 +52,8 @@ function sendBytes(bytes) {
         sock.end();
       });
     });
+    sock.setTimeout(5000);
+    sock.on('timeout', () => { sock.destroy(); reject(new Error(`connect/write to ${host}:9401 timed out after 5s`)); });
     sock.on('close', resolve);
     sock.on('error', reject);
   });
