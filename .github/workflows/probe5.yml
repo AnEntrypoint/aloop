@@ -5,7 +5,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Try lilv loading the real generated bundle directly
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - name: Try lilv loading the real generated bundle directly (host side, Faust codegen)
         run: |
           sudo apt-get update && sudo apt-get install -y faust lv2-dev lilv-utils pkg-config build-essential libboost-dev
           FAUSTLIB=$(dirname "$(ls -f /usr/share/faust/lv2ui.cpp /usr/local/share/faust/lv2ui.cpp 2>/dev/null | tail -1)")
@@ -63,3 +66,48 @@ jobs:
           CPPEOF
           g++ -std=c++17 /tmp/lilvtest.cpp -o /tmp/lilvtest $(pkg-config --cflags --libs lilv-0)
           /tmp/lilvtest "$WORK/$CLSNAME.lv2"
+          cp -r "$WORK/$CLSNAME.lv2" "$GITHUB_WORKSPACE/"
+
+      - name: Same test, but inside the REAL Alpine aarch64 target (the actual device scenario)
+        run: |
+          set -e
+          CLSNAME=guitar_lofi_fx
+          cat > /tmp/lilvtest2.cpp <<'CPPEOF'
+          #include <lilv/lilv.h>
+          #include <cstdio>
+          #include <string>
+          int main(int argc, char** argv) {
+              LilvWorld* w = lilv_world_new();
+              lilv_world_load_all(w);
+              std::string bundlePath = argv[1];
+              std::string uri = "file://" + bundlePath + "/";
+              printf("trying bundle uri: %s\n", uri.c_str());
+              LilvNode* bundleUri = lilv_new_uri(w, uri.c_str());
+              lilv_world_load_bundle(w, bundleUri);
+              const LilvPlugins* plugins = lilv_world_get_all_plugins(w);
+              unsigned count = 0;
+              LILV_FOREACH(plugins, i, plugins) {
+                  const LilvPlugin* pl = lilv_plugins_get(plugins, i);
+                  printf("found plugin: %s\n", lilv_node_as_uri(lilv_plugin_get_uri(pl)));
+                  const LilvNode* bundle = lilv_plugin_get_bundle_uri(pl);
+                  printf("  bundle uri: %s\n", lilv_node_as_uri(bundle));
+                  count++;
+              }
+              printf("total plugins found: %u\n", count);
+              return 0;
+          }
+          CPPEOF
+          cp /tmp/lilvtest2.cpp .
+          docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w \
+            -e CLSNAME="$CLSNAME" \
+            alpine:3.20 sh -c '
+              set -e
+              apk add --no-cache build-base lv2-dev boost-dev lilv-dev pkgconf
+              g++ -std=c++17 lilvtest2.cpp -o lilvtest2 $(pkg-config --cflags --libs lilv-0)
+              echo "=== bundle path being tested ==="
+              ls -la "$CLSNAME.lv2"
+              echo "=== running lilvtest2 in Alpine aarch64 ==="
+              ./lilvtest2 "$(pwd)/$CLSNAME.lv2"
+              echo "=== lilv version info ==="
+              apk info -a lilv 2>&1 || true
+            '
