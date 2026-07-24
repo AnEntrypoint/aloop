@@ -109,6 +109,12 @@ public:
         double   bpm = 0.0;
         bool     apMode = false;    // hosting AP vs joined STA
         bool     monitorMode = false;   // SHIFT held (apcKey25.cpp:361's p.monitorMode) -- loops folded into effects
+        // GLITCH VERIFICATION: fx/microrepeat_div > 0 (glitch/microrepeat
+        // engaged, notes 82-86 via apc_grid.cpp's onMicrorepeatOn/Off) --
+        // deliberately independent of monitorMode/SHIFT (see dsp/aloop.dsp's
+        // GLITCHFOLD comment), exposed so a test harness can directly verify
+        // glitch content is recordable with monitorMode=false.
+        bool     glitchEngaged = false;
         // Peak level of the last block's capture input and post-effects output
         // (0..1, absolute value of the float sample) -- lets a UDP query answer
         // "is real signal reaching the DSP at all" and "is anything coming out

@@ -796,6 +796,16 @@ static void* worker(void*) {
             // zone -- the fold is a native block-rate mix, see prevLoopSum
             // above) so a dev host can still observe SHIFT/monitor-fold state live.
             g_telem.monitorMode = g_params && g_params->get("fx/monitorfold") > 0.5f;
+            // glitchEngaged telemetry: same pattern as monitorMode above,
+            // reading fx/microrepeat_div's own live value directly (apc_grid.cpp's
+            // onMicrorepeatOn/Off) -- lets a test harness directly verify the
+            // "glitch engaged" and "SHIFT/monitor held" states are genuinely
+            // INDEPENDENT (glitchEngaged=true, monitorMode=false is a real,
+            // reachable state), which is the exact precondition the "glitches
+            // should record even if shift isn't pressed" bug report needs to
+            // exercise. See dsp/aloop.dsp's GLITCHFOLD comment: glitch-fold is
+            // gated purely by fx/microrepeat_div > 0, independent of SHIFT.
+            g_telem.glitchEngaged = g_params && g_params->get("fx/microrepeat_div") > 0.5f;
             // Varispeed Link sync: when synced, set every looper's loop length from
             // the Link tempo (a musical phrase = a whole number of beats). A tempo
             // change resizes the loops so they stay locked to the session — the
