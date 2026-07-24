@@ -1,0 +1,15 @@
+name: probe-lv2-activate
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dump activate + run functions
+        run: |
+          sudo apt-get update && sudo apt-get install -y faust
+          FAUSTLIB=$(dirname "$(ls -f /usr/share/faust/lv2ui.cpp /usr/local/share/faust/lv2ui.cpp 2>/dev/null | tail -1)")
+          grep -n "^activate\|^static void$\|^run(" "$FAUSTLIB/lv2.cpp" | head -20
+          echo "=== activate body ==="
+          awk '/^activate\(LV2_Handle/{p=1} p{print} p&&/^}/{exit}' "$FAUSTLIB/lv2.cpp"
+          echo "=== run body ==="
+          awk '/^run\(LV2_Handle/{p=1} p{print} p&&/^}/{exit}' "$FAUSTLIB/lv2.cpp"
