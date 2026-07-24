@@ -424,3 +424,6 @@
 - subject: Document the full root-cause and fix in AGENTS.md periodic-audio-stalls/never-add-latency sections, distinguishing this NEW continuous-slowdown finding from the previously-documented ~1Hz periodic stall (still unresolved, separate issue) -- do not conflate the two.
   id: document-the-full-root-cause-and-fix-in-agents-md-periodic-audio
   status: pending
+- subject: Re-measure the ACTUAL per-block DSP compute() and LV2 runBlock() wall-clock duration directly on the real device via raw clock_gettime instrumentation isolated from the blocking readi/writei syscalls, to test the user's hypothesis that cumulative DSP/effects CPU cost (not USB hardware) has grown past the 1.333ms block budget since it was last glitch-free, before the guitar/lofi-fx/sidechain/sampler additions.
+  id: re-measure-the-actual-per-block-dsp-compute-and-lv2-runblock-wal
+  status: pending

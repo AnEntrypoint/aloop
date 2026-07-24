@@ -439,6 +439,32 @@ static void* worker(void*) {
     // false-unbound race before bindAll runs.
     int sidechainSrcSlot[AudioThread::Telemetry::kLoopers];
     for (int lp = 0; lp < AudioThread::Telemetry::kLoopers; lp++) sidechainSrcSlot[lp] = -1;
+    // Cache for the "apply remappable controls" loop below (targetToZone +
+    // fui.set by name), which used to re-resolve EVERY bound target's name to
+    // a Faust zone pointer via targetToZone() (a std::string allocation +
+    // snprintf) then TWO string-keyed map lookups (ParamStore::get by name,
+    // then FaustUI::set's zones.find, falling back to an O(n) linear suffix
+    // scan) on EVERY SINGLE BLOCK for EVERY bound target -- unlike
+    // sidechainSrcSlot above (already a resolve-once cache), this path was
+    // never converted, so its cost scaled directly with how many MIDI
+    // controls/effects have been bound over the project's life: 750
+    // blocks/sec x N bound targets x (1 alloc + 2 hash lookups), permanently
+    // on the RT audio thread. WITNESSED live on the real device: the audio
+    // worker thread (tid, SCHED_FIFO prio 95) sat at ~95% on-CPU
+    // (/proc/<tid>/schedstat sum_exec_runtime vs uptime) with only ~46
+    // voluntary context switches/sec (vs ~750 expected if the thread were
+    // genuinely blocking-and-waking once per block) -- i.e. spending most of
+    // its time doing CPU work between reads, not sleeping in the ALSA wait
+    // queue, while the Faust compute()+LV2 span alone (already timed,
+    // coreBusyPct) measured only ~22% busy. This gap is exactly the untimed
+    // remappable-controls loop. Same lazy-resolve-while-unresolved discipline
+    // as sidechainSrcSlot: rebuilt whenever ParamStore's bound-target count
+    // grows (new MIDI mapping bound), a plain flat-array walk of
+    // (slot,zone*) pairs otherwise -- no string work, no map lookup, no
+    // allocation once resolved.
+    struct ResolvedControl { int slot; float* zone; };
+    std::vector<ResolvedControl> resolvedControls;
+    int resolvedControlsForCount = -1;
     // aloop.dsp's process() now outputs 4 signals: (wet mix, rawGlitchTap,
     // rawLoopSum, recordTap) -- native taps so the SHIFT-fold, the
     // glitch-loop-routing fold, AND the always-effected record path can each
@@ -697,14 +723,35 @@ static void* worker(void*) {
             // runs after via the in-process host (host.runBlock), joined this block.
 #ifdef ALOOP_HAVE_FAUST_LOOP
             // Apply the remappable controls: for each bound target the MIDI map
-            // set, push its current value into the matching Faust zone. Done once
-            // per block from the atomic store — no locks, no alloc (the name→zone
-            // strings resolve cheaply; a production build caches name→float* once).
+            // set, push its current value into the matching Faust zone. Name→zone
+            // resolution (targetToZone + the zones map lookup) happens ONCE per
+            // newly-bound target (see resolvedControls above); the per-block work
+            // itself is a plain array walk of pre-resolved (slot,zone*) pairs — a
+            // pre-resolved atomic load + pointer store, no string work, no map
+            // lookup, no allocation.
             if (g_params) {
-                g_params->forEach([&](const std::string& target, int){
-                    std::string zone = targetToZone(target);
-                    if (!zone.empty()) fui.set(zone.c_str(), g_params->get(target));
-                });
+                if (resolvedControlsForCount != g_params->count) {
+                    resolvedControls.clear();
+                    g_params->forEach([&](const std::string& target, int slotIdx){
+                        std::string zone = targetToZone(target);
+                        if (zone.empty()) return;
+                        auto it = fui.zones.find(zone);
+                        if (it == fui.zones.end()) {
+                            // Same suffix-match fallback fui.set() itself uses, done
+                            // once here instead of on every future block.
+                            for (auto& kv : fui.zones) {
+                                const std::string& k = kv.first;
+                                if (k.size() >= zone.size() && k.compare(k.size() - zone.size(), zone.size(), zone) == 0) {
+                                    it = fui.zones.find(k);
+                                    break;
+                                }
+                            }
+                        }
+                        if (it != fui.zones.end()) resolvedControls.push_back({slotIdx, it->second});
+                    });
+                    resolvedControlsForCount = g_params->count;
+                }
+                for (auto& rc : resolvedControls) *rc.zone = g_params->getBySlot(rc.slot);
                 // Global commands (cmd/*) are NOT per-looper Faust zones — they drive
                 // the engine-wide clear/speed process() SIGNAL INPUTS directly (the
                 // hardware's CLEARALL + momentary HALFSPEED/DOUBLESPEED). Held (value
