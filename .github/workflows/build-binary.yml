@@ -37,7 +37,13 @@ jobs:
           # Generate into the same build dir CMake uses (cmake -S src -B build →
           # CMAKE_BINARY_DIR = build), so CMake sees it as already-present.
           mkdir -p build
-          faust -lang cpp -cn AloopLoopDsp -I dsp -I effects/home/faust dsp/aloop.dsp -o build/loop.cpp
+          # -vec -fun -dfs -vs 32 -nvi: Faust's documented optimizing-compiler
+          # recipe (faustdoc.grame.fr/manual/optimizing/) -- vectorized codegen,
+          # function inlining, depth-first scheduling, no-virtual C++ backend
+          # (Faust's own docs: -nvi is "especially useful in embedded devices
+          # context"). Pure codegen-strategy flags -- same DSP source, same
+          # signal graph, only how the compiler schedules/inlines it.
+          faust -lang cpp -vec -fun -dfs -vs 32 -nvi -cn AloopLoopDsp -I dsp -I effects/home/faust dsp/aloop.dsp -o build/loop.cpp
           echo "generated $(wc -l < build/loop.cpp) lines of loop C++"
 
       - name: Build in an Alpine aarch64 container

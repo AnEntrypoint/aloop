@@ -36,6 +36,14 @@ struct Lv2Plugin {
     void*       soHandle = nullptr;   // dlopen handle to the .so
     void*       instance = nullptr;   // the LV2 instance (LV2_Handle)
     void*       lilvPlugin = nullptr; // const LilvPlugin* (opaque here; lilv.h only in the .cpp)
+    // Cached LV2_Descriptor* (resolved once in dlopenPlugin/instantiate via
+    // dlsym+URI-matching scan) so the audio-rate hot path (runOne(), called
+    // every single block on Core 1/Core 3) never re-resolves it — a dlsym
+    // lookup + linear descriptor-list scan on every block is pure per-block
+    // overhead for a value that can never change after load. Opaque (const
+    // LV2_Descriptor*, stored as void*) so this header stays includable
+    // without <lv2.h> for the review build, matching lilvPlugin's own pattern.
+    const void* descriptor = nullptr;
 
     // Port wiring, resolved from real port metadata (lilv on the device build):
     // each port's LV2 index + class (audio/control, in/out). Audio ports are

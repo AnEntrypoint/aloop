@@ -200,8 +200,12 @@ static const LV2_Descriptor* findDescriptor(void* soHandle, const std::string& u
 
 void Lv2Host::instantiate(Lv2Plugin& p, double sampleRate) {
 #ifdef ALOOP_HAVE_LV2
+    // Resolved ONCE here (load time, control thread) and cached — runOne()
+    // (the audio-rate hot path) and connectPorts() below both reuse this
+    // instead of re-running findDescriptor()'s dlsym+URI-scan every call.
     const LV2_Descriptor* d = findDescriptor(p.soHandle, p.lilvPlugin ? p.uri : std::string());
     if (!d) { p.enabled = false; return; }
+    p.descriptor = d;
     // WITNESSED live on a real Pi 4 (this session): passing a bare nullptr for
     // the LV2_Feature array crashed the device with SIGSEGV (exit 139) the
     // instant ANY plugin was instantiated -- the Faust-generated lv2.cpp
@@ -250,7 +254,7 @@ void Lv2Host::instantiate(Lv2Plugin& p, double sampleRate) {
 void Lv2Host::connectPorts(Lv2Plugin& p, int blockSize) {
 #ifdef ALOOP_HAVE_LV2
     if (!p.instance || p.ports.empty()) return;
-    const LV2_Descriptor* d = findDescriptor(p.soHandle, p.lilvPlugin ? p.uri : std::string());
+    const LV2_Descriptor* d = static_cast<const LV2_Descriptor*>(p.descriptor);
     if (!d || !d->connect_port) return;
 
     p.controlValues.assign(p.ports.size(), 0.0f);
@@ -285,7 +289,10 @@ void Lv2Host::connect(int blockSize, int numChannels) {
 void Lv2Host::runOne(Lv2Plugin& p, int nframes) {
     if (!p.enabled || !p.instance) return;
 #ifdef ALOOP_HAVE_LV2
-    const LV2_Descriptor* d = findDescriptor(p.soHandle, p.lilvPlugin ? p.uri : std::string());
+    // Cached at instantiate() time (see Lv2Plugin::descriptor) — this is the
+    // real-time audio-block hot path, called every single block on Core 1
+    // (home-fx) and Core 3 (user-fx); it must never re-run a dlsym+scan here.
+    const LV2_Descriptor* d = static_cast<const LV2_Descriptor*>(p.descriptor);
     if (!d) { p.enabled = false; return; }
     // Watchdog checkpoint: a fault inside run() longjmps back and disables it.
     g_inPlugin = 1;

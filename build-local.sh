@@ -57,9 +57,18 @@ ensure_arm64build_image() {
 do_codegen() {
   ensure_codegen_image
   mkdir -p build
+  # -vec -fun -dfs -vs 32: vectorized codegen (separated simpler loops over a
+  # fixed-size internal buffer instead of one big scalar loop), function
+  # inlining, depth-first scheduling -- Faust's own documented standard
+  # optimization recipe (faustdoc.grame.fr/manual/optimizing/). -nvi drops the
+  # 'virtual' keyword from the generated C++ class (Faust's own docs: "can be
+  # especially useful in embedded devices context", directly on point for the
+  # Pi 4 target) -- pure codegen-strategy flags, no DSP math change, so the
+  # signal graph is bit-identical; only how the compiler schedules/inlines it
+  # differs.
   retry 60 "faust codegen" -- \
     docker run --rm -v "$(pwd -W 2>/dev/null || pwd):/w" -w /w aloop-codegen \
-      faust -lang cpp -cn AloopLoopDsp -I dsp -I effects/home/faust dsp/aloop.dsp -o build/loop.cpp
+      faust -lang cpp -vec -fun -dfs -vs 32 -nvi -cn AloopLoopDsp -I dsp -I effects/home/faust dsp/aloop.dsp -o build/loop.cpp
   echo "[build-local] codegen done: $(wc -l < build/loop.cpp) lines"
 }
 
