@@ -1,0 +1,65 @@
+name: probe-lilv-load
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Try lilv loading the real generated bundle directly
+        run: |
+          sudo apt-get update && sudo apt-get install -y faust lv2-dev lilv-utils pkg-config build-essential libboost-dev
+          FAUSTLIB=$(dirname "$(ls -f /usr/share/faust/lv2ui.cpp /usr/local/share/faust/lv2ui.cpp 2>/dev/null | tail -1)")
+          cd effects/home/faust
+          CLSNAME=guitar_lofi_fx
+          WORK=/tmp/lv2work
+          mkdir -p "$WORK/$CLSNAME.lv2"
+          faust -i -a "$FAUSTLIB/lv2.cpp" -cn "$CLSNAME" "$CLSNAME.dsp" -o "$WORK/$CLSNAME.cpp"
+          CPPFLAGS="-DPLUGIN_URI=\"https://faustlv2.bitbucket.io/$CLSNAME\" -DFAUST_META=1 -DFAUST_MIDICC=1 -DFAUST_MTS=1 -DFAUST_UI=0 -DVOICE_CTRLS=1 -DNVOICES=-1"
+          g++ -std=c++11 -fvisibility=hidden -O3 -DDLLEXT="\".so\"" $CPPFLAGS -I"$(pwd)" "$WORK/$CLSNAME.cpp" -o "$WORK/$CLSNAME.meta"
+          "$WORK/$CLSNAME.meta" > "$WORK/$CLSNAME.lv2/$CLSNAME.ttl"
+          printf '%s\n' \
+            '@prefix doap: <http://usefulinc.com/ns/doap#> .' \
+            '@prefix foaf: <http://xmlns.com/foaf/0.1/> .' \
+            '@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .' \
+            '@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .' \
+            '' \
+            "<https://faustlv2.bitbucket.io/$CLSNAME>" \
+            '    a lv2:Plugin ;' \
+            "    lv2:binary <$CLSNAME.so> ;" \
+            "    rdfs:seeAlso <$CLSNAME.ttl> ." \
+            > "$WORK/$CLSNAME.lv2/manifest.ttl"
+          g++ -shared -std=c++11 -fvisibility=hidden -O3 -fPIC -DDLLEXT="\".so\"" $CPPFLAGS -I. "$CLSNAME.cpp" -o "$WORK/$CLSNAME.lv2/$CLSNAME.so" 2>&1 || \
+            g++ -shared -std=c++11 -fvisibility=hidden -O3 -fPIC -DDLLEXT="\".so\"" $CPPFLAGS -I. "$WORK/$CLSNAME.cpp" -o "$WORK/$CLSNAME.lv2/$CLSNAME.so"
+          echo "=== bundle contents ==="
+          ls -la "$WORK/$CLSNAME.lv2/"
+          echo "=== lv2ls with LV2_PATH set ==="
+          LV2_PATH="$WORK" lv2ls 2>&1 || true
+          echo "=== lv2info ==="
+          LV2_PATH="$WORK" lv2info "https://faustlv2.bitbucket.io/$CLSNAME" 2>&1 || true
+          echo "=== lilv_world_load_bundle test via a tiny C program ==="
+          cat > /tmp/lilvtest.cpp <<'CPPEOF'
+          #include <lilv/lilv.h>
+          #include <cstdio>
+          int main(int argc, char** argv) {
+              LilvWorld* w = lilv_world_new();
+              lilv_world_load_all(w);
+              std::string bundlePath = argv[1];
+              std::string uri = "file://" + bundlePath + "/";
+              printf("trying bundle uri: %s\n", uri.c_str());
+              LilvNode* bundleUri = lilv_new_uri(w, uri.c_str());
+              lilv_world_load_bundle(w, bundleUri);
+              const LilvPlugins* plugins = lilv_world_get_all_plugins(w);
+              unsigned count = 0;
+              LILV_FOREACH(plugins, i, plugins) {
+                  const LilvPlugin* pl = lilv_plugins_get(plugins, i);
+                  printf("found plugin: %s\n", lilv_node_as_uri(lilv_plugin_get_uri(pl)));
+                  const LilvNode* bundle = lilv_plugin_get_bundle_uri(pl);
+                  printf("  bundle uri: %s\n", lilv_node_as_uri(bundle));
+                  count++;
+              }
+              printf("total plugins found: %u\n", count);
+              return 0;
+          }
+          CPPEOF
+          g++ -std=c++17 /tmp/lilvtest.cpp -o /tmp/lilvtest $(pkg-config --cflags --libs lilv-0)
+          /tmp/lilvtest "$WORK/$CLSNAME.lv2"
