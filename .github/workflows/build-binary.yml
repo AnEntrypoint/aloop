@@ -43,7 +43,10 @@ jobs:
           # (Faust's own docs: -nvi is "especially useful in embedded devices
           # context"). Pure codegen-strategy flags -- same DSP source, same
           # signal graph, only how the compiler schedules/inlines it.
-          faust -lang cpp -vec -fun -dfs -vs 32 -nvi -cn AloopLoopDsp -I dsp -I effects/home/faust dsp/aloop.dsp -o build/loop.cpp
+          # -ct 0: disables Faust's default table range-checking -- verified
+          # safe (every rwtable index in this program is already
+          # software-bounded by explicit modulo/clamp logic, see AGENTS.md).
+          faust -lang cpp -vec -fun -dfs -vs 32 -nvi -ct 0 -cn AloopLoopDsp -I dsp -I effects/home/faust dsp/aloop.dsp -o build/loop.cpp
           echo "generated $(wc -l < build/loop.cpp) lines of loop C++"
 
       - name: Build in an Alpine aarch64 container

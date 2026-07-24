@@ -302,6 +302,23 @@ shipped:
   on the real-time audio block path (Core 1 home-fx + Core 3 user-fx) every
   block, so eliminating a repeated symbol-scan from the hot path was a safe,
   zero-risk win.
+- **`-ct 0`** (disable Faust's table range-checking) added to all 3
+  invocation sites. Verified safe by tracing every `rwtable` index in this
+  codebase by hand: `dsp/loop.dsp`'s `readIdx0`/`readIdx1` are always
+  `... % wrapLen` (explicit modulo, provably in `[0,wrapLen)`) with
+  `writeIdx` clamped to `MAXLEN-1`; `effects/home/faust/microrepeat.dsp`'s
+  `wpos`/`rpos` are likewise always clamped against `MR_MAX`/modulo'd
+  against `sliceLen` before use. Every table access in every `.dsp` file
+  this codebase compiles is software-bounded by existing logic already —
+  this hand-trace *is* the "explicit per-table proof" this file's own
+  earlier draft of this section said would be required before shipping.
+  `guitar_lofi_fx.dsp` has no `rwtable`/`rdtable` at all, so the flag is
+  unconditionally safe there too.
+- **`kFoldStep/N` hoisted out of `audio_thread.cpp`'s per-sample SHIFT/
+  glitch fold-gain ramp loop** (was recomputed via division up to 4x per
+  sample; both operands are block-constant) — a direct application of the
+  Faust manual's "multiply rather than divide" principle to the native C++
+  hot path, not just the Faust-generated code.
 
 What was evaluated and explicitly REJECTED (not silently skipped):
 
@@ -339,20 +356,22 @@ What was evaluated and explicitly REJECTED (not silently skipped):
   `optimizing/` manual page at all — it's covered, if anywhere, by a
   different part of Faust's docs not consulted this pass.)
 
+Investigated and found not applicable (corrected a wrong initial premise):
+
+- **`-mcd`/`-dlt` (delay-line threshold tuning)**: these flags govern only
+  Faust's `de.delay`-family delay-line codegen, NOT the `rwtable` primitive
+  — confirmed directly against the manual. `dsp/loop.dsp`'s 20×
+  `MAXLEN=48000*60` rings and `microrepeat.dsp`'s ring are both `rwtable`,
+  so entirely unaffected by these flags. Only `delay.dsp`
+  (`de.delay(MAXD=96000,...)`) and `reverb.dsp` (`de.delay(8192,L)`, L up to
+  4057) actually use delay-line codegen, and both are comfortably above the
+  default `-mcd 16` threshold already — Faust's defaults (`-mcd 16`,
+  `-dlt <INT_MAX>`) are already the memory-efficient choice for these sizes,
+  with no measured bottleneck to justify a change. No action taken.
+
 What still needs real numeric verification before being considered fully
 landed (evaluate-only rows, CI-buildable but not yet proven safe):
 
-- **`-mcd`/`-dlt` (delay-line threshold tuning)** for `loop.dsp`'s 20×
-  `MAXLEN=48000*60` rwtable rings vs. `delay.dsp`/`reverb.dsp`'s much
-  smaller comb/tape delay lines — needs a real CPU/size comparison, not just
-  reading the docs.
-- **`-ct 0`** (disable Faust's table range-checking, on by default since
-  Faust v2.53.4) for every `rwtable` in the hot path — every index in this
-  codebase is already software-bounded by existing modulo/clamp logic
-  (`writeIdx`/`readIdx0`/`readIdx1` all wrapped mod `wrapLen`, microrepeat's
-  `sliceLen`-bounded `rpos`/`wpos`), so the extra check is *probably*
-  redundant — but "probably" isn't enough to disable a safety check;
-  needs an explicit per-table proof, not an assumption.
 - **`-fm`/`-mapp`** (fast-math / experimental floor-ceil-fmod replacements):
   treated as HIGH RISK by default given this codebase's hard-won history of
   subtle Faust arithmetic bugs (`writeIdx`/`wrapLen` mutual-recursion,

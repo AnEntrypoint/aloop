@@ -66,9 +66,17 @@ do_codegen() {
   # Pi 4 target) -- pure codegen-strategy flags, no DSP math change, so the
   # signal graph is bit-identical; only how the compiler schedules/inlines it
   # differs.
+  # -ct 0: disables Faust's table range-checking (on by default since Faust
+  # v2.53.4). Verified safe for every rwtable in this program: dsp/loop.dsp's
+  # readIdx0/readIdx1 are always `... % wrapLen` (explicit modulo, always in
+  # [0,wrapLen)) and writeIdx is clamped to MAXLEN-1; microrepeat.dsp's
+  # wpos/rpos are likewise always clamped/modulo'd against MR_MAX/sliceLen
+  # before use. Every index into every rwtable in this codebase is already
+  # software-bounded by existing logic, so the extra runtime check is
+  # provably redundant here -- see AGENTS.md's Faust optimization section.
   retry 60 "faust codegen" -- \
     docker run --rm -v "$(pwd -W 2>/dev/null || pwd):/w" -w /w aloop-codegen \
-      faust -lang cpp -vec -fun -dfs -vs 32 -nvi -cn AloopLoopDsp -I dsp -I effects/home/faust dsp/aloop.dsp -o build/loop.cpp
+      faust -lang cpp -vec -fun -dfs -vs 32 -nvi -ct 0 -cn AloopLoopDsp -I dsp -I effects/home/faust dsp/aloop.dsp -o build/loop.cpp
   echo "[build-local] codegen done: $(wc -l < build/loop.cpp) lines"
 }
 

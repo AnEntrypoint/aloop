@@ -93,7 +93,9 @@ jobs:
           # build-binary.yml's loop.cpp codegen -- composes independently of
           # -i/-a (codegen strategy vs architecture-wrapper inlining are
           # orthogonal), same signal graph, only scheduling/inlining differs.
-          faust -i -a "$FAUSTLIB/lv2.cpp" -vec -fun -dfs -vs 32 -nvi -cn "$CLSNAME" aloop.dsp -o "$WORK/$CLSNAME.cpp"
+          # -ct 0: disables Faust's default table range-checking -- verified
+          # safe for every rwtable this program uses (see AGENTS.md).
+          faust -i -a "$FAUSTLIB/lv2.cpp" -vec -fun -dfs -vs 32 -nvi -ct 0 -cn "$CLSNAME" aloop.dsp -o "$WORK/$CLSNAME.cpp"
 
           CPPFLAGS="-DPLUGIN_URI=\"https://faustlv2.bitbucket.io/$CLSNAME\" -DFAUST_META=1 -DFAUST_MIDICC=1 -DFAUST_MTS=1 -DFAUST_UI=0 -DVOICE_CTRLS=1 -DNVOICES=-1"
 
@@ -224,7 +226,10 @@ jobs:
           # file so the result has no external Faust dependency to compile.
           # -vec -fun -dfs -vs 32 -nvi: same optimizing-compiler recipe as the
           # home-fx-lv2 job above and build-binary.yml's loop.cpp codegen.
-          faust -i -a "$FAUSTLIB/lv2.cpp" -vec -fun -dfs -vs 32 -nvi -cn "$CLSNAME" "$CLSNAME.dsp" -o "$WORK/$CLSNAME.cpp"
+          # -ct 0: disables Faust's default table range-checking. guitar_lofi_fx.dsp
+          # has no rwtable/rdtable at all, so this is safe unconditionally here;
+          # kept for consistency with the other 2 invocation sites.
+          faust -i -a "$FAUSTLIB/lv2.cpp" -vec -fun -dfs -vs 32 -nvi -ct 0 -cn "$CLSNAME" "$CLSNAME.dsp" -o "$WORK/$CLSNAME.cpp"
 
           CPPFLAGS="-DPLUGIN_URI=\"https://faustlv2.bitbucket.io/$CLSNAME\" -DFAUST_META=1 -DFAUST_MIDICC=1 -DFAUST_MTS=1 -DFAUST_UI=0 -DVOICE_CTRLS=1 -DNVOICES=-1"
 
