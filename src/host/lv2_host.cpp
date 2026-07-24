@@ -202,9 +202,38 @@ void Lv2Host::instantiate(Lv2Plugin& p, double sampleRate) {
 #ifdef ALOOP_HAVE_LV2
     const LV2_Descriptor* d = findDescriptor(p.soHandle, p.lilvPlugin ? p.uri : std::string());
     if (!d) { p.enabled = false; return; }
-    p.instance = (void*)d->instantiate(d, sampleRate, p.bundlePath.c_str(), nullptr);
+    // WITNESSED live on a real Pi 4 (this session): passing a bare nullptr for
+    // the LV2_Feature array crashed the device with SIGSEGV (exit 139) the
+    // instant ANY plugin was instantiated -- the Faust-generated lv2.cpp
+    // architecture's own instantiate() unconditionally does
+    // `for (int i = 0; features[i]; i++)` with no null-check on `features`
+    // itself first, so `nullptr[0]` deref'd immediately. Every previously
+    // "loaded" bundle (both the pre-existing home-fx bundle and today's new
+    // guitar_lofi_fx one) crashed the process on load, every single time --
+    // this codebase has never actually gotten past instantiate() for any LV2
+    // plugin before now. The LV2 spec requires a real NULL-TERMINATED array
+    // (empty is valid: just the terminating NULL), never a bare nullptr.
+    static const LV2_Feature* const kNoFeatures[] = { nullptr };
+    // Same crash-isolation watchdog as runOne() (ADR-002) -- instantiate()/
+    // activate() are just as much "untrusted plugin code" as run() is, and
+    // this session's own SIGSEGV (see the comment above) would otherwise take
+    // the whole process down during LOADING, before a single audio block ever
+    // runs -- worse than a bad run() call, which at least degrades gracefully.
+    Lv2Plugin* pp = &p;
+    g_inPlugin = 1;
+    if (sigsetjmp(g_jmp, 1) == 0) {
+        p.instance = (void*)d->instantiate(d, sampleRate, p.bundlePath.c_str(), kNoFeatures);
+        if (p.instance && d->activate) d->activate((LV2_Handle)p.instance);
+    } else {
+        g_inPlugin = 0;
+        pp->instance = nullptr;
+        pp->faultCount++;
+        disablePlugin(pp);
+        fprintf(stderr, "[host] plugin %s faulted during instantiate — disabled, continuing\n", pp->bundlePath.c_str());
+        return;
+    }
+    g_inPlugin = 0;
     if (!p.instance) { p.enabled = false; return; }
-    if (d->activate) d->activate((LV2_Handle)p.instance);
 #else
     (void)p; (void)sampleRate;
 #endif
