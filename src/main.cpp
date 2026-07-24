@@ -109,6 +109,10 @@ aloop::AudioConfig loadConfig(const char* path) {
         // inline comment / whitespace so the path is clean.
         else if (sscanf(line, " home_dir = %199s", s) == 1) cfg.homeDir = s;
         else if (sscanf(line, " user_dir = %199s", s) == 1) cfg.userDir = s;
+        // DIAGNOSTIC ONLY, see AudioConfig::disableCore3Lv2's own comment --
+        // skips both homeFx/userFx.process() every block entirely, to
+        // isolate the live ~1Hz stall investigation without a rebuild.
+        else if (sscanf(line, " disable_core3_lv2 = %d", &v) == 1) cfg.disableCore3Lv2 = (v != 0);
         // optional explicit MIDI device (else "auto" scans hw:0..7).
         else if (sscanf(line, " midi_device = %199s", s) == 1) cfg.midiDevice = s;
         // wire audio device (else the f_uac2 gadget's stable-named hw device).

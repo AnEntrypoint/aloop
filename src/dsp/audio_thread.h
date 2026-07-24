@@ -29,6 +29,19 @@ struct AudioConfig {
     // after the .dsp (aloop.lv2), not "chain.lv2".
     std::string homeDir = "/effects/home";
     std::string userDir = "/effects/user";
+    // DIAGNOSTIC ONLY (aloop.conf [effects] disable_core3_lv2=1): skips both
+    // homeFx.process()/userFx.process() every block entirely (not just
+    // disabling individual plugins -- the Lv2Host::process() call itself,
+    // including its copy-in/copy-out over ioBuffer_, never runs). Added to
+    // isolate a real, live-witnessed ~30-37ms stall firing at almost exactly
+    // a 1.000-second period that appeared only after this session's Core-3
+    // LV2 host wiring landed (confirmed absent on the pre-LOFI baseline,
+    // confirmed NOT caused by the cpufreq governor or Ableton Link via
+    // direct A/B tests) -- this flag lets the next session test "does the
+    // stall exist with the Core-3 host code path fully skipped" via a config
+    // edit + restart, without a full rebuild/redeploy cycle each time.
+    bool disableCore3Lv2 = false;
+
     // MIDI input device: "auto" scans hw:0..7 for the first rawmidi input; an
     // explicit "hw:N,0,0" pins it (aloop.conf midi_device).
     std::string midiDevice = "auto";

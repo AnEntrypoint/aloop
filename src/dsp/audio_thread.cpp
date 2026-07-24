@@ -1184,8 +1184,10 @@ static void* worker(void*) {
             // stacking order intent (home stack always underneath anything the
             // user layers on). Both process() calls run in place on `fout`;
             // passthrough if either has nothing loaded.
-            homeFx.process(fout.data(), N);
-            userFx.process(fout.data(), N);
+            if (!g_cfg.disableCore3Lv2) {
+                homeFx.process(fout.data(), N);
+                userFx.process(fout.data(), N);
+            }
             // Snapshot this block's RAW loop output (rawLoopSum, aloop.dsp's
             // second process() output) for NEXT block's fold-in (see
             // prevLoopSum's declaration comment) -- deliberately NOT fout
