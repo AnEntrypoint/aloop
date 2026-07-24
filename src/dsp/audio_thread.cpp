@@ -69,8 +69,23 @@ struct FaustUI {
     void addVerticalSlider(const char* l, float* z, float, float, float, float){ zones[full(l)]=z; }
     void addHorizontalSlider(const char* l, float* z, float, float, float, float){ zones[full(l)]=z; }
     void addNumEntry(const char* l, float* z, float, float, float, float){ zones[full(l)]=z; }
-    void addHorizontalBargraph(const char*, float*, float, float){}
-    void addVerticalBargraph(const char*, float*, float, float){}
+    // ROOT CAUSE (found live, this turn, via real device SSH+telemetry
+    // investigation of a severe continuous readi-slowdown/xrun regression):
+    // these two were empty no-ops -- so every hbargraph zone (level/
+    // writeidx/wraplen, all declared via Faust's hbargraph()) was NEVER
+    // registered in `zones` at all. Every fui.get("looperN/level"/"writeidx"/
+    // "wraplen") call below therefore missed the O(log n) exact-match `find`
+    // AND fell through to the full O(n) linear suffix-scan over the ENTIRE
+    // zones map, EVERY TIME, for NOTHING (it can never find what was never
+    // inserted) -- 60 wasted full-map scans per audio block (3 fields x 20
+    // loopers), 750 blocks/sec = 45,000 wasted linear scans/sec, on the
+    // real-time audio thread, permanently starving snd_pcm_readi of CPU time
+    // between iterations. WITNESSED: telemetry's own level/wraplen fields
+    // read back all-zero on a live, actively-playing looper, confirming the
+    // registration gap directly (not a downstream reporting bug). Fixed by
+    // registering these exactly like every other control type.
+    void addHorizontalBargraph(const char* l, float* z, float, float){ zones[full(l)]=z; }
+    void addVerticalBargraph(const char* l, float* z, float, float){ zones[full(l)]=z; }
     void addSoundfile(const char*, const char*, void**){}
     void declare(float*, const char*, const char*){}
     // Set a control by full path (no-op if the dsp doesn't expose it). Matches

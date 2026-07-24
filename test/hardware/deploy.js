@@ -7,9 +7,22 @@
 // scp/sshpass/ssh binaries (none of which are reliably available in this
 // Windows dev environment).
 //
+// This is the FAST live-reload path for hardware iteration (rc-service
+// restart, seconds) instead of a full netboot power-cycle (whole TFTP/HTTP
+// boot chain, minutes) -- the right tool for A/B testing binary variants
+// quickly on an already-booted device (AGENTS.md's own documented lesson:
+// always verify the ACTUAL deployed checksum, never assume a deploy step
+// succeeded just because it didn't error -- a stale comparison target has
+// caused real false-positive "deploy worked" conclusions before).
+//
 // Usage: node deploy.js <host> <localBinaryPath> [user=root] [password=aloop]
 const { Client } = require('ssh2');
 const fs = require('fs');
+const crypto = require('crypto');
+
+function md5File(path) {
+  return crypto.createHash('md5').update(fs.readFileSync(path)).digest('hex');
+}
 
 const [, , host, localPath, user = 'root', password = 'aloop'] = process.argv;
 if (!host || !localPath) {
@@ -57,6 +70,21 @@ conn
       r = await execOnce(conn, 'chmod +x /tmp/aloop.new && cp /opt/aloop/aloop /opt/aloop/aloop.bak && mv /tmp/aloop.new /opt/aloop/aloop && ls -la /opt/aloop/aloop');
       console.log(r.out.trim() || r.errOut.trim());
 
+      // Verify the checksum landed correctly BEFORE restarting the service --
+      // catching a bad/truncated SFTP transfer here is much better than
+      // starting a corrupt binary and reporting a fault as "the code" when it
+      // was actually a bad deploy (AGENTS.md's own documented false-positive
+      // class of mistake).
+      const localMd5 = md5File(localPath);
+      r = await execOnce(conn, 'md5sum /opt/aloop/aloop');
+      const remoteMd5 = (r.out.trim().split(/\s+/)[0] || '');
+      console.log(`[deploy] local md5:  ${localMd5}`);
+      console.log(`[deploy] remote md5: ${remoteMd5}`);
+      if (localMd5 !== remoteMd5) {
+        throw new Error(`checksum mismatch after upload -- local ${localMd5} != remote ${remoteMd5}, deploy is NOT safe to trust`);
+      }
+      console.log('[deploy] checksum verified match -- transfer is byte-exact');
+
       console.log('[deploy] starting aloop service...');
       r = await execOnce(conn, 'rc-service aloop start');
       console.log(r.out.trim() || r.errOut.trim());
@@ -64,6 +92,17 @@ conn
       await new Promise((res) => setTimeout(res, 1500));
       r = await execOnce(conn, 'rc-service aloop status');
       console.log('[deploy]', r.out.trim() || r.errOut.trim());
+      if (!/started/.test(r.out)) {
+        throw new Error('aloop service did not report "started" after restart -- check rc-service aloop status / logs manually');
+      }
+
+      // Confirm the NEW process actually replaced the old one (a genuinely
+      // fresh PID), not e.g. a stuck old process that never actually exited
+      // (matching AGENTS.md's own "always verify a reboot actually happened"
+      // discipline, applied here to a service restart instead of a full
+      // device reboot).
+      r = await execOnce(conn, "pgrep -f '/opt/aloop/aloop --config' -a");
+      console.log('[deploy] running process:', r.out.trim() || '(none found -- service may have failed to start)');
 
       conn.end();
     } catch (e) {
