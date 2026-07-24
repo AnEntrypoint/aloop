@@ -126,6 +126,13 @@ public:
         // apc_grid.cpp compute finish-quantization's rawSamples precisely
         // instead of estimating from wall-clock press-to-press timing.
         float    looperWriteIdx[kLoopers] = {};
+        // QUANTIZATION VERIFICATION: the LATCHED loop length (dsp/loop.dsp's
+        // "wraplen" hbargraph, only changes at finishEdge) -- unlike
+        // looperWriteIdx (only meaningful mid-recording), this is the actual
+        // final length every read-side consumer uses, letting a udp/4445
+        // query or scripted test harness confirm a loop's real quantized
+        // length without needing to listen to it.
+        float    looperWrapLen[kLoopers] = {};
     };
     Telemetry snapshotTelemetry() const;
 

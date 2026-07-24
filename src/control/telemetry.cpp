@@ -66,6 +66,12 @@ void Telemetry::publish() {
     uint32_t recBits = 0, playBits = 0;
     char vols[20 * 5 + 2]; int vp = 0; vols[vp++] = '[';
     char levels[20 * 7 + 2]; int lvp = 0; levels[lvp++] = '[';
+    // QUANTIZATION VERIFICATION: each looper's latched loop length in
+    // samples (dsp/loop.dsp's "wraplen" hbargraph) -- exposed so a scripted
+    // test harness (test/hardware/) can confirm a finished recording's real
+    // quantized length without needing to listen to it. Up to 8 digits per
+    // entry (MAXLEN = 48000*60 = 2,880,000 fits in 7 digits) plus separator.
+    char wraplens[20 * 9 + 2]; int wlp = 0; wraplens[wlp++] = '[';
     for (int i = 0; i < AudioThread::Telemetry::kLoopers; i++) {
         if (t.looperRec[i])  recBits  |= (1u << i);
         if (t.looperPlay[i]) playBits |= (1u << i);
@@ -76,23 +82,25 @@ void Telemetry::publish() {
         // content is genuinely silent vs. audible-but-not-heard for another
         // reason (routing, volume, playback gating).
         lvp += snprintf(levels + lvp, sizeof levels - lvp, i ? ",%.4f" : "%.4f", t.looperLevel[i]);
+        wlp += snprintf(wraplens + wlp, sizeof wraplens - wlp, i ? ",%.0f" : "%.0f", t.looperWrapLen[i]);
     }
     vols[vp++] = ']'; vols[vp] = 0;
     levels[lvp++] = ']'; levels[lvp] = 0;
+    wraplens[wlp++] = ']'; wraplens[wlp] = 0;
 
-    char json[768];
+    char json[1024];
     int n = snprintf(json, sizeof json,
         "{\"core_busy\":[%.0f,%.0f,%.0f,%.0f],\"xruns\":%llu,"
         "\"link\":{\"synced\":%s,\"bpm\":%.1f},\"wifi\":\"%s\",\"monitor_mode\":%s,"
         "\"audio_peak\":{\"in\":%.4f,\"out\":%.4f},\"eff_speed\":%.4f,"
-        "\"loopers\":{\"rec\":%u,\"play\":%u,\"vol\":%s,\"level\":%s}}",
+        "\"loopers\":{\"rec\":%u,\"play\":%u,\"vol\":%s,\"level\":%s,\"wraplen\":%s}}",
         t.coreBusyPct[0], t.coreBusyPct[1], t.coreBusyPct[2], t.coreBusyPct[3],
         (unsigned long long)t.xruns,
         t.linkSynced ? "true" : "false", t.bpm,
         t.apMode ? "ap" : "sta",
         t.monitorMode ? "true" : "false",
         t.inPeak, t.outPeak, t.effSpeed,
-        recBits, playBits, vols, levels);
+        recBits, playBits, vols, levels, wraplens);
 
     // Write the status file for shell/curl inspection.
     FILE* f = fopen("/run/aloop/status.json", "w");

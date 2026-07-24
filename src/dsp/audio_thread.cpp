@@ -779,6 +779,10 @@ static void* worker(void*) {
                     // biased by however long ARM-quantization's grid-tick
                     // wait took).
                     snprintf(z, sizeof z, "looper%2d/writeidx", lp); g_telem.looperWriteIdx[lp] = fui.get(z, 0.0f);
+                    // QUANTIZATION VERIFICATION: the latched loop length,
+                    // read the same way writeIdx is above (see loop.dsp's
+                    // "wraplen" hbargraph comment for why this zone exists).
+                    snprintf(z, sizeof z, "looper%2d/wraplen", lp); g_telem.looperWrapLen[lp] = fui.get(z, 0.0f);
                 }
             }
             // REMOVED (dsp/loop.dsp's readposdiag/wraplendiag no longer

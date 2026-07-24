@@ -193,34 +193,35 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
         // thread's own last-written shadow) keeps both in agreement.
         m_masterLenSamples = (long)ps.get("cmd/master_len", 0.0f);
         if (m_masterLenSamples == 0) {
-            unsigned elapsedMs = now_ms - m_recordStartMs[looper];
-            long lenSamples = (long)elapsedMs * kSampleRate / 1000;
-            // WITNESSED live: "the new recording doesn't appear to have
-            // audio" / "recording the wrong part of the input buffer" on
-            // the FIRST post-clear recording specifically, while a SECOND
-            // recording (which reuses the already-established
-            // m_masterLenSamples unchanged, see the `else` branch below)
-            // works fine. Root cause: `now_ms` (this control thread's wall
-            // clock, captured at the ARM press and again at the FINISH
-            // press) is NOT sample-accurate relative to the audio thread's
-            // actual per-block timeline -- there is real, if small,
-            // MIDI-event-to-audio-thread latency (control-thread scheduling,
-            // block-buffering) that the FIRST recording's freshly-computed
-            // length has no margin against. dsp/loop.dsp's de.fdelay ring
-            // taps `effLen` samples BACK from "now" once play starts; if the
-            // computed length is even slightly LONGER than what was actually
-            // written since the ring was zeroed by the preceding clear, that
-            // tap reads into the pre-clear silence for part or all of the
-            // loop -- exactly matching "recording the wrong part of the
-            // input buffer". A SECOND recording never hits this because it
-            // reuses the SAME already-verified-working length rather than
-            // computing a fresh one with its own fresh skew. Fix: shrink the
-            // freshly-computed length by a safety margin (10ms) so the tap
-            // can never reach further back than genuinely-recorded content,
-            // erring toward a very slightly short loop rather than one that
-            // reads stale/silent content at its start.
-            const long kSafetyMarginSamples = kSampleRate / 100;   // 10ms
-            lenSamples -= kSafetyMarginSamples;
+            // WITNESSED + CORRECTED (user's explicit spec this session):
+            // "loop 1 is supposed to immediately and precisely repeat its
+            // exact start/stop of the recording, exactly like a commercial
+            // looper" -- a wall-clock (now_ms) estimate can never satisfy
+            // this: it was never sample-accurate relative to the audio
+            // thread's real per-block timeline (real, if small,
+            // MIDI-event-to-audio-thread latency from control-thread
+            // scheduling/block-buffering), which is exactly why the OLD code
+            // here subtracted a hand-tuned 10ms "safety margin" to avoid
+            // reading into pre-clear silence -- a permanent, deliberate
+            // inaccuracy that itself violates "exact start/stop". Fixed by
+            // using the SAME sample-accurate mechanism the subsequent-loop
+            // branch below already uses: dsp/loop.dsp's writeIdx telemetry,
+            // the DSP's own true elapsed-sample count since the real
+            // (grid-aligned) arm instant -- no wall-clock skew, no margin
+            // needed at all, since this value can never be longer than what
+            // was genuinely written.
+            long lenSamples;
+            if (audio) {
+                auto t = audio->snapshotTelemetry();
+                lenSamples = (long)t.looperWriteIdx[looper];
+            } else {
+                // Defensive fallback only (should not happen in practice --
+                // audio is always non-null once the audio thread has
+                // started): wall-clock estimate, matching the subsequent-
+                // loop branch's own fallback for the same reason.
+                unsigned elapsedMs = now_ms - m_recordStartMs[looper];
+                lenSamples = (long)elapsedMs * kSampleRate / 1000;
+            }
             if (lenSamples < 64) lenSamples = 64;                     // dsp/loop.dsp's hslider min
             if (lenSamples > kMaxLoopSamples) lenSamples = kMaxLoopSamples;
             m_masterLenSamples = lenSamples;
@@ -239,22 +240,23 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             // master phrase across the whole rig (unlike looper's per-clip
             // m_nativeBlocks), so this is a single shared value, consistent
             // with cmd/master_len's own existing shared-rig design.
-            // TRUE PHRASE-LOCK (user's standing requirement): resolve the
-            // ACTUAL phrase length via the beat-count solver instead of
-            // trusting the raw recorded duration verbatim. deriveTempoQuant
-            // picks whichever candidate beat-count (multiple/division of the
-            // 4-bar/16-beat base -- see link_bridge.cpp's quantum) makes the
-            // recorded duration imply a tempo nearest 120 BPM; re-deriving
-            // m_masterLenSamples from that candidate's OWN beats-at-the-
-            // chosen-BPM (rather than the raw elapsed-time length) snaps the
-            // phrase to a clean, Link-grid-aligned value instead of an
-            // arbitrary duration that merely approximates one.
+            // WITNESSED/CORRECTED (user's explicit, direct correction this
+            // session): "loop 1 is supposed to immediately and precisely
+            // repeat its exact start/stop of the recording, exactly like a
+            // commercial looper... from that point onwards, [Link] controls
+            // the loop playback so that other devices can change the tempo
+            // from that point on once we've locally set it with the first
+            // loop." This REVERSES the previous design (which re-derived
+            // m_masterLenSamples from the solver's own beats-at-chosen-BPM
+            // reconstruction, quietly resizing the loop to the nearest
+            // musical-tempo-implying duration) -- m_masterLenSamples/
+            // cmd/master_len must stay EXACTLY the raw recorded length set
+            // above (safety-margin already applied), never overwritten by
+            // any solver output. deriveTempoQuant is used ONLY to pick a BPM
+            // to propose to Link -- the loop's own length is the source of
+            // truth Link is phrased to fit, not the other way around.
             double recordedSeconds = (double)m_masterLenSamples / (double)kSampleRate;
             TempoSolveResult solved = deriveTempoQuant(recordedSeconds);
-            long quantizedLenSamples = (long)(solved.beats * 60.0 / solved.bpm * kSampleRate + 0.5);
-            if (quantizedLenSamples < 64) quantizedLenSamples = 64;
-            if (quantizedLenSamples > kMaxLoopSamples) quantizedLenSamples = kMaxLoopSamples;
-            m_masterLenSamples = quantizedLenSamples;
             ps.setByName("cmd/master_len", (float)m_masterLenSamples);
             ps.setByName("cmd/recorded_bpm", (float)solved.bpm);
             // NOTE: no longer writes looperN/len here -- dsp/loop.dsp's oneLooper
