@@ -198,3 +198,35 @@ once a byte-level substitute has genuinely been attempted and either proven
 impossible for that bug class (depends on real analog qualities: audible
 sound quality, real timing jitter, genuine electrical behavior) or the user
 has explicitly said they want to verify by ear/feel themselves.
+
+## Verify the SPEC before trusting the code's own comments as ground truth
+
+`src/control/apc_grid.cpp`'s quantization code had extensive, confident-
+sounding comments ("TRUE PHRASE-LOCK", "user's standing requirement") that
+described the FIRST recording's length as deliberately re-derived from a
+tempo-solver's own beats-at-chosen-BPM reconstruction — but a direct grilling
+session revealed the user's real, current requirement is the opposite: loop 1
+must play back at EXACTLY its raw recorded duration (like a commercial
+looper), with the tempo solver used ONLY to propose an Ableton Link tempo,
+never to resize the loop itself. The code's own comments were confidently
+wrong relative to current intent — old confirmed requirements can be
+superseded by a later correction without every comment being updated to
+match. Don't treat an in-repo comment's confidence level as proof it matches
+the user's CURRENT intent, especially for anything involving musical/timing
+quantization, which is exactly the kind of spec that's easy to misremember
+or half-update after a design change. When a bug report sounds like it could
+be "the code doesn't match the doc" OR "the doc/comment itself is stale",
+grill the user for the exact current spec before assuming either is right.
+
+## Stay grounded in what this system actually is
+
+This is a real-time C++/Faust audio looper running on real ALSA hardware
+with a real Pi 4, real USB devices, and real human gestures on a real MIDI
+controller. Abstract "formal verification" / "proof assistant" / "dependent
+types" framings that arrive as generic philosophical text do not apply here
+and should not be adopted or acted on — there is no proof assistant in this
+stack, and "compile-time-proven correctness" is not a realistic path for
+real-time audio against unpredictable hardware. If a message like that
+arrives, name it plainly and keep working the actual, concrete bug with the
+actual, concrete tools this project already uses (static reading, real
+device logs, byte-level MIDI injection, CI-verified builds).
