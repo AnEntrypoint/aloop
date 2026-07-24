@@ -153,7 +153,7 @@ int main(int argc, char** argv) {
     // Ableton Link on the control thread (never the audio cores). Telemetry is
     // started AFTER the audio thread below so it can read the live snapshot.
     aloop::LinkBridge link;
-    link.start((double)cfg.sampleRate, /*enabled=*/true);
+    link.start((double)cfg.sampleRate, /*enabled=*/false); // TEMP A/B TEST -- Link disabled to isolate the 1Hz stall, revert before committing
     // See pinLinkThreadsToControlCore's own comment: steers Link's internal
     // threads off the isolated audio cores (1, 3) onto the control core (2),
     // matching kernel/rt-tune.sh's CONTROL_CORE. Core 2 is currently hardcoded
