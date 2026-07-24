@@ -18,14 +18,77 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <string>
 #include <atomic>
 #include <thread>
 #include <unistd.h>
+#include <dirent.h>
+#include <sched.h>
 
 namespace {
 std::atomic<bool> g_run{true};
 void onSignal(int) { g_run.store(false); }
+
+// WITNESSED live on a real Pi 4 (this session): a genuinely NEW ~30-37ms
+// stall on the audio thread's per-block read, firing at almost exactly a
+// 1.000-second period (measured directly via wall-clock-timestamped
+// [diag-gap] log lines: t=26.037, 27.037, 28.037, 29.036, 30.036, 31.036...
+// -- a real, consistent period, not jitter). Confirmed absent in the
+// pre-LOFI baseline (100% hitch-free), so this is a regression from this
+// session's own work, not a pre-existing hardware limit.
+//
+// Ableton Link (third-party, vendored ableton::Link) spawns its OWN internal
+// threads (named "Link Main" and "Link Dispatcher" by the library itself,
+// not by aloop) the moment `ableton::Link(...)` is constructed in
+// LinkBridge::start() -- this codebase has never had any control over their
+// scheduling, since Link's own public API exposes no thread-affinity hook.
+// `ps`/`/proc/<tid>/stat` on the live device showed both threads' cumulative
+// kernel time growing in lockstep, consistent with Link's own known
+// multicast-peer-discovery protocol timing (its "gateway"/session-sync
+// messages are commonly sent on ~second-scale intervals) -- a real
+// candidate for periodically waking on or otherwise contending with the
+// isolated audio cores (1, 3), since nothing has ever excluded them.
+//
+// This does NOT add any audio-path latency (the explicit, hard constraint
+// for this investigation) -- it only steers two pre-existing background
+// threads' CPU affinity onto the control core (2), matching
+// kernel/rt-tune.sh's existing "steer non-audio work off the isolated
+// cores" strategy for IRQs, applied here to these two specific threads by
+// name since Link creates them internally with no host-visible handle.
+void pinLinkThreadsToControlCore(int controlCore) {
+    DIR* d = opendir("/proc/self/task");
+    if (!d) return;
+    struct dirent* e;
+    int pinned = 0;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char commPath[64];
+        snprintf(commPath, sizeof commPath, "/proc/self/task/%s/comm", e->d_name);
+        FILE* f = fopen(commPath, "r");
+        if (!f) continue;
+        char name[64] = {0};
+        if (fgets(name, sizeof name, f)) {
+            size_t len = strlen(name);
+            if (len && name[len - 1] == '\n') name[len - 1] = '\0';
+        }
+        fclose(f);
+        if (strcmp(name, "Link Main") == 0 || strcmp(name, "Link Dispatcher") == 0) {
+            pid_t tid = (pid_t)atoi(e->d_name);
+            cpu_set_t set;
+            CPU_ZERO(&set);
+            CPU_SET(controlCore, &set);
+            if (sched_setaffinity(tid, sizeof set, &set) == 0) {
+                fprintf(stderr, "[link] pinned %s (tid %d) to control core %d\n", name, (int)tid, controlCore);
+                pinned++;
+            } else {
+                fprintf(stderr, "[link] warning: failed to pin %s (tid %d) to core %d\n", name, (int)tid, controlCore);
+            }
+        }
+    }
+    closedir(d);
+    if (!pinned) fprintf(stderr, "[link] warning: no Link Main/Dispatcher threads found to pin yet (may not have spawned)\n");
+}
 
 // Minimal config load: reads /etc/aloop.conf key=value under [sections]. Missing
 // file / keys fall back to documented defaults (DEGRADED-MODES: config missing).
@@ -91,6 +154,12 @@ int main(int argc, char** argv) {
     // started AFTER the audio thread below so it can read the live snapshot.
     aloop::LinkBridge link;
     link.start((double)cfg.sampleRate, /*enabled=*/true);
+    // See pinLinkThreadsToControlCore's own comment: steers Link's internal
+    // threads off the isolated audio cores (1, 3) onto the control core (2),
+    // matching kernel/rt-tune.sh's CONTROL_CORE. Core 2 is currently hardcoded
+    // here and in rt-tune.sh (not read from AudioConfig) -- both must be kept
+    // in sync if that ever changes.
+    pinLinkThreadsToControlCore(2);
 
     // aloop::AudioThread is declared before the MIDI thread launches (but
     // started after) so runMidiLoop can hold a pointer to it for reading live
