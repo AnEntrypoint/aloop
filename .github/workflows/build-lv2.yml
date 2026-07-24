@@ -133,8 +133,12 @@ jobs:
             alpine:3.20 sh -c '
               set -e
               apk add --no-cache build-base lv2-dev boost-dev
-              # -mcpu=cortex-a72: Pi 4's real core -- see src/CMakeLists.txt's
-              # matching comment (Faust manual's -march=cpu advice, aarch64 form).
+              # -mcpu=cortex-a72: Pi 4 real core, matching src/CMakeLists.txt
+              # (Faust manual -march=cpu advice, aarch64 form). No apostrophes
+              # in this comment -- it lives inside the outer single-quoted
+              # sh -c string, where an apostrophe terminates that quoting
+              # early (WITNESSED: broke this exact step, syntax error near
+              # unexpected token, fixed by removing every apostrophe here).
               g++ -shared -std=c++11 -fvisibility=hidden -O3 -mcpu=cortex-a72 -fPIC -DDLLEXT="\".so\"" $CPPFLAGS \
                 -I. "$CLSNAME.cpp" -o "$CLSNAME.so"
               file "$CLSNAME.so"
@@ -275,8 +279,12 @@ jobs:
             alpine:3.20 sh -c '
               set -e
               apk add --no-cache build-base lv2-dev boost-dev
-              # -mcpu=cortex-a72: Pi 4's real core -- see src/CMakeLists.txt's
-              # matching comment (Faust manual's -march=cpu advice, aarch64 form).
+              # -mcpu=cortex-a72: Pi 4 real core, matching src/CMakeLists.txt
+              # (Faust manual -march=cpu advice, aarch64 form). No apostrophes
+              # in this comment -- it lives inside the outer single-quoted
+              # sh -c string, where an apostrophe terminates that quoting
+              # early (WITNESSED: broke this exact step, syntax error near
+              # unexpected token, fixed by removing every apostrophe here).
               g++ -shared -std=c++11 -fvisibility=hidden -O3 -mcpu=cortex-a72 -fPIC -DDLLEXT="\".so\"" $CPPFLAGS \
                 -I. "$CLSNAME.cpp" -o "$CLSNAME.so"
               file "$CLSNAME.so"
