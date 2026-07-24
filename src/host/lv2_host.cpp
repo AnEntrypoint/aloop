@@ -134,12 +134,31 @@ bool Lv2Host::readTtl(const std::string& bundlePath, Lv2Plugin& out) {
 
     const LilvPlugins* plugins = lilv_world_get_all_plugins(g_lilvWorld);
     const LilvPlugin* found = nullptr;
+    // Compare with any trailing slash stripped from BOTH sides -- lilv's own
+    // bundle URI (loaded with an explicit trailing "/" above, matching the
+    // LV2 bundle-URI convention) resolves back to an ABSOLUTE path that may
+    // or may not carry that trailing slash depending on the lilv version,
+    // while bundlePath (loadDir's `dir + "/" + name`) never has one. A raw
+    // bundlePath.find(bpath)==0 prefix check silently fails whenever the two
+    // sides disagree on the trailing slash (bpath one character longer than
+    // bundlePath can never be its prefix) -- WITNESSED live: a well-formed
+    // bundle with a real manifest.ttl/aloop.ttl (confirmed by hand) still
+    // fell through to "no plugin matching bundle", purely from this string
+    // mismatch, taking the .so-only no-port-wiring fallback below, which
+    // then crashes on its first runOne() call (Faust-generated run() reads/
+    // writes through port pointers connectPorts() never set, same class of
+    // bug as the earlier nullptr-features fix -- ADR referenced there).
+    auto stripTrailingSlash = [](std::string s) {
+        while (!s.empty() && s.back() == '/') s.pop_back();
+        return s;
+    };
+    std::string wantPath = stripTrailingSlash(bundlePath);
     LILV_FOREACH(plugins, i, plugins) {
         const LilvPlugin* pl = lilv_plugins_get(plugins, i);
         const LilvNode* bundle = lilv_plugin_get_bundle_uri(pl);
         const char* bpathC = lilv_uri_to_path(lilv_node_as_uri(bundle));
-        std::string bpath = bpathC ? bpathC : "";
-        if (!bpath.empty() && bundlePath.find(bpath) == 0) { found = pl; break; }
+        std::string bpath = stripTrailingSlash(bpathC ? bpathC : "");
+        if (!bpath.empty() && bpath == wantPath) { found = pl; break; }
     }
     if (found) {
         out.lilvPlugin = (void*)found;
