@@ -187,6 +187,67 @@ the magnitude — this is what let a "seems like it's happening often" symptom
 resolve into a hard, provable "fires at almost exactly a 1.000-second
 period" measurement.
 
+## Severe continuous readi()-slowdown (NOT the ~1Hz periodic stall above — a distinct, separate issue, now resolved): a per-block string/map-lookup path scaling with control count, not USB hardware
+
+A different symptom from the periodic-stall section above: `readi()` itself
+taking 2.2-2.7ms against a 1.333ms expectation, continuously (not
+periodically), with xruns climbing without bound, reproducible at idle with
+nothing recording or playing. An initial investigation pass wrongly
+concluded this was an inherent USB full-duplex isochronous-transfer-timing
+hardware limitation, "not something fixable in software" — that conclusion
+was wrong. The real cause: `worker()`'s "apply remappable controls" block
+(`src/dsp/audio_thread.cpp`) called `targetToZone()` (a `std::string`
+allocation + `snprintf`) then two string-keyed map lookups
+(`ParamStore::get` by name, then `FaustUI::set`'s `zones.find` with an O(n)
+linear suffix-scan fallback) for **every bound MIDI/effect control, every
+single audio block** (750/sec) — unlike `sidechainSrcSlot` a few lines
+above it (already a correct resolve-once-per-slot cache), this exact path
+was never converted, so its cost scaled directly with how many
+controls/effects have been bound over the project's life. The block's own
+comment claimed this was already cheap and alloc-free; it was neither —
+never trust an in-repo comment's claim of "already optimized" over actually
+reading what the code does (see the "verify the spec" lesson below).
+
+**How this was actually found** (not by guessing harder at the USB
+hypothesis, but by checking a specific, previously-unchecked signal):
+`/proc/<tid>/schedstat`'s `sum_exec_runtime` showed the RT audio-worker
+thread on-CPU ~95% of wall-clock uptime, but with only ~46 voluntary
+context switches/sec — a thread genuinely blocking-and-waking once per
+`readi()` call at 750 blocks/sec should show ~750 voluntary sleeps/sec, not
+46. A thread that's supposedly blocked in a real hardware wait sleeps; one
+that's actually spinning/working shows exactly this low-voluntary-switch,
+high-on-CPU signature. That pointed straight at the **untimed** span
+between `readi()` returning and the already-instrumented `compute()` timer
+starting — the remap loop lives exactly there.
+
+**Fix**: cache each bound target's resolved `(ParamStore slot, Faust zone
+float*)` pair once, rebuilt only when `ParamStore::count` grows (a new
+mapping gets bound) — the identical lazy-resolve-while-unresolved
+discipline `sidechainSrcSlot` already used. The per-block hot path is now a
+flat array walk: one atomic load + one pointer store per control, zero
+string construction, zero map lookups, zero allocation.
+
+**Verified live on the real device**: xruns went from 39047 (accumulated,
+continuously climbing) to 0 and holding over a clean 20+ second window;
+zero new `[diag-gap]` lines over that same window (previously continuous,
+multiple per second); the audio-worker thread's `/proc/<tid>/stat` `state`
+field changed from `R` (running/spinning) to `S` (sleeping) between blocks.
+The user's original reported symptom (first recording ending up "a
+fraction" of what was played) was independently verified resolved via
+byte-level MIDI injection (`tcp/9401`): a real 5128ms press-to-press
+interval produced a recorded `wraplen` of 246079 samples against an
+expected 246144 — a 65-sample (~1.35ms) difference consistent with ordinary
+MIDI-dispatch scheduling jitter, not truncation.
+
+A separate, real regression was found (not yet fixed) while verifying this
+on the live device: both home LV2 plugins now fault and get disabled by the
+crash-isolation watchdog on their very first `runOne()` call, every single
+startup, after logging `lilv found no plugin matching bundle — falling
+back to .so-only load (no port wiring)` — meaning the home guitar/lofi-fx
+bundle currently silently degrades to passthrough on every boot. Tracked
+separately; do not conflate with the readi-slowdown fix above, which is
+independently verified resolved regardless of this LV2-loading issue.
+
 ## Real hardware over asking the user to reproduce input
 
 Per the `gm` skill's own standing rule: prefer byte-level MIDI injection
