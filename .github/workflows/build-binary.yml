@@ -63,7 +63,7 @@ jobs:
       # this is x86_64, not the Pi 4's aarch64 core, but still a real,
       # reproducible before/after comparison of the SAME flag change on the
       # SAME hardware, which is what actually answers "did these flags help."
-      - name: Benchmark CPU usage: baseline flags vs this session's shipped flags
+      - name: "Benchmark CPU usage: baseline flags vs this session's shipped flags"
         run: |
           set -e
           mkdir -p bench
