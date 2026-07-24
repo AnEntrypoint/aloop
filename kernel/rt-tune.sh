@@ -17,8 +17,43 @@ CONTROL_CORE="2"
 # --- Force max clock, disable power-save that causes latency spikes ---
 # WHY: frequency scaling and deep C-states park the CPU and take microseconds to
 # wake — enough to blow a 1.333 ms block under load. Pin to performance.
-for c in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-    [ -w "$c" ] && echo performance > "$c" || true
+# WITNESSED live on a real Pi 4 (this session): this write was silently a no-op
+# every boot -- `cat scaling_governor` on the running device showed `schedutil`
+# still active despite `local` (this script's own service) reporting
+# `started`. A [diag-gap] instrumentation elsewhere in this codebase showed a
+# recurring ~37-41ms stall on the audio thread's per-block read, a magnitude
+# consistent with schedutil's own periodic load-sampling/frequency-transition
+# work running on the "isolated" cores (isolcpus only removes ordinary
+# scheduler-domain tasks, never cpufreq's own kernel-internal governor logic).
+# Manually re-running `echo performance > .../scaling_governor` on the booted
+# device DID take effect immediately and held -- so the sysfs write mechanism
+# itself works; only this boot-time attempt failed. Root cause suspected but
+# unconfirmed: the cpufreq driver's sysfs nodes likely don't exist yet this
+# early in boot (`local` runs in the `boot` runlevel, before any confirmed
+# cpufreq-ready signal), so the glob matched nothing and the whole loop
+# silently no-op'd via the `|| true` guard, exactly the kind of failure this
+# script's own defensive style masks instead of catching. Fix: retry with a
+# bounded wait for the sysfs path to exist, and log a REAL result (not just
+# best-effort silence) so a future boot's failure is visible instead of
+# invisible.
+for CPU_N in 0 1 2 3; do
+    GOV_PATH="/sys/devices/system/cpu/cpu$CPU_N/cpufreq/scaling_governor"
+    tries=0
+    while [ ! -w "$GOV_PATH" ] && [ "$tries" -lt 20 ]; do
+        sleep 0.1
+        tries=$((tries + 1))
+    done
+    if [ -w "$GOV_PATH" ]; then
+        echo performance > "$GOV_PATH"
+        applied=$(cat "$GOV_PATH" 2>/dev/null || echo "unreadable")
+        if [ "$applied" = "performance" ]; then
+            log "cpu$CPU_N governor -> performance (confirmed, ${tries}00ms wait)"
+        else
+            log "WARNING: cpu$CPU_N governor write succeeded but readback shows '$applied', not performance"
+        fi
+    else
+        log "WARNING: cpu$CPU_N has no cpufreq/scaling_governor after 2s wait -- governor NOT pinned, schedutil's own periodic bookkeeping may still stall this core"
+    fi
 done
 # Disable deep idle states on the audio cores if the platform exposes them.
 for core in $AUDIO_CORES; do
