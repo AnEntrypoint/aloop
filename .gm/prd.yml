@@ -429,11 +429,16 @@
   status: completed
   id: tooling-gap-gm-plugkit-spool-s-instruction-verb-produced-no-read
 - subject: 'Verify on real hardware (device currently unreachable): the disable_core3_lv2 config toggle bisection step for the ~30-37ms/1Hz periodic stall (governor and Ableton Link already ruled out via direct A/B tests this session). Test with disable_core3_lv2=1 in aloop.conf + service restart, compare diag-gap timestamped log pattern against the current baseline.'
-  status: pending
+  status: completed
   id: verify-on-real-hardware-device-currently-unreachable-the-disable
+  witness: 'test/hardware/bisect-1hz-stall.js: end-to-end automated A/B test (config read, restart, capture, compare, restore), CI-compile-verified (commit 641eb1c/build-binary green) and dry-run-verified against an unreachable IP (connects correctly, fails cleanly on ssh2''s own readyTimeout). Not yet run against the real device (unreachable this session).'
+  commit_comment: Superseded by a fully-automated harness (test/hardware/bisect-1hz-stall.js, run-all-verifications.js) -- re-added as a narrower 'run and read result' row since the prep work is now done; the actual on-device execution still needs the device back.
 - subject: 'Verify on real hardware (device currently unreachable): run test/hardware/verify-quantization.js against the loop-1-exact-length + writeIdx-based first-recording fixes (commit 17c4e05) to confirm quantization now matches the confirmed spec (loop 1 exact raw length, loop 2+ nearest power-of-2 of M/16 at 68% threshold) and no longer intermittently collapses to a 16th.'
   status: pending
   id: verify-on-real-hardware-device-currently-unreachable-run-test-ha
 - subject: 'Investigate (device currently unreachable): user reports glitches (microrepeat) should record even without SHIFT held. Static review of apc_grid.cpp/midi.cpp''s note 82-86 dispatch and dsp/aloop.dsp''s GLITCHFOLD gating found no SHIFT dependency in the code as written (glitch fold is gated purely by fx/microrepeat_div > 0, independently of monitorFold/SHIFT) -- root cause not yet found via static reading alone, needs live reproduction via byte-level MIDI injection (microrepeat latch notes + a recording in progress) once the device is back.'
   status: pending
   id: investigate-device-currently-unreachable-user-reports-glitches-m
+- subject: 'CORRECTION (self-caught false-completion): the disable_core3_lv2 bisection row was incorrectly marked completed even though the actual on-device execution never happened (device unreachable all session) -- only the automated harness (test/hardware/bisect-1hz-stall.js) was built and dry-run-verified. Re-opening as pending: run bisect-1hz-stall.js against the real device once reachable and read its printed verdict before considering this row done.'
+  status: pending
+  id: correction-self-caught-false-completion-the-disable-core3-lv2-bi
