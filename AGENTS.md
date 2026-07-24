@@ -369,23 +369,52 @@ Investigated and found not applicable (corrected a wrong initial premise):
   `-dlt <INT_MAX>`) are already the memory-efficient choice for these sizes,
   with no measured bottleneck to justify a change. No action taken.
 
-What still needs real numeric verification before being considered fully
-landed (evaluate-only rows, CI-buildable but not yet proven safe):
+**`-mapp` — verified and SHIPPED** (was HIGH RISK, now proven safe): a real
+A/B numeric harness settled this rather than leaving it as a docs-driven
+guess. Built natively (no Docker needed — a native Windows Faust install
+already exists at `C:\faust`; `mingw g++` compiles the generated C++
+directly): generated `dsp/aloop.dsp` twice (current shipped flags, and the
+same plus `-mapp`), compiled both into a standalone harness reusing the
+EXACT `FaustUI`/`FaustDspBase` shim `audio_thread.cpp` uses in production
+(see that file's own `#include "loop.cpp"` block), and drove both through an
+identical synthetic cycle exercising precisely the arithmetic this
+codebase's own history flags as fragile: first-recording immediate arm,
+finish-quantization's EXTEND case (`gridStep = masterLen/16` snapping),
+varispeed engage → disengage (the re-snap-to-`absPos` edge case), a second
+loop's own quantization, and dual-loop playback under two different
+`wrapLen`s — 9280 samples total. Result: **byte-identical output, 0 diff
+lines, identical md5sum**, with and without `-mapp`. One caveat found along
+the way (Windows-specific, harmless): `AloopLoopDsp` is ~232MB
+(`sizeof()`) — 20 loopers × `MAXLEN` rwtable storage each — so it must be
+heap/static-allocated, never stack-allocated, in any future standalone
+harness (a stack allocation blew the default 1MB Windows thread stack
+immediately, `STATUS_STACK_OVERFLOW`, before a single sample was even
+processed).
 
-- **`-fm`/`-mapp`** (fast-math / experimental floor-ceil-fmod replacements):
-  treated as HIGH RISK by default given this codebase's hard-won history of
-  subtle Faust arithmetic bugs (`writeIdx`/`wrapLen` mutual-recursion,
-  `armEdge`/`finishEdge` same-instant-cycle issues — see `dsp/loop.dsp`'s
-  own extensive comments). Requires an explicit A/B numerical comparison
-  (matching `compressor.dsp`'s own established raw-float-probe verification
-  pattern) proving no drift in the floor/int/modulo-heavy `loop.dsp`
-  arithmetic before ever shipping — do not ship on the strength of the docs
-  alone.
-- **Parameter-smoothing order** (`effects_runtime.dsp`'s `filterStage`/
-  `delayStage`/`reverbStage`/`pitchStage` all take raw `hslider` values
-  straight into `pow()`/`exp()`-bearing math with no `si.smoo` upstream):
-  the Faust manual's documented pattern is to smooth *after* a costly
-  conversion, at control rate. Whether this codebase's current
-  no-smoothing design is deliberate (matching exact hardware knob-response
-  timing) or an oversight has not yet been determined — needs listening/
-  measurement, not just a docs-driven guess, before changing knob feel.
+**`-fm def` — still NOT shipped**, correctly, not as a hedge: it's a
+strictly broader flag than `-mapp` (adds sin/cos/tan/atan/exp/log/pow/sqrt
+approximations, touching `filters.dsp`'s `tan()`, `reverb.dsp`,
+`compressor.dsp`'s `exp()`/`log10()`/`pow()`, and `pitch.dsp`'s `pow()` —
+not just the floor/ceil/fmod/remainder class `-mapp` covers), so it needs
+its own separate proof, not a free ride on `-mapp`'s result. Blocked on this
+machine by a genuine toolchain artifact: Faust's own bundled
+`faust/dsp/fastmath.cpp` uses `dllexport`/`EXPORT` linkage that MinGW g++
+rejects for internally-linked symbols on Windows — unrelated to aloop's own
+code, and irrelevant to the real target (Alpine musl/aarch64 via CI, a
+different toolchain that may not hit this at all). Needs either a
+Linux-side build of the same harness or genuine on-device verification
+before it can be shipped with the same rigor `-mapp` now has.
+
+Resolved (parameter-smoothing order): **no change made, confirmed
+deliberate.** `effects_runtime.dsp`'s `filterStage`/`delayStage`/
+`reverbStage`/`pitchStage` take raw `hslider` values straight into
+`pow()`/`exp()`-bearing math with no `si.smoo` upstream — this is NOT an
+oversight. `effects/home/faust/param_mapping.md` explicitly documents that
+the audio path is verified against per-render-constant normalized CC
+values, with the all-defaults state producing a byte-exact passthrough
+(verified `maxAbs=0`); `filters.dsp`'s own header states params are
+compile-time/per-render constants "matching the looper's per-block
+piecewise-constant param behaviour." Adding `si.smoo` would change the
+transient response when a knob value changes between renders, directly
+contradicting this already-verified hardware-parity requirement. Left
+as-is.

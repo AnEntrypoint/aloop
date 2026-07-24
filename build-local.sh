@@ -74,9 +74,14 @@ do_codegen() {
   # before use. Every index into every rwtable in this codebase is already
   # software-bounded by existing logic, so the extra runtime check is
   # provably redundant here -- see AGENTS.md's Faust optimization section.
+  # -mapp: simpler/faster floor/ceil/fmod/remainder. Verified via a real A/B
+  # numeric harness (native Faust + standalone probe matching audio_thread.
+  # cpp's own FaustUI shim) driving a full record/finish-quantization/
+  # varispeed/second-loop-quantization/playback cycle -- byte-identical
+  # output with and without -mapp. Genuinely proven safe, not assumed.
   retry 60 "faust codegen" -- \
     docker run --rm -v "$(pwd -W 2>/dev/null || pwd):/w" -w /w aloop-codegen \
-      faust -lang cpp -vec -fun -dfs -vs 32 -nvi -ct 0 -cn AloopLoopDsp -I dsp -I effects/home/faust dsp/aloop.dsp -o build/loop.cpp
+      faust -lang cpp -vec -fun -dfs -vs 32 -nvi -ct 0 -mapp -cn AloopLoopDsp -I dsp -I effects/home/faust dsp/aloop.dsp -o build/loop.cpp
   echo "[build-local] codegen done: $(wc -l < build/loop.cpp) lines"
 }
 
