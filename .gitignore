@@ -2,6 +2,14 @@
 .agentplug-kv/
 .gm/pw-sock-*/
 .gm/exec-spool/
+# gm-plugkit occasionally registers/reboots the watcher from a cwd other
+# than the repo root (e.g. mid-session while a shell's cwd was temporarily
+# test/hardware/) -- WITNESSED this session, creates a stray nested .gm/
+# tree wherever that cwd was. **/.gm/ (not root-anchored) catches any such
+# subdirectory, not just the real repo-root .gm/ this file's own patterns
+# above assume.
+**/.gm/exec-spool/
+**/.gm/pw-sock-*/
 .gm/witness/
 .gm/*.db
 .gm/*.db-*
