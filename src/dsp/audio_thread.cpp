@@ -650,7 +650,16 @@ static void* worker(void*) {
             if (haveLastReadTs) {
                 double gapMs = (nowTs.tv_sec - lastReadTs.tv_sec) * 1000.0 + (nowTs.tv_nsec - lastReadTs.tv_nsec) / 1e6;
                 if (gapMs > kExpectedPeriodMs * 1.5) {
-                    fprintf(stderr, "[diag-gap] readi gap=%.3fms (expected ~%.3fms)\n", gapMs, kExpectedPeriodMs);
+                    // Wall-clock timestamp (not just the gap magnitude) added
+                    // per the user's own observation that the click "always
+                    // reoccurs after that amount of time" -- a real period,
+                    // not jitter -- so the real inter-event interval can be
+                    // measured directly from consecutive log lines instead of
+                    // guessed from line-count density (unreliable: only gaps
+                    // exceeding 1.5x expected get logged at all, so quiet
+                    // stretches between events are invisible in the log).
+                    fprintf(stderr, "[diag-gap] t=%ld.%03ld readi gap=%.3fms (expected ~%.3fms)\n",
+                            (long)nowTs.tv_sec, nowTs.tv_nsec / 1000000, gapMs, kExpectedPeriodMs);
                 }
             }
             lastReadTs = nowTs;
@@ -661,7 +670,8 @@ static void* worker(void*) {
             {
                 double readMs = (readEndTs.tv_sec - readStartTs.tv_sec) * 1000.0 + (readEndTs.tv_nsec - readStartTs.tv_nsec) / 1e6;
                 if (readMs > kExpectedPeriodMs * 1.5) {
-                    fprintf(stderr, "[diag-gap] readi ITSELF took=%.3fms (expected ~%.3fms)\n", readMs, kExpectedPeriodMs);
+                    fprintf(stderr, "[diag-gap] t=%ld.%03ld readi ITSELF took=%.3fms (expected ~%.3fms)\n",
+                            (long)readEndTs.tv_sec, readEndTs.tv_nsec / 1000000, readMs, kExpectedPeriodMs);
                 }
             }
             if (r < 0) { g_telem.xruns++; snd_pcm_recover(cap, (int)r, 1); continue; }
