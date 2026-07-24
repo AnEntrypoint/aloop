@@ -10,7 +10,7 @@ jobs:
           platforms: arm64
       - name: Try lilv loading the real generated bundle directly (host side, Faust codegen)
         run: |
-          sudo apt-get update && sudo apt-get install -y faust lv2-dev lilv-utils pkg-config build-essential libboost-dev
+          sudo apt-get update && sudo apt-get install -y faust lv2-dev lilv-utils liblilv-dev pkg-config build-essential libboost-dev
           FAUSTLIB=$(dirname "$(ls -f /usr/share/faust/lv2ui.cpp /usr/local/share/faust/lv2ui.cpp 2>/dev/null | tail -1)")
           cd effects/home/faust
           CLSNAME=guitar_lofi_fx
