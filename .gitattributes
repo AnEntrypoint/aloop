@@ -1,0 +1,35 @@
+# WITNESSED live on a real Pi 4: core.autocrlf=true (this Windows clone's
+# default) silently converted kernel/rt-tune.sh's line endings to CRLF the
+# moment it was edited and re-committed, corrupting the deployed script on
+# Alpine/busybox ash (`#!/bin/sh\r` breaks the shebang lookup, and every
+# line's trailing \r merges into the next token -- "illegal option -",
+# ": not found"). This silently broke the boot-time RT tuning (the
+# performance-governor pin) with no error anywhere in the pipeline: CI
+# stayed green (nothing there runs the script), the packaging step
+# (image/lib-boot-tree.sh) just copies bytes, and the failure only ever
+# surfaced as a real device behaving wrong. Force LF for every text format
+# actually consumed by a shell/POSIX interpreter, regardless of what any
+# individual clone's core.autocrlf is set to -- this is a repo-wide
+# correctness requirement, not a per-developer preference.
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.start text eol=lf
+*.conf text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Makefile text eol=lf
+cmdline.txt text eol=lf
+config.txt text eol=lf
+usercfg.txt text eol=lf
+
+# Binaries must never be touched by line-ending normalization at all.
+*.so binary
+*.bin binary
+*.dtb binary
+*.dtbo binary
+*.elf binary
+*.exe binary
+*.wav binary
+*.tar.gz binary
+*.zip binary
