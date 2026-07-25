@@ -482,8 +482,10 @@ What was evaluated and explicitly REJECTED (not silently skipped):
   separate per-effect LV2 bundles** "for performance/modularity": this would
   multiply per-plugin dispatch overhead (`findDescriptor`/`connect_port`/
   `instantiate` once more per split-out effect) in the exact code path
-  already under live suspicion for the still-unresolved ~1Hz stall (see
-  "Diagnosing periodic audio stalls" above), directly risking the
+  once under live suspicion for the ~1Hz stall (see "Diagnosing periodic
+  audio stalls" above — no longer reproduces as of the 2026-07-25 update in
+  that section, but the multiply-dispatch-overhead argument against
+  splitting still stands on its own), directly risking the
   never-add-latency constraint, and gives up the proven single-Faust-
   compile-unit maintainability the home stack was deliberately designed
   around ("change a knob mapping or a stage in Faust, rebuild, done" —
