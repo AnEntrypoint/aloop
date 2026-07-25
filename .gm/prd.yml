@@ -471,3 +471,18 @@
 - subject: 'ROOT CAUSE FOUND (via diag9 telemetry + real physical hardware test): audio_thread.cpp''s masterPhaseSamples wraps modulo masterLen (M, the single-phrase length) at line ~1014 (std::fmod(masterPhaseSamples, masterLen)), so masterPhase itself never exceeds [0,M). dsp/loop.dsp''s absPos = wrapAbs(masterPhase - recordStartPhaseOffset, wrapLen) then computes against an input already bounded to [0,M) BEFORE the wrapLen modulo even applies -- for any looper whose own wrapLen is a genuine multiple of M (e.g. 3.71M, quantized per the M/16-bracket fix), playback can never audibly advance past the first M worth of recorded content, even though the full multi-phrase recording IS correctly stored (confirmed via diag9: rawSamples=381650, quantized=379248=3.71xM, all correct). This is the real, complete explanation for ''record long, play back short'' / ''maxing out at 4 beats regardless of hold duration'' -- fix the read-position derivation so a looper''s own wrapLen (which can exceed M) is genuinely reachable during playback, without adding audio latency.'
   id: root-cause-found-via-diag9-telemetry-real-physical-hardware-test
   status: pending
+- subject: Sweep src/dsp/audio_thread.cpp (the largest, most comment-heavy file in the codebase from this session's own work) to remove all comments, converting genuinely durable facts (hardware quirks, root-cause explanations, design rationale) into AGENTS.md entries and restructuring code with clearer naming/extracted functions where a comment was compensating for unclear structure, per the new zero-comments policy just added to AGENTS.md.
+  id: sweep-src-dsp-audio-thread-cpp-the-largest-most-comment-heavy-fi
+  status: pending
+- subject: Sweep src/control/apc_grid.cpp (second-largest comment-heavy file, containing this session's quantization/feedback-fix history) to remove all comments per the zero-comments policy, migrating durable facts to AGENTS.md.
+  id: sweep-src-control-apc-grid-cpp-second-largest-comment-heavy-file
+  status: pending
+- subject: 'Sweep dsp/loop.dsp and dsp/aloop.dsp (Faust source, contains the most architecturally-dense history: masterPhase/cycleOffset/wrapLen/absPos design) to remove all comments per the zero-comments policy, migrating durable facts to AGENTS.md.'
+  id: sweep-dsp-loop-dsp-and-dsp-aloop-dsp-faust-source-contains-the-m
+  status: pending
+- subject: Sweep dsp/effects_runtime.dsp, effects/home/faust/delay.dsp, effects/home/faust/reverb.dsp (this session's chain-reorder/range-change commentary) and src/control/midi.cpp (hotplug fix comments) to remove all comments per the zero-comments policy, migrating durable facts to AGENTS.md.
+  id: sweep-dsp-effects-runtime-dsp-effects-home-faust-delay-dsp-effec
+  status: pending
+- subject: Sweep src/host/lv2_host.cpp, image/lib-boot-tree.sh, test/hardware/bisect-1hz-stall.js, and any remaining commented source files across the repo (full-tree completeness pass) to remove all comments per the zero-comments policy, migrating durable facts to AGENTS.md, and confirm via a final repo-wide grep that no comment syntax remains in any tracked source extension.
+  id: sweep-src-host-lv2-host-cpp-image-lib-boot-tree-sh-test-hardware
+  status: pending

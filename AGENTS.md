@@ -4,6 +4,31 @@ Hard-won gotchas from live debugging on the real Pi 4 hardware (192.168.137.100,
 root/aloop). Read this before touching the device or its build/deploy pipeline —
 every entry here cost real time to discover once; don't rediscover it.
 
+## No comments in code, ever — self-explanatory code replaces them
+
+Same absolute policy as `../gm`'s own AGENTS.md. A name, a function boundary,
+an extracted variable, or a small type IS the explanation — prefer
+renaming/restructuring over annotating, every time the urge to comment
+appears. No inline, block, or doc comments anywhere (C++, Faust `.dsp`,
+JS, shell, YAML, config). A multi-line or paragraph-long comment is the
+same violation at higher volume, not a lesser one — explaining a "why" is
+not an exemption; the urge to explain is itself the signal that a name or
+structure is doing too little work, so restructure instead of narrating
+around the gap.
+
+Hardware quirks, historical root-causes, design-decision rationale, and
+any fact that genuinely needs to survive across sessions belongs in THIS
+file (AGENTS.md) or `.wfgy/lessons.md`, never inline next to the code —
+this file is exactly where hardware quirks and memorables go.
+
+A comment encountered anywhere — pre-existing, another session's, a
+vendored copy — is converted to self-explanatory code the moment it's
+seen, same turn, not left for a later cleanup pass: read it, understand
+what it was compensating for, fix that root cause so the comment's
+content becomes redundant, then delete it. "Already there, not part of
+this task" is not an exemption — one sighting spawns a full-tree sweep of
+that file (and, when time allows, nearby files sharing the same pattern).
+
 ## Never add audio-path latency to fix anything
 
 The pre-LOFI baseline (commit `4cb6587`) was measured **100% hitch-free** on
