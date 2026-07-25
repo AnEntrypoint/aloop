@@ -29,6 +29,7 @@
 #endif
 
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -259,13 +260,36 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
     // never POLLHUP, never a read error -- so the disconnect `break` further
     // down was never reached, and the thread stayed parked on the stale
     // handle even after the device came back on a FRESH inode at the same
-    // path. Detected instead via an explicit periodic liveness probe: every
-    // ~kLivenessProbeMs, re-attempt snd_rawmidi_open() on the SAME devbuf
-    // path -- ALSA validates real hardware presence on open (unlike poll on
-    // an already-open handle to a removed device), so this reliably fails
-    // once the device is genuinely gone. Closed immediately after a
-    // successful probe (never held open) -- cheap, and only run a few times
-    // per second at most, not every 100ms poll tick.
+    // path.
+    //
+    // A first attempt at this fix (WITNESSED, reverted) tried re-probing via
+    // a second snd_rawmidi_open() on the same device path -- this is WRONG:
+    // this driver's rawmidi devices are exclusive-open, so the probe itself
+    // fails against a device that is very much still there and already held
+    // open by `in`, producing a spurious disconnect roughly once per second
+    // (confirmed live: 51 false disconnect/reconnect cycles in under a
+    // minute with the real controller never touched). The correct,
+    // non-invasive check: capture the real device node's inode+rdev via
+    // stat() right after a successful open, then on each liveness-probe
+    // tick, stat() the SAME path again (a read-only filesystem lookup, no
+    // ALSA call, cannot conflict with the held handle) and compare -- if
+    // the path is now gone (ENOENT) or its identity changed (removed then
+    // replaced by a fresh enumeration reusing the same card slot), the
+    // original handle is stale. Only meaningful for the auto-scan path
+    // (devbuf = "hw:N,0,0" -- the underlying node is the well-known
+    // /dev/snd/midiCND0); an explicit config device string isn't
+    // necessarily even a card-number form, so this check is simply skipped
+    // (probeStatPath stays empty) for that case -- it still gets the
+    // read-error/no-poll-signal disconnect path from the prior fix, just
+    // not this extra liveness probe.
+    char probeStatPath[32] = {0};
+    {
+        int probeCard = -1;
+        if (sscanf(devbuf, "hw:%d,", &probeCard) == 1)
+            snprintf(probeStatPath, sizeof probeStatPath, "/dev/snd/midiC%dD0", probeCard);
+    }
+    struct stat probeStatAtOpen{};
+    bool haveProbeStatAtOpen = probeStatPath[0] && stat(probeStatPath, &probeStatAtOpen) == 0;
     constexpr unsigned kLivenessProbeMs = 1000;
     unsigned lastLivenessProbeMs = nowMs();
     for (;;) {
@@ -296,12 +320,13 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
                 grid.pollHolds(n, ps);   // timeout: no MIDI, just poll holds
                 auto t = audio ? audio->snapshotTelemetry() : AudioThread::Telemetry{};
                 leds.refresh(n, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr);
-                if (n - lastLivenessProbeMs >= kLivenessProbeMs) {
+                if (haveProbeStatAtOpen && n - lastLivenessProbeMs >= kLivenessProbeMs) {
                     lastLivenessProbeMs = n;
-                    snd_rawmidi_t* probeIn = nullptr;
-                    int probeRc = snd_rawmidi_open(&probeIn, nullptr, devbuf, SND_RAWMIDI_SYNC | SND_RAWMIDI_NONBLOCK);
-                    if (probeIn) snd_rawmidi_close(probeIn);
-                    if (probeRc < 0) break;   // device genuinely gone -- fall through to disconnect cleanup below
+                    struct stat nowStat{};
+                    bool stillThere = stat(probeStatPath, &nowStat) == 0
+                        && nowStat.st_ino == probeStatAtOpen.st_ino
+                        && nowStat.st_rdev == probeStatAtOpen.st_rdev;
+                    if (!stillThere) break;   // device genuinely gone/replaced -- fall through to disconnect cleanup below
                 }
                 continue;
             }
