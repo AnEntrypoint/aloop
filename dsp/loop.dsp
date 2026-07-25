@@ -167,6 +167,7 @@ with {
     // direction it came from.
     finishReqN    = button("finishreq");
     finishTargetN = hslider("finishtarget", 0, 0, MAXLEN, 1);
+    latencyBiasN  = hslider("latencybias", 0, -MAXLEN, MAXLEN, 1);
     eraseN = button("erase");   // per-looper wipe (hardware ERASE_TRACK 0x60)
     // wipe this loop when EITHER the global clear or this looper's erase is held.
     wipe   = max(clearAll, eraseN);
@@ -437,7 +438,7 @@ with {
     // apart from each other regardless of how long they've been playing,
     // glitch engagement, or repeat presses (none of which touch masterPhase
     // or any looper's own offset).
-    recordStartPhaseOffsetStep(prev) = ba.if(finishEdge, masterPhase, prev);
+    recordStartPhaseOffsetStep(prev) = ba.if(finishEdge, masterPhase - latencyBiasN, prev);
     recordStartPhaseOffset = recordStartPhaseOffsetStep ~ _;
     wrapAbs(p, len) = p - floor(p / float(len)) * float(len);
     // MULTI-PHRASE PLAYBACK (WITNESSED live, real hardware: "record long,

@@ -486,3 +486,9 @@
 - subject: Sweep src/host/lv2_host.cpp, image/lib-boot-tree.sh, test/hardware/bisect-1hz-stall.js, and any remaining commented source files across the repo (full-tree completeness pass) to remove all comments per the zero-comments policy, migrating durable facts to AGENTS.md, and confirm via a final repo-wide grep that no comment syntax remains in any tracked source extension.
   id: sweep-src-host-lv2-host-cpp-image-lib-boot-tree-sh-test-hardware
   status: pending
+- subject: 'Implement SHIFT-hold recording latency compensation in apc_grid.cpp/audio_thread.cpp: the recorded start/finish position for any looper that had SHIFT engaged at any point during its take must be backdated to compensate for the resample-path''s own added latency, so the recorded content aligns with the real performance timing rather than the resampled/shifted timing. Root-cause the exact resample latency figure (varispeed/pitch engine''s own reported or measured processing delay) before deriving the compensation offset -- do not guess a constant.'
+  id: shift-hold-recording-latency-compensation
+  status: pending
+- subject: 'Double the SHIFT-hold latency compensation offset specifically while varispeed/resample is active (as opposed to the base compensation applied for any SHIFT-held take): the user''s explicit spec is that the resample path itself doubles the effective compensation needed relative to the non-resampled SHIFT-hold case. Implement as a distinct multiplier on top of the base offset from shift-hold-recording-latency-compensation, gated on the actual resample/varispeed-engaged state per looper, not a flat global double.'
+  id: double-latency-compensation-when-resample-engaged
+  status: pending

@@ -306,6 +306,7 @@ private:
     bool m_looperHasContent[kLooperCount] = {};   // local shadow: has this looper recorded anything
     bool m_looperRecording[kLooperCount] = {};    // true from arm-press until the finish-press (../looper: TRACK_STATE_RECORDING)
     unsigned m_recordStartMs[kLooperCount] = {};  // wall-clock ms at the ARM press, for computing actual recorded duration at finish
+    bool m_looperPitchEngagedDuringTake[kLooperCount] = {};
 
     bool m_presetHeld[kPresetCount] = {};
     unsigned m_presetHoldStart[kPresetCount] = {};

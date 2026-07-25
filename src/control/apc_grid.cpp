@@ -18,6 +18,8 @@ void ApcGrid::bindAll(ParamStore& ps) {
         }
         snprintf(name, sizeof name, "looper%d/finishtarget", looper);
         ps.bind(name, 0.0f);
+        snprintf(name, sizeof name, "looper%d/latencybias", looper);
+        ps.bind(name, 0.0f);
         snprintf(name, sizeof name, "looper%d/sidechainsrc", looper);
         ps.bind(name, 0.0f);
     }
@@ -70,6 +72,8 @@ static TempoSolveResult deriveTempoQuant(double seconds) {
 }
 static double deriveTempoBpm(double seconds) { return deriveTempoQuant(seconds).bpm; }
 
+constexpr long kPitchEngineBlockLatencySamples = 64;
+
 void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, LinkBridge* link, AudioThread* audio) {
     if (m_looperRecording[looper]) {
         setLooper(ps, looper, "rec", 0.0f);
@@ -80,6 +84,9 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
         fprintf(stderr, "[diag7] FINISH looper=%d now_ms=%u recordStart=%u elapsedMs=%u masterLen(before)=%ld erase_zone=%.2f\n",
                 looper, now_ms, m_recordStartMs[looper], now_ms - m_recordStartMs[looper], m_masterLenSamples,
                 ps.get("looper" + std::to_string(looper) + "/erase", -1.0f));
+        long latencyBias = kPitchEngineBlockLatencySamples;
+        if (m_looperPitchEngagedDuringTake[looper]) latencyBias *= 2;
+        setLooper(ps, looper, "latencybias", (float)latencyBias);
         m_masterLenSamples = (long)ps.get("cmd/master_len", 0.0f);
         if (m_masterLenSamples == 0) {
             long lenSamples;
@@ -140,6 +147,7 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
         setLooper(ps, looper, "rec", 1.0f);
         m_looperRecording[looper] = true;
         m_recordStartMs[looper] = now_ms;
+        m_looperPitchEngagedDuringTake[looper] = ps.get("fx/pitchbend_engaged", 0.0f) > 0.5f;
         fprintf(stderr, "[diag7] ARM looper=%d now_ms=%u eraseReleaseAt=%u (pending=%d) masterLen=%ld cmd_masterlen=%.0f erase_zone=%.2f\n",
                 looper, now_ms, m_looperEraseReleaseAt[looper], (int)(m_looperEraseReleaseAt[looper] != 0),
                 m_masterLenSamples, ps.get("cmd/master_len", -1.0f), ps.get("looper" + std::to_string(looper) + "/erase", -1.0f));
@@ -226,6 +234,12 @@ void ApcGrid::onPadRelease(int note, unsigned now_ms, ParamStore& ps, LinkBridge
 void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps) {
     if (m_bankFlashReleaseAt != 0 && now_ms >= m_bankFlashReleaseAt) {
         m_bankFlashReleaseAt = 0;
+    }
+    bool pitchEngagedNow = ps.get("fx/pitchbend_engaged", 0.0f) > 0.5f;
+    if (pitchEngagedNow) {
+        for (int looper = 0; looper < kLooperCount; looper++) {
+            if (m_looperRecording[looper]) m_looperPitchEngagedDuringTake[looper] = true;
+        }
     }
     for (int looper = 0; looper < kLooperCount; looper++) {
         if (m_looperEraseReleaseAt[looper] != 0 && now_ms >= m_looperEraseReleaseAt[looper]) {
