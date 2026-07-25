@@ -350,47 +350,51 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             // extending far past the performed content. Also capped at 4M,
             // so a genuinely-intended 8M/16M/64M take had no candidate to
             // reach at all.
-            // FIX (round 3, WITNESSED live: "the quant of successive
-            // recordings should extend to the nearest exponent of a 16th to
-            // the recordings length, it cut them shorter than its supposed
-            // to"): round 2's octave-doubling brackets (M*2^n, M*2^(n+1))
-            // made the bracket SPAN itself scale with the multiple -- e.g.
-            // between M and 2M the span is a full M, so ANYTHING in the
-            // lower 68% of that whole octave (up to 1.68M raw) trimmed all
-            // the way back down to exactly M, discarding up to 0.68M of
-            // genuinely-performed content. A 1.5M recording (clearly deep
-            // into "the user meant to record past one phrase") landed at
-            // frac=0.5 and got cut to M, losing a third of the take -- this
-            // is the concrete mechanism behind "cut shorter than it's
-            // supposed to." Root cause: bracket granularity was a full
-            // octave (2x), not the M/16 grid this project's own gridStep
-            // concept already uses everywhere else (dsp/loop.dsp's
-            // gridStep = masterLen/16 for ARM-press quantization).
-            // Fixed: bracket rawSamples between the two nearest M/16-spaced
-            // candidates directly (floor/ceil of rawSamples/(M/16)), so the
-            // span the 68% threshold applies across is always exactly M/16
-            // regardless of how many multiples of M the recording ran to --
-            // the maximum possible trim-back is now 0.68*(M/16), not
-            // 0.68*M. Extends correctly to ANY M/16-aligned length (M/16,
-            // 2M/16, ..., up through kMaxLoopSamples), matching "any
-            // multiple of the loop" from the original round-2 requirement
-            // while fixing the coarse-bracket under-trim round 2 introduced.
-            double unit = (double)m_masterLenSamples / 16.0;
-            if (unit < 1.0) unit = 1.0;   // degenerate guard for a tiny M
-            double steps = (double)rawSamples / unit;
-            double lowerSteps = std::floor(steps);
-            if (lowerSteps < 1.0) lowerSteps = 1.0;   // floor: never propose below M/16 (1 step)
-            double lowerCand = lowerSteps * unit;
-            double upperCand = (lowerSteps + 1.0) * unit;
+            // FIX (round 4, WITNESSED live: "1/3 and 5/16 should [never]
+            // happen, loops should always be clean multiples and they
+            // should always line up, guaranteed no matter how many times
+            // they play" -- explicit correction of round 3's M/16-linear-
+            // step grid, which could land a recording on musically-
+            // meaningless fractions like 5/16 or 11/16). User-confirmed
+            // spec: candidates are POWERS OF 2 ONLY relative to M (M/16,
+            // M/8, M/4, M/2, M, 2M, 4M, 8M, ...) -- matching dsp/loop.dsp's
+            // own gridStep=masterLen/16 concept at the FLOOR (M/16 is the
+            // smallest allowed unit) but never any non-power-of-2 multiple
+            // of it. Decision between the two bracketing powers of 2 is the
+            // LOG-SPACE (geometric) midpoint, not round 2's linear 68%
+            // threshold (round 2's own bug: a fixed linear fraction of a
+            // full-octave span could trim up to 0.68*M off a recording,
+            // e.g. cutting a genuine 1.5M take down to M) -- the geometric
+            // midpoint between M and 2M is sqrt(M*2M)=~1.41M, symmetric and
+            // scale-independent: log2(1.41M/M)=0.5, exactly halfway in log
+            // space between the two candidates' own log2 exponents,
+            // regardless of which octave the recording lands in. Because
+            // every candidate value is a genuine power of 2 (never an
+            // arbitrary M/16 multiple), any two loopers' wrapLens are
+            // ALWAYS in a clean power-of-2 ratio to each other and to
+            // masterLen -- combined with dsp/loop.dsp's cycleOffset fix
+            // (which makes a k*M-length looper's own phrase-repeat cycle
+            // track masterPhase exactly), this guarantees perfect,
+            // drift-free repeat alignment between any two loopers forever,
+            // since a power-of-2 relationship between two wrapLens both
+            // locked to the same masterPhase clock can never phase-drift
+            // (their common repeat period is just the larger of the two).
+            double log2Ratio = std::log2((double)rawSamples / (double)m_masterLenSamples);
+            double lowerExp = std::floor(log2Ratio);
+            if (lowerExp < -4.0) lowerExp = -4.0;   // floor: never propose below M/16 (2^-4)
+            double lowerCand = (double)m_masterLenSamples * std::pow(2.0, lowerExp);
+            double upperCand = (double)m_masterLenSamples * std::pow(2.0, lowerExp + 1.0);
             if (upperCand > (double)kMaxLoopSamples) upperCand = (double)kMaxLoopSamples;
             if (lowerCand > upperCand) lowerCand = upperCand;   // degenerate guard at the ceiling
-            double span = upperCand - lowerCand;
             double bestLen;
-            if (span <= 0.0) {
-                bestLen = lowerCand;   // rawSamples exactly on a candidate (or span collapsed)
+            if (upperCand <= lowerCand) {
+                bestLen = lowerCand;   // degenerate span (hit the ceiling)
             } else {
-                double frac = ((double)rawSamples - lowerCand) / span;
-                bestLen = (frac >= 0.68) ? upperCand : lowerCand;
+                // Geometric midpoint decision: snap to upperCand iff rawSamples
+                // is past sqrt(lowerCand*upperCand), i.e. past the log-space
+                // halfway point between the two candidate exponents.
+                double midpoint = std::sqrt(lowerCand * upperCand);
+                bestLen = ((double)rawSamples >= midpoint) ? upperCand : lowerCand;
             }
             long quantized = (long)(bestLen + 0.5);
             if (quantized < 64) quantized = 64;
@@ -402,8 +406,8 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             // fires BEFORE the trim decision is applied, so it shows the
             // true pre-quantization value the wall-clock elapsedMs diag7
             // line above only approximates.
-            fprintf(stderr, "[diag9] QUANT looper=%d rawSamples=%ld unit=%.1f lowerCand=%.0f upperCand=%.0f quantized=%ld ratio=%.4f\n",
-                    looper, rawSamples, unit, lowerCand, upperCand, quantized, (double)rawSamples / (double)m_masterLenSamples);
+            fprintf(stderr, "[diag9] QUANT looper=%d rawSamples=%ld lowerCand=%.0f upperCand=%.0f quantized=%ld ratio=%.4f\n",
+                    looper, rawSamples, lowerCand, upperCand, quantized, (double)rawSamples / (double)m_masterLenSamples);
             // FINISH-QUANTIZATION (WITNESSED live: "when our second loop is
             // short, it doesnt take the start and stop timing it its making
             // it longer and offsetting the position instead of matching
