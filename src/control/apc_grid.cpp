@@ -395,6 +395,15 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             long quantized = (long)(bestLen + 0.5);
             if (quantized < 64) quantized = 64;
             if (quantized > kMaxLoopSamples) quantized = kMaxLoopSamples;
+            // TEMPORARY diagnostic (tracked for removal): capture the REAL
+            // raw sample count (from writeIdx telemetry, ground truth) and
+            // the computed bracket, to root-cause a live user report of
+            // longer recordings trimming further than expected -- this
+            // fires BEFORE the trim decision is applied, so it shows the
+            // true pre-quantization value the wall-clock elapsedMs diag7
+            // line above only approximates.
+            fprintf(stderr, "[diag9] QUANT looper=%d rawSamples=%ld unit=%.1f lowerCand=%.0f upperCand=%.0f quantized=%ld ratio=%.4f\n",
+                    looper, rawSamples, unit, lowerCand, upperCand, quantized, (double)rawSamples / (double)m_masterLenSamples);
             // FINISH-QUANTIZATION (WITNESSED live: "when our second loop is
             // short, it doesnt take the start and stop timing it its making
             // it longer and offsetting the position instead of matching
@@ -1032,10 +1041,18 @@ static void applySamplerFxKnob(FxKnobKind kind, float v01, Sampler* sampler) {
 }
 
 static void applyFxKnobTarget(const FxKnobTarget& t, float v01, ParamStore& ps, Sampler* sampler, Lv2Host* homeFx) {
+    // fx/reverb: rescale the knob's normal 0..1 CC range onto REVAMT's
+    // widened 0..2 Faust zone range (dsp/effects_runtime.dsp) -- WITNESSED
+    // live: without this, a physical knob (or CC injection) turned fully up
+    // could only ever reach v01=1.0 (data2=127 / 127.0f), leaving the new
+    // ceiling above 1.0 permanently unreachable from any real control
+    // surface even though the Faust zone itself accepts up to 2.0. Every
+    // other fx/* target keeps its native 0..1 range unchanged.
+    float v = (strcmp(t.name, "fx/reverb") == 0) ? (v01 * 2.0f) : v01;
     switch (t.kind) {
-        case FxKnobKind::FaustZone:  ps.setByName(t.name, v01); break;
-        case FxKnobKind::Lv2Control: if (homeFx) homeFx->setControl(t.name, v01); break;
-        default: applySamplerFxKnob(t.kind, v01, sampler); break;
+        case FxKnobKind::FaustZone:  ps.setByName(t.name, v); break;
+        case FxKnobKind::Lv2Control: if (homeFx) homeFx->setControl(t.name, v); break;
+        default: applySamplerFxKnob(t.kind, v, sampler); break;
     }
 }
 
