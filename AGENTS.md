@@ -1084,3 +1084,28 @@ or FINISH instant, and is reset to false at ARM. This mirrors the
 documented elsewhere in this file) — no new signal-input wiring was
 needed since this value only needs to change once per take, unlike
 `effSpeed`/`clearAll`/`masterPhase`, which need per-sample ramping.
+
+## Glitch/microrepeat steps widened one notch: divisor halved in
+`sliceLen`, not the note-to-div mapping
+
+User's explicit spec: every one of the 5 glitch/microrepeat divisions
+(notes 82-86, `apc_grid.cpp`'s `div[5] = {1, 2, 4, 8, 16}`) should produce
+a slice as long as the NEXT-widest division currently does — `div=16`'s
+slice becomes as long as the old `div=8`'s, `div=8` as long as old `div=4`,
+etc.; `div=1` (already the widest) has nowhere further to go and stays
+put. `effects/home/faust/microrepeat.dsp`'s `sliceLen = (masterLoopBlocks
+/16/div)*64` formula is what actually determines slice length — the
+note-to-div table in `apc_grid.cpp` is untouched, so which physical pad
+triggers which relative step doesn't change, only how long each resulting
+slice is.
+
+Fix: `divSafe = max(1, int(DIV / 2))` (was `max(1, DIV)`) — halving the
+effective divisor doubles `sliceBlocks`, doubling `sliceLen` for every
+`DIV` value except `DIV=1`, where `int(1/2)=0` floors back up to `1` via
+the `max(1, ...)` guard (correctly a no-op, since `div=1` is already the
+widest step and "one step wider" than the widest is undefined). Verified:
+native Faust compile clean standalone AND as part of the full production
+`dsp/aloop.dsp` stack (this file is imported by `effects_runtime.dsp`'s
+`microStage` and separately by the constants-baked `chain.dsp` reference
+file — both pick up the fix automatically since neither declares its own
+copy of the divisor logic).
