@@ -109,91 +109,40 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
     ApcGrid::bindAll(ps);
 
 #ifdef ALOOP_HAVE_ALSA
-    // Open BOTH directions on the same device: the APC Key25's USB MIDI is one
-    // bidirectional endpoint (../looper usbMidi.cpp sends LED updates back out
-    // the SAME connection input arrives on, via SendPlainMIDI — no separate
-    // MIDI OUT device exists). `out` may legitimately fail to open even when
-    // `in` succeeds (a non-APC controller with no LEDs, or a device that only
-    // exposes a capture-only rawmidi substream) — LED output is best-effort:
-    // aloop still functions fully for control (the actual bug this whole
-    // module exists to fix was buttons doing nothing INTERNALLY, which is a
-    // separate, now-fixed issue; missing LEDs on non-APC hardware is expected,
-    // not an error).
-    snd_rawmidi_t* in = nullptr;
-    snd_rawmidi_t* out = nullptr;
-    char devbuf[16] = {0};
-    // snd_rawmidi_open(&in, &out, ...) only succeeds if BOTH substreams open —
-    // a device with a capture-only rawmidi substream (no OUT at all) would
-    // fail the combined call even though the input-only open (the previous,
-    // working behavior) would have succeeded. Try combined first (gets LEDs
-    // when available); on failure retry input-only so a device that just
-    // lacks MIDI OUT doesn't lose CONTROL entirely for the sake of LEDs.
-    if (device && strcmp(device, "auto")) {
-        // explicit device given (config/arg) — use it verbatim.
-        snprintf(devbuf, sizeof devbuf, "%s", device);
-        if (snd_rawmidi_open(&in, &out, devbuf, SND_RAWMIDI_SYNC) < 0) {
-            in = nullptr; out = nullptr;
-            if (snd_rawmidi_open(&in, nullptr, devbuf, SND_RAWMIDI_SYNC) < 0) {
-                fprintf(stderr, "[midi] no controller at %s — params hold\n", devbuf);
-                return;
-            }
-        }
-    } else {
-        // auto: SCAN for the first rawmidi input. The USB MIDI controller's ALSA
-        // card number is NOT guaranteed (the f_uac2 gadget + USB audio also take
-        // cards), so we probe hw:0..7,0,0 rather than assume card 1.
-        for (int card = 0; card < 8 && !in; card++) {
-            snprintf(devbuf, sizeof devbuf, "hw:%d,0,0", card);
-            if (snd_rawmidi_open(&in, &out, devbuf, SND_RAWMIDI_SYNC) == 0) break;
-            in = nullptr; out = nullptr;
-            if (snd_rawmidi_open(&in, nullptr, devbuf, SND_RAWMIDI_SYNC) == 0) break;
-            in = nullptr;
-        }
-        if (!in) {
-            fprintf(stderr, "[midi] no MIDI input found (probed hw:0..7) — params hold\n");
-            return;
-        }
-    }
-    fprintf(stderr, "[midi] reading %s (remappable control map + APC grid engine)%s\n",
-            devbuf, out ? " + LED output" : " (no MIDI OUT on this device — no LED feedback)");
+    // HOTPLUG: a controller plugged in AFTER aloop already started (or
+    // unplugged/replugged mid-session) must still be picked up -- WITNESSED
+    // live: plugging the APC Key25 in after boot left it permanently
+    // unrecognized (the injection socket never even opened, confirming the
+    // whole MIDI thread had already exited) because the code below used to
+    // scan ONCE at thread startup and unconditionally `return` on failure,
+    // and the byte-read loop further down unconditionally fell through to
+    // the function's end (closing everything, thread exits) on ANY read
+    // failure, including a plain unplug. Neither case is actually fatal --
+    // a missing/disconnected controller is a normal, recoverable runtime
+    // state, not a startup precondition. Fixed by moving the scan-and-open
+    // step (and the byte-read loop that follows it) inside this outer
+    // for(;;), which rescans on a bounded interval whenever no device is
+    // open, and falls back into rescanning (rather than exiting) if the
+    // open device's read ever fails (unplug). ApcGrid/ApcLeds/the injection
+    // socket are constructed ONCE, above and outside this loop -- they are
+    // rig state, not per-device state, and must survive a reconnect intact
+    // (grid holds looper-content/hold-state, leds holds the last-drawn
+    // frame) exactly like a real hardware controller being unplugged and
+    // replugged wouldn't reset aloop's own understanding of the rig.
     ApcGrid grid;
     ApcLeds leds;
+    snd_rawmidi_t* out = nullptr;   // set fresh each successful (re)connect below
     auto ledWrite = [&](int note, uint8_t vel) -> bool {
         if (!out) return false;
         uint8_t msg[3] = { 0x90, (uint8_t)note, vel };   // Note On, channel 0 (looper: usbMidi.cpp)
         return snd_rawmidi_write(out, msg, 3) == 3;
     };
-    // Hold-duration polling (erase >=1s, preset capture >=1s) must run on a
-    // WALL-CLOCK tick, not on MIDI-message arrival — a held pad with no other
-    // MIDI traffic in flight would otherwise never resolve (snd_rawmidi_read is
-    // SND_RAWMIDI_SYNC/blocking with no timeout; looper's own apcKey25::update()
-    // is likewise driven from the audio thread's periodic tick, not from MIDI
-    // events — audio.cpp:423). Use poll() on the rawmidi fd(s) with a 100ms
-    // timeout so pollHolds() runs regularly even with the port idle.
-    // Synthetic-input injection socket (TCP :9401, localhost+LAN): accepts
-    // raw MIDI bytes and feeds them into the EXACT SAME byte-parsing state
-    // machine below as real hardware input. Built to close a real gap found
-    // in this project's own history: every hardware-input bug (APC grid
-    // buttons, the blank-loop-after-erase investigation) could only be
-    // reproduced by asking a human to physically press pads on the real
-    // controller, because there was no way to inject a synthetic
-    // note-on/note-off byte sequence into this exact dispatch path -- a raw
-    // write() to the ALSA rawmidi device node itself does NOT work as an
-    // injection channel (WITNESSED: it targets the USB MIDI OUT endpoint
-    // toward the physical controller, and blocks/hangs with no receiver;
-    // confirmed live via `timeout 3 sh -c "printf ... > /dev/snd/midiC1D0"`
-    // hanging until killed). TCP (not a Unix socket) specifically because
-    // this device's shell has no `nc -U`/`socat` to bridge stdin to a Unix
-    // socket, and the workstation already reaches the device directly over
-    // the LAN for SSH -- a plain TCP connect needs no on-device relay tool
-    // at all, just `node test/hardware/midi-inject.js <host> <bytes...>`.
-    // This socket joins THIS thread's poll() set alongside the real rawmidi
-    // fd; any byte read from it is parsed by the identical state machine
-    // (st/d1/d2/phase) real MIDI bytes go through, so a scripted
-    // reproduction is indistinguishable from a real button press to every
-    // downstream consumer (ApcGrid, the LED refresh, telemetry).
     // Best-effort: a bind/listen failure here must never prevent real MIDI
     // control from working, so failures just leave injection unavailable.
+    // Set up ONCE, before the reconnect loop -- a scripted-injection client
+    // must be able to reach this socket even while no physical controller
+    // is attached at all (that's the whole point of the synthetic-input
+    // path: reproducing button-press bugs without hardware in the loop).
     int injectListenFd = -1, injectConnFd = -1;
     {
         int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
@@ -212,6 +161,79 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
             }
         }
     }
+    bool warnedNoDevice = false;   // reset after each successful connect, so a later disconnect+re-fail-to-find prints again
+    for (;;) {   // one iteration per (re)connect attempt/session
+    // Open BOTH directions on the same device: the APC Key25's USB MIDI is one
+    // bidirectional endpoint (../looper usbMidi.cpp sends LED updates back out
+    // the SAME connection input arrives on, via SendPlainMIDI — no separate
+    // MIDI OUT device exists). `out` may legitimately fail to open even when
+    // `in` succeeds (a non-APC controller with no LEDs, or a device that only
+    // exposes a capture-only rawmidi substream) — LED output is best-effort:
+    // aloop still functions fully for control (the actual bug this whole
+    // module exists to fix was buttons doing nothing INTERNALLY, which is a
+    // separate, now-fixed issue; missing LEDs on non-APC hardware is expected,
+    // not an error).
+    snd_rawmidi_t* in = nullptr;
+    out = nullptr;
+    char devbuf[16] = {0};
+    // snd_rawmidi_open(&in, &out, ...) only succeeds if BOTH substreams open —
+    // a device with a capture-only rawmidi substream (no OUT at all) would
+    // fail the combined call even though the input-only open (the previous,
+    // working behavior) would have succeeded. Try combined first (gets LEDs
+    // when available); on failure retry input-only so a device that just
+    // lacks MIDI OUT doesn't lose CONTROL entirely for the sake of LEDs.
+    if (device && strcmp(device, "auto")) {
+        // explicit device given (config/arg) — use it verbatim.
+        snprintf(devbuf, sizeof devbuf, "%s", device);
+        if (snd_rawmidi_open(&in, &out, devbuf, SND_RAWMIDI_SYNC) < 0) {
+            in = nullptr; out = nullptr;
+            snd_rawmidi_open(&in, nullptr, devbuf, SND_RAWMIDI_SYNC);   // in stays nullptr on failure too
+        }
+    } else {
+        // auto: SCAN for the first rawmidi input. The USB MIDI controller's ALSA
+        // card number is NOT guaranteed (the f_uac2 gadget + USB audio also take
+        // cards), so we probe hw:0..7,0,0 rather than assume card 1.
+        for (int card = 0; card < 8 && !in; card++) {
+            snprintf(devbuf, sizeof devbuf, "hw:%d,0,0", card);
+            if (snd_rawmidi_open(&in, &out, devbuf, SND_RAWMIDI_SYNC) == 0) break;
+            in = nullptr; out = nullptr;
+            if (snd_rawmidi_open(&in, nullptr, devbuf, SND_RAWMIDI_SYNC) == 0) break;
+            in = nullptr;
+        }
+    }
+    if (!in) {
+        // No controller present right now -- normal, recoverable state (not
+        // yet plugged in, or unplugged mid-session). Rescan on a bounded 2s
+        // interval rather than busy-spinning; the injection socket (already
+        // listening, set up above) and pollHolds/leds keep working via the
+        // existing poll-loop-with-nullptr-`in` path below in the meantime by
+        // simply not being reached this iteration -- so re-loop directly.
+        if (!warnedNoDevice) {
+            fprintf(stderr, "[midi] no MIDI input found (probed hw:0..7) — params hold, will keep rescanning every 2s until one appears\n");
+            warnedNoDevice = true;
+        }
+        struct timespec ts{2, 0};
+        nanosleep(&ts, nullptr);
+        continue;
+    }
+    warnedNoDevice = false;
+    fprintf(stderr, "[midi] reading %s (remappable control map + APC grid engine)%s\n",
+            devbuf, out ? " + LED output" : " (no MIDI OUT on this device — no LED feedback)");
+    // Hold-duration polling (erase >=1s, preset capture >=1s) must run on a
+    // WALL-CLOCK tick, not on MIDI-message arrival — a held pad with no other
+    // MIDI traffic in flight would otherwise never resolve (snd_rawmidi_read is
+    // SND_RAWMIDI_SYNC/blocking with no timeout; looper's own apcKey25::update()
+    // is likewise driven from the audio thread's periodic tick, not from MIDI
+    // events — audio.cpp:423). Use poll() on the rawmidi fd(s) with a 100ms
+    // timeout so pollHolds() runs regularly even with the port idle.
+    //
+    // The synthetic-input injection socket (TCP :9401 -- accepts raw MIDI
+    // bytes and feeds them into the EXACT SAME byte-parsing state machine
+    // below as real hardware input, so a scripted reproduction is
+    // indistinguishable from a real button press to every downstream
+    // consumer) is set up ONCE, above this outer reconnect loop -- see its
+    // own comment there for why.
+    //
     // Fixed pollfd layout: [0..nfds) = real rawmidi fds, [nfds] = injection
     // listen socket (always present if it opened; harmlessly polls -1
     // otherwise, which poll() ignores), [nfds+1] = the current injection
@@ -414,8 +436,15 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
         auto it = map.find(key);
         if (it != map.end()) ps.setByName(it->second, val);   // apply per the MAP
     }
+    // The inner read loop above only exits via the disconnect `break` (a
+    // failed snd_rawmidi_read) -- close this device's handles and loop back
+    // to the top of the outer for(;;) to rescan/reconnect, rather than
+    // falling through and ending the whole thread (see the outer loop's own
+    // HOTPLUG comment for why a disconnect must be recoverable, not fatal).
+    fprintf(stderr, "[midi] %s disconnected -- will keep rescanning every 2s until a controller reappears\n", devbuf);
     snd_rawmidi_close(in);
-    if (out) snd_rawmidi_close(out);
+    if (out) { snd_rawmidi_close(out); out = nullptr; }
+    }   // end outer for(;;) reconnect loop
 #else
     (void)ps;
 #endif
