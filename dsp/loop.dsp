@@ -559,7 +559,31 @@ with {
     // exactly like every other effect this file's own record term already excludes
     // (see prevFiltIn's own comment: recording captures the fully-effected mix
     // upstream of this looper's own output stage, not a second post-duck pass).
-    out = loopSig * playN * volN * duckGain;
+    // WITNESSED live: "heavy feedback loop that fades in ... right after
+    // button press, runs to the end of the quant" -- ROOT CAUSE:
+    // apc_grid.cpp's FINISH branch sets the native "play" zone to 1.0
+    // IMMEDIATELY on the finish button press, but the DSP's own
+    // finish-quantization can keep this looper ACTIVELY RECORDING for a
+    // while longer past that press (recordingGate stays true via
+    // finishRequested & writeIdx<finishTargetN -- "wait when waiting is
+    // closer"). Since `out` was gated only by playN (already 1 the instant
+    // the button is pressed, not when recording genuinely finishes) and
+    // NOT by recordingGateNow, this looper's own live-monitor term
+    // (record=writeVal, unconditional, "hear yourself as you record")
+    // became audible AND fed into loopSum during that whole extension
+    // window -- audio_thread.cpp's SHIFT-fold (prevLoopSum -> fin, one
+    // block later) then fed that same live signal straight back into THIS
+    // looper's own writeVal next block, a genuine near-unity-gain
+    // single-looper self-feedback loop, confirmed live to reproduce even
+    // with delay/reverb at zero (ruling out any effects-chain tail
+    // compounding -- this is a pure feedback-loop-gain bug, independent of
+    // what's downstream). Fixed by gating `out` on recordingGateNow too:
+    // this looper stays silent for the ENTIRE time it's genuinely still
+    // writing (recN held OR mid finish-quantization-extension), regardless
+    // of what the native play zone says, closing the loop the instant it
+    // opens rather than relying on apc_grid.cpp's command timing to happen
+    // to line up with the DSP's own real finish instant.
+    out = loopSig * playN * (1.0 - recordingGateNow) * volN * duckGain;
     // LEVEL meter: an hbargraph UI OUTPUT (never fui.set() from ParamStore --
     // read-only via fui.get(), same pattern as the existing rec/play/vol
     // telemetry reads in audio_thread.cpp), fed via Faust's attach() idiom so
