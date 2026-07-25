@@ -19,18 +19,11 @@
 //     loopers keep recording/playing while the sampler records/plays.
 //   * Sampler audio is mixed INTO the dry input buffer BEFORE the pitch/
 //     effects/microrepeat/filter chain (renderInto), so samples get all
-//     effects and are recordable by a loop (under SHIFT they fold into a
-//     recording loop) -- see audio_thread.cpp's worker() call site.
-//   * Capture reads a snapshot taken AFTER renderInto's own voice mix-in
-//     (so a sample never records itself -- renderInto for THIS block always
-//     runs before captureBlock for THIS block) but AFTER the SHIFT/glitch
-//     loop-fold too -- DEPARTS from ../looper's reference here: user's
-//     explicit request this session ("shift should route loops into the
-//     sample recording... since loopers play into the input channel its a
-//     surprise it doesnt already do this") means captureBlock DOES now see
-//     SHIFT/glitch-folded loop content, unlike the original looper design
-//     this file otherwise mirrors verbatim. See audio_thread.cpp's worker()
-//     call site for the exact ordering.
+//     effects and are recordable by a loop.
+//   * Capture reads the fully-effected, one-block-lagged post-fx signal
+//     (audio_thread.cpp's prevFiltOut), the same tap the loopers' own
+//     record path uses -- see AGENTS.md's "Sampler capture must tap the
+//     fully-effected post-fx signal" entry.
 //   * MIDI events arrive on the control thread; audio runs on the RT audio
 //     thread. Events cross via a lock-free SPSC ring (pushEvent producer,
 //     drained in renderInto consumer). Buffers are written and read only on

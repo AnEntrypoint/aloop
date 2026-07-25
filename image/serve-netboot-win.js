@@ -304,6 +304,7 @@ async function checkAndUpdate() {
   // concurrent build-netboot.sh writing the SAME output directory,
   // corrupting the in-progress tar/apkovl assembly. One rebuild at a time.
   if (updateInFlight) { console.log('[update] rebuild already in progress, skipping this tick'); return; }
+  updateInFlight = true;
   try {
     if (Date.now() < rateLimitedUntil) { console.log('[update] rate-limited, skipping this tick'); return; }
     const [binRun, lv2Run] = await Promise.all([latestGreenRun('build-binary.yml'), latestGreenRun('build-lv2.yml')]);
@@ -364,23 +365,20 @@ async function checkAndUpdate() {
     // error and retries next tick — matching looper's "any failure is
     // caught, next tick tries again" self-healing design.
     const REBUILD_TIMEOUT_MS = 5 * 60 * 1000;
-    updateInFlight = true;
-    try {
-      await execFileAsync(bashExe, [buildScript], {
-        cwd: path.join(__dirname, '..'),
-        env: Object.assign({}, process.env, { OUT: ROOT, ALOOP_BIN: aloopBin, LV2_DIR: lv2Dir, NETBOOT_SERVER: NETBOOT_SERVER }),
-        timeout: REBUILD_TIMEOUT_MS,
-        killSignal: 'SIGKILL',
-        maxBuffer: 64 * 1024 * 1024
-      });
-    } finally {
-      updateInFlight = false;
-    }
+    await execFileAsync(bashExe, [buildScript], {
+      cwd: path.join(__dirname, '..'),
+      env: Object.assign({}, process.env, { OUT: ROOT, ALOOP_BIN: aloopBin, LV2_DIR: lv2Dir, NETBOOT_SERVER: NETBOOT_SERVER }),
+      timeout: REBUILD_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+      maxBuffer: 64 * 1024 * 1024
+    });
     currentSha = sha; fs.writeFileSync(SHA_FILE, sha);
     console.log('[update] netboot root rebuilt with the new build; sending REBOOT so the Pi re-fetches it');
     sendPiReboot();
   } catch (e) {
     console.error('[update] failed:', e.message);
+  } finally {
+    updateInFlight = false;
   }
 }
 

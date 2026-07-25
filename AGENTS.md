@@ -614,3 +614,424 @@ piecewise-constant param behaviour." Adding `si.smoo` would change the
 transient response when a knob value changes between renders, directly
 contradicting this already-verified hardware-parity requirement. Left
 as-is.
+
+## `apc_grid.cpp`'s rec/play cycle: `rec` must be explicitly zeroed on FINISH
+
+`rec` is a persistent `ParamStore` value, not a momentary Faust `button()`
+the widget itself releases. An earlier version set `rec=1` AND `play=1` in
+the same press with nothing ever resetting `rec` back to 0 — `dsp/loop.dsp`
+(`record = in*recN`) then re-recorded live input over the loop forever,
+which looks identical to "not playing" from outside ("loops don't play,
+they just stay paused"). `applyRecPlayCycle` (`src/control/apc_grid.cpp`)
+now explicitly sets `rec=0` on FINISH. The real per-looper press cycle is:
+empty → ARM (`rec=1`, held for the whole recording pass) → FINISH (`rec=0`,
+`play=1`) → pause (`play=0`) → resume (`play=1`) → ...
+
+ARM and FINISH must fire on PRESS, not release (both are "the exact instant
+must land precisely" cases — release-triggered dispatch would add hold
+duration as timing jitter to the start or end of the take). Pause/resume
+stay on release. `m_looperArmedOnPress` suppresses the matching release
+from double-firing the tap.
+
+## `apc_grid.cpp` master-phrase length: always read writeIdx telemetry, never wall-clock, for sample-accurate boundaries
+
+Ported from `../looper`'s `masterLoopBlocks` design: the shared phrase
+length every looper quantizes to is established from the FIRST recorded
+clip's own actual duration, not a fixed default. `dsp/loop.dsp`'s ring
+length used to be driven only by the Link-synced branch, so a standalone
+(no Link) recording left it frozen at the Faust-compiled default (1s),
+truncating/looping real recordings short.
+
+User's explicit, current spec (supersedes an earlier "TRUE PHRASE-LOCK"
+design that re-derived the loop length from the tempo solver's own
+beats-at-BPM reconstruction — that old design is WRONG, do not resurrect
+it): loop 1 must play back at EXACTLY its raw recorded duration, like a
+commercial looper. A wall-clock (`now_ms`) estimate can never satisfy this
+— it isn't sample-accurate relative to the audio thread's own per-block
+timeline. Fix: read `AudioThread::snapshotTelemetry().looperWriteIdx[looper]`
+(the DSP's own true elapsed-sample count since the real grid-aligned arm
+instant) instead of a wall-clock estimate; wall-clock is kept only as a
+defensive fallback when `audio` is null (should not happen in practice).
+`deriveTempoQuant` is used ONLY to propose a BPM to Link — it must never
+resize `m_masterLenSamples`/`cmd/master_len` itself.
+
+## `apc_grid.cpp` successive-recording quantization: 4 design rounds, final spec is power-of-2-only + log-space midpoint
+
+Mirrors `../looper`'s `_calcQuantizeTarget`: a subsequent recording's raw
+duration snaps to a musical subdivision/multiple of the established master
+phrase length M, rather than collapsing to exactly M regardless of hold
+duration. History of what was tried and why each round was replaced:
+
+1. **Small fixed candidate set** `{..., 2M, 4M}`, nearest-raw-distance pick.
+   Bug: a big gap between 2M and 4M meant anything past ~3M jumped all the
+   way to 4M, recording far past the performed content ("took a piece of
+   the end"); also capped at 4M with no way to reach 8M/16M/64M takes.
+2. **Linear 68% threshold** between brackets. Bug: a fixed linear fraction
+   of a full-octave span could trim up to 0.68×M off a genuine recording
+   (e.g. a real 1.5M take cut down to M).
+3. **M/16-linear-step grid** (any multiple of M/16). Rejected live by the
+   user: "loops should always be clean multiples... guaranteed no matter
+   how many times they play" — a linear M/16 grid could still land on
+   musically-meaningless fractions like 5/16 or 11/16.
+4. **Final/shipped**: candidates are POWERS OF 2 ONLY relative to M (M/16
+   floor, M/8, M/4, M/2, M, 2M, 4M, 8M, ...). Decision between the two
+   bracketing powers of 2 is the LOG-SPACE (geometric) midpoint —
+   `sqrt(lowerCand*upperCand)` — not a linear threshold: this is symmetric
+   and scale-independent regardless of which octave the recording lands in.
+   Because every candidate is a genuine power of 2, any two loopers'
+   `wrapLen`s are always in a clean power-of-2 ratio, which (combined with
+   `dsp/loop.dsp`'s `cycleOffset` fix) guarantees perfect drift-free repeat
+   alignment forever (a power-of-2 ratio between two phase-locked rings can
+   never phase-drift).
+
+Also applies: use `writeIdx` telemetry (not wall-clock) for the raw
+duration input here too, for the same press-to-grid-tick timing-gap reason
+as the first-recording case above.
+
+## `apc_grid.cpp`: real APC Key25 hardware re-sends note-on for an already-held pad
+
+Unlike the synthetic MIDI-inject test path, real hardware can re-send
+note-on for a pad that's physically still held down. Without a guard, each
+repeat unconditionally reset the hold-start timer (defeating long-hold
+erase accumulation) and, far worse, could re-enter the ARM/FINISH dispatch
+mid-recording — prematurely finishing a take after only the repeat interval
+(a fraction of a second) and immediately re-arming a new recording on what
+the user believes is still their original press. This is a direct
+structural mechanism for "recording came out blank/near-silent," independent
+of any DSP or erase-timing issue. Fix in `onPadPress`: track `m_looperHeld`
+per pad and treat a repeat note-on for an already-held pad as a no-op.
+
+## `apc_grid.cpp`: momentary Faust gates (`erase`, `finishreq`, `cmd/clearall`) must be explicitly released, never fire-and-forget
+
+Every one-shot Faust gate driven from the control thread (`looperN/erase`,
+`looperN/finishreq`) needs an explicit delayed release, or it sticks at 1
+forever with nothing else ever writing it back to 0:
+
+- **`erase` stuck at 1**: `dsp/loop.dsp`'s `wipe = max(clearAll, eraseN)`
+  gates ring recirculation (`hold *= (1-wipe)`) every block. A fire-and-forget
+  `erase=1` silently wiped playback on every subsequent block forever —
+  recording still worked (unaffected by wipe), so the symptom was "after
+  clearing it, the second round didn't play after recording." Fix:
+  `pollHolds` records a release deadline (~50ms, many DSP blocks later) and
+  clears it on a later tick — setting then immediately clearing in the same
+  call would race the audio thread's plain-atomic read with no ordering
+  guarantee (could read 0 and never observe the wipe at all).
+- **`finishreq`**: same momentary-pulse shape. `dsp/loop.dsp`'s
+  `finishRequestedStep` only needs to see `finishreq>0.5` for one sample
+  (it latches into `finishRequested` until the next armEdge), so holding it
+  ~50ms then releasing is correct — it does not need to still be 1 by the
+  time the DSP-side target is actually reached.
+- **`cmd/clearall`**: a genuinely HELD value (note-on sets it, the user's
+  own later note-off releases it) — real wall-clock time passes in between
+  by construction, so this one doesn't need the deadline pattern.
+
+## `apc_grid.cpp` CLEAR_ALL: resetting the C++ shadow state does NOT stop the Faust DSP — both `play` and `rec` gates must be explicitly zeroed too
+
+Two rounds of the same bug class, found live on real hardware:
+
+1. `onClearAll` reset `m_looperPlaying[lp]=false` (C++ shadow only) but never
+   told Faust to stop: `dsp/loop.dsp`'s `out = loopSig * playN * volN` kept
+   outputting whatever the ring held, gated by `playN`, which was never
+   zeroed — "clearing doesn't stop them." `wipe` only silences the ring's
+   own recirculated content, it does not touch the play gate. Fix: explicitly
+   `setLooper(ps, lp, "play", 0.0f)` in the clear path, not just the shadow.
+2. Same bug for `rec`: CLEAR_ALL pressed WHILE a looper was mid-recording
+   left that looper's Faust `rec` zone stuck at 1 forever (shadow reset only).
+   `hold = delayed*(1-recN)*(1-wipe)` stays zero for as long as `recN==1`, so
+   that looper could never play back ANY content again, even after a fresh,
+   otherwise-correct ARM/FINISH cycle — "loops don't play, only passthrough."
+   Fix: explicitly zero `rec` too, matching the `play` fix.
+
+Same file's `onStopImmediate` also explicitly zeros `rec` for any
+mid-recording looper (unlike plain `cmd/stopall`, which only zeroes `play`)
+— stopping mid-recording is an abort, and an aborted looper stays "empty,"
+never "has content."
+
+## `dsp/loop.dsp`'s `clear`/`speed` engine-globals: Faust's `par()` re-elaborates UI primitives at EVERY instantiation site, hoisting the declaration alone does not collapse the zone count
+
+`oneLooper` is instantiated 20× via `par(i, NLOOPERS, vgroup(...))`. A first
+fix attempt hoisted the `button()`/`hslider()` declarations for `clear`/
+`speed` outside the `par`/`vgroup` and passed them in as parameters —
+this looked like it should produce one shared zone, but Faust's `par()`
+re-elaborates whatever UI primitives sit inside an argument expression at
+EACH of its 20 sites (confirmed via generated C++: still 20 separate zones,
+one per "looper N" vgroup, even after that fix). The real fix removes
+`clear`/`speed` as Faust UI zones entirely and threads them in as plain
+`process()` signal inputs instead (like `prevFiltIn`) — `audio_thread.cpp`
+writes them into `fins[2]`/`fins[3]` every block. `par()` cannot duplicate a
+plain signal input since there's no UI primitive to re-elaborate.
+`cmd/clearall` now correctly wipes every looper's ring in one write.
+
+## `apc_grid.cpp`: an emptied rig must reset the shared master phrase length, from ANY path that can empty it
+
+Per-looper long-hold erase (not just the PLAY/CLEAR_ALL button) can also
+leave the rig with zero loopers holding content. `m_masterLenSamples`/
+`cmd/master_len` (and `cmd/recorded_bpm`, which rides with it) must reset
+to 0 whenever the LAST looper with content is erased this way, or the next
+recording reuses the stale phrase length from before — witnessed live as
+"the second loop became a continuation of what the first loop was set up to
+do instead of starting a new song," landing the quantize branch (not the
+first-establish branch) and truncating to the wrong length from the wrong
+point. `pollHolds` checks `anyHasContent` after the per-looper erase loop
+and resets both values if the rig just went empty, mirroring `onClearAll`'s
+own reset.
+
+## `dsp/effects_runtime.dsp`'s old `fx/bank` 3-way crossfade cost all 3 banks every block regardless of selection — removed, not fixed in place
+
+The old design used one in-Faust `fx/bank` selector zone to crossfade
+between Dub/Guitar/Lofi-Fx effect chains. WITNESSED live on a real Pi 4:
+Faust has no runtime branching, so the crossfade computed all 3 full effect
+chains every single block regardless of which was "selected" — a real
+~7pp `core_busy` regression causing continuous audio dropouts.
+`effects_runtime.dsp` is restored to its pre-LOFI dub-only chain with no
+`fx/bank` zone; Guitar and Lofi-Fx moved to their own permanent Core-3 LV2
+bundle (`guitar_lofi_fx.dsp`), always active, never gated by a selector.
+`ApcGrid`'s 3-bank fx control surface (`onDubFxPress`/`onGuitarFxPress`/
+`onLofiFxPress`) is now a pure UI/state change — each bank press only flips
+which knob-target table the next CC touch reaches (`m_activeBank`) and
+starts an LED flash; there is nothing left to re-push to Faust on a bank
+switch, since Guitar/Lofi-Fx targets are LV2 controls on the always-active
+Core-3 bundle, not a Faust zone that needs redirecting.
+
+## `apc_grid.cpp` CC53 formant constants were verified wrong against `../looper`, corrected to match exactly
+
+Direct cross-codebase comparison found the prior aloop constants both off
+from looper's real values: deadzone was 62-65 here vs looper's real 60-68,
+and the unshifted range was ±1.5 here vs looper's real ±1.0 (looper: default
+±1 "musical territory", SHIFT expands to ±3). Also the normalization formula
+itself used `/63.5` (differently centered) vs looper's real
+`((data2-64)/63.0)*range`. `onFormantCC` now matches looper exactly:
+deadzone 60-68, range ±1 unshifted / ±3 shifted, `/63.0` formula.
+
+## `apc_grid.cpp` sidechain-pump gesture: guitar-fx held REDIRECTS looper pad presses entirely, does not layer on top
+
+While `m_guitarFxHeld` is true, a looper pad press is consumed entirely by
+`onSidechainLooperToggle` (toggles that looper's sidechain-source
+designation) and never reaches the normal ARM/FINISH dispatch — it does not
+touch `m_looperHeld`/`m_looperHoldStart` at all, since this is a one-shot
+toggle gesture, not a "hold this pad" gesture. The sidechain-source
+designation auto-clears whenever that looper's content is wiped (long-hold
+erase or CLEAR_ALL) — a source tied to specific recorded content shouldn't
+silently survive the content being erased.
+
+## FaustUI shim: `addHorizontalBargraph`/`addVerticalBargraph` must register zones too
+
+`src/dsp/audio_thread.cpp`'s hand-written `FaustUI` shim (the param-binding
+`UI` Faust's generated code calls into) had `addHorizontalBargraph`/
+`addVerticalBargraph` as empty no-ops, so every `hbargraph()` zone (level/
+writeidx/wraplen, for all 20 loopers) was never inserted into `zones` at
+all. Every `fui.get("looperN/level"/"writeidx"/"wraplen")` call therefore
+missed the exact-match `find` AND fell through to the full O(n) linear
+suffix-scan over the entire `zones` map, every time, for nothing — 60 wasted
+full-map scans per audio block (3 fields x 20 loopers), 750 blocks/sec =
+45,000 wasted linear scans/sec on the RT audio thread, permanently starving
+`snd_pcm_readi` of CPU time between iterations. WITNESSED: telemetry's
+level/wraplen fields read back all-zero on a live, actively-playing looper.
+Fix: register these exactly like every other control type (`zones[full(l)]
+= z`).
+
+## `targetToZone`'s `fx/bank` mapping was silently missing
+
+`src/dsp/audio_thread.cpp`'s `targetToZone()` (control-map target name →
+Faust zone label) had no case for `fx/bank` (the LOFI 3-bank fx-crossfade
+control, a straight passthrough since `effects_runtime.dsp` declares
+`nentry("fx/bank", ...)` under its own literal name, not a renamed control
+label). WITNESSED live: `ApcGrid::pushBankValuesToZones` wrote
+ParamStore's `"fx/bank"` target correctly, but the generic forEach-push
+loop's fallthrough `return ""` meant it never reached the real Faust zone —
+bank-select buttons updated C++ state but the DSP's own bank-crossfade
+never saw the change, staying pinned on Dub forever. Fixed by adding the
+passthrough case.
+
+## Faust `par()`-replicated UI controls silently duplicate per instance — use signal inputs instead
+
+A `UI` control (`button()`/`hslider()`) passed as an argument into a Faust
+function that `par()` instantiates N times gets RE-ELABORATED (UI
+declaration included) at each of the N call sites — even when the
+declaration text is hoisted outside the `par`/`vgroup` — silently producing
+N duplicate zones instead of one shared zone. WITNESSED via the generated
+C++ (`build/loop.cpp`): `grep -c '"speed"'`/`'"clear"'` both returned 20
+(once per looper's own vgroup) even after an earlier fix attempt (commit
+`382e775`) that looked correct in the `.dsp` source — that fix was cosmetic
+and never actually collapsed to one zone, which is why half/double-speed
+and clear-all kept only affecting one of 20 loopers even after landing. Fix:
+thread the value through as a plain **signal input** to `process()` instead
+(a wire, not a UI primitive — nothing to duplicate). `dsp/loop.dsp`'s
+`oneLooper` now takes `clearAll`/`speedMul`/`masterPhase`/`masterLen`/
+`sidechainEnv` this way; `audio_thread.cpp` fills each corresponding buffer
+with a block-constant value every block (`std::fill`) rather than calling
+`fui.set()`.
+
+## `AloopLoopDsp` (the Faust home stack) must be heap-allocated, never a stack-local
+
+`sizeof(AloopLoopDsp)` is ~320 MiB (20 loopers x `MAXLEN=48000*60`, 60s
+delay-line rings each). WITNESSED live on a real Pi 4 (gdb + a real core
+dump, `-g -O0` debug build): declaring it as a stack-local inside `worker()`
+SIGSEGV'd at `setRealtimeSelf`'s very first local-variable stack write — no
+pthread stack size (musl's small default, or an explicit 8 MiB, both tried)
+could ever be large enough; the frame was simply unmapped from the moment
+the thread's stack pointer moved to make room for a 320 MiB local later in
+the same function. Fixed via `std::make_unique<AloopLoopDsp>()` — a
+one-time allocation at thread startup, never in the per-block RT hot path,
+so it carries none of the no-malloc-in-the-callback risk the rest of this
+file is written to avoid. The `Sampler` (~5.3MB) is heap-allocated the same
+way, for the same class of reason, well under the threshold that made it
+mandatory for `AloopLoopDsp` but still worth keeping off the thread stack.
+
+## Instrument USB audio device is S32_LE, not S16_LE — and ALSA silently ignores a wrong format request
+
+The M-Audio AIR 192|4 (and most class-compliant USB audio interfaces) only
+supports S32_LE (24-bit data left-justified in a 32-bit word — confirmed
+via `/proc/asound/card0/stream0`: "Format: S32_LE, Bits: 24"); there is no
+S16_LE fallback. WITNESSED live: requesting `SND_PCM_FORMAT_S16_LE` via
+`snd_pcm_hw_params_set_format` previously succeeded at the `hw_params()`
+call (no error returned) while the device silently negotiated S32_LE
+anyway — the return value was never checked, so the mismatch went
+undetected until it produced loud static, because the code still
+normalized captured samples by the 16-bit divisor (32768) on 32-bit-wide
+data (values ~65536x too large before Faust ever saw them). Fixed: buffer
+type is `int32_t`, normalization divisor is `2147483648.0f`
+(INT32_MAX-equivalent), and the negotiated format is read back via
+`snd_pcm_hw_params_get_format` and compared against what was requested,
+warning loudly on mismatch instead of silently corrupting audio. The OTG
+gadget mirror is a genuinely separate S16_LE device (`f_uac2-gadget.sh`
+sets `c_ssize`/`p_ssize=2` explicitly), so the two output paths need
+separate wire buffers in their own native formats — never share one.
+
+## ALSA playback stream needs `start_threshold` lowered to one period, or it never leaves PREPARED
+
+The hw_params default `start_threshold` for a PLAYBACK stream is the full
+`buffer_size`. WITNESSED live on a real Pi 4:
+`/proc/asound/.../pcm0p/sub0/status` stayed stuck in `PREPARED` forever,
+because this codebase's block loop only ever writes one N-frame period per
+`snd_pcm_writei()` call and immediately blocks on the next capture read, so
+the ring never reached a full `buffer_size` of queued frames to cross the
+default threshold — meanwhile CAPTURE (which starts as soon as any data is
+available, not gated on a full buffer) ran fine, so the two streams
+silently desynced and playback underran on every write. Fixed by
+`snd_pcm_sw_params_set_start_threshold(pcm, sw, period)` (one period, not
+the full buffer) so playback triggers on the very first `snd_pcm_writei()`,
+matching capture's own behavior.
+
+## ALSA period/buffer sizing: 2 periods (256 frames) xruns constantly on this USB gadget PCM; 4 periods is the minimum that holds
+
+WITNESSED live on a real Pi 4: an initial 2-period buffer (256 frames
+total, the ALSA minimum) produced 690 xruns within seconds on the
+instrument-device PCM — too tight for a USB gadget path, where each
+read/write also rides USB's own transfer-scheduling jitter on top of this
+thread's SCHED_FIFO jitter (unlike a bare-metal build with no OS/USB-stack
+contention at all). 4 periods (at the real `block_size` N per period) keeps
+the same per-period latency-determining granularity while giving the ring
+enough slack to absorb that jitter. The OTG gadget mirror uses even looser
+timing on purpose (period = 4xN, buffer = 4x that) since it doesn't need
+tight latency, just enough buffer that its own scheduling jitter doesn't
+underrun constantly.
+
+## `masterPhaseBuf` must ramp per-sample within the block, not step at block boundaries
+
+WITNESSED live: "loops now sound bitcrushed." Root cause: `masterPhaseBuf`
+(the phrase-lock shared-clock signal input) was filled via `std::fill()`
+with the same block-start value across all N samples — correct for
+genuinely block-constant commands like `clearBuf`/`speedBuf` (momentary,
+slow-changing), but `dsp/loop.dsp`'s `absPos` formula treats `masterPhase`
+as this looper's actual per-sample READ POSITION at `effSpeed==1.0`.
+Holding it constant for a whole 64-sample block meant `readIdx0`/`readIdx1`
+never advanced within a block, only jumping 64 samples at each block
+boundary — a stepped/aliased readback pattern, audibly indistinguishable
+from bitcrushing. Fixed: ramp smoothly within the block (`masterPhaseBuf[i]
+= masterPhaseSamples + i`, wrapped at `masterLen`) so it behaves as a real
+per-sample position signal, not a step control.
+
+## Sampler capture must read from a separate pre-mix buffer, not `fin`, to avoid self-recording
+
+User requirement: SHIFT should route loop content into sample recording the
+same way input and effects already get recorded into samplers. First fix
+attempt (caught before shipping): moving `captureBlock` to run on `fin[]`
+after the SHIFT/glitch fold reintroduced a genuine self-recording bug,
+because by that point `fin[]` also contains this block's own
+`renderInto`-mixed sample-playback voices — a sample recorded while another
+sample/drum hit is playing would record itself. Real fix:
+`src/dsp/audio_thread.cpp` snapshots `captureFin = fin` BEFORE
+`renderInto()` ever touches `fin`, applies the identical SHIFT/glitch fold
+to `captureFin` independently in the same fold loop, and captures from
+`captureFin`. Net effect: `captureFin` = dry input + folded loop content,
+deliberately excluding this block's own sampler playback; `fin` = dry input
++ sampler voices + folded loop content (the correct DSP-facing signal). The
+two must stay structurally separate buffers, not a single buffer read at
+two different times.
+
+## Recording must tap a dedicated post-fx Faust input, never fold a post-fx signal into `fin`
+
+Feeding any post-effects tap into `fin` (the live dry/input signal) makes
+it become next block's `dsp` input again, which then flows through `fx`
+AGAIN every block — stages reprocessing their own prior output produces a
+fast, aliased whine (WITNESSED-BROKEN, originally found via the glitch-only
+`prevGlitchTap` wiring). Fixed by giving `loop.dsp`'s `process()` a
+dedicated second input (`prevFiltIn`) that ONLY the record-capture term
+consumes (`record = prevFiltIn * recN`) — this input never joins the
+dry/live path, so it structurally cannot flow back through `fx` on this or
+any later block. `audio_thread.cpp` feeds this from `prevFiltOut`, a
+snapshot of the PREVIOUS block's fully-effected mix (`rawFiltTap`, one of
+`aloop.dsp`'s `process()` outputs), always the full effects chain
+regardless of SHIFT state (user requirement: recording must always capture
+the fully-effected signal, not raw pre-fx input). This replaced an earlier
+separate glitch-only tap: `prevFiltOut` already contains post-glitch
+content one block later since `microStage` is upstream of `filterStage` in
+`effects_runtime.dsp`, making a separate glitch term redundant/
+double-counting once both were live.
+
+## Flush-to-zero/denormals-are-zero must be set explicitly on the audio thread — no portable C++ API on ARM
+
+Denormal (subnormal) floats occur naturally in any decaying IIR
+filter/feedback loop asymptotically approaching zero (reverb tails, delay
+feedback, envelope followers). On both ARM and x86, denormal arithmetic can
+be 10-100x slower than normal-range floats because the FPU falls back to a
+microcoded slow path. There is no portable C++ standard API for this on
+ARM (the compiler intrinsic `_MM_SET_FLUSH_ZERO_MODE` only exists for x86
+SSE); `src/dsp/audio_thread.cpp`'s `setFlushToZero()` sets the AArch64
+FPCR's FZ bit directly via inline assembly (`mrs`/`msr fpcr`) on
+`__aarch64__`, and the SSE intrinsics on x86. Applied once at thread
+startup before any DSP compute runs — a startup-only cost, no per-block
+overhead. Became relevant when the LOFI feature added 3 parallel bank
+chains (dub/guitar/lofi-fx) computed every block regardless of audibility
+(Faust has no runtime branching — `select2`/`ba.if` choose among
+already-computed signals, they don't skip computing them), tripling the
+places a silent/near-silent signal can spend sustained time in denormal
+territory.
+
+## Two ALSA devices, never conflate them: instrument device is the real path, OTG gadget is a best-effort mirror
+
+`src/dsp/audio_thread.cpp`'s `worker()` opens TWO distinct PCM devices,
+matching the historical hardware split: the instrument device (default
+`hw:0,0`, e.g. the M-Audio AIR 192|4) is the real tight-latency
+capture+playback path a musician actually hears — `cap`/`play` are always
+this device, opened blocking, retried up to 30 times at 1s intervals if the
+interface isn't plugged in yet. The OTG gadget (`f_uac2`,
+`hw:UAC2Gadget,0`) is a best-effort MIRROR of the same processed output,
+opened NONBLOCK so a missing/non-streaming host on the other end can never
+stall or desync the instrument device's real-time path. `-EAGAIN` on the
+OTG write is expected/silently skipped (ring still has enough queued, not
+an error); any other negative return triggers a one-shot recover, and if
+the device is gone for good, later blocks' errors keep being silently
+absorbed rather than ever blocking or crashing the RT path. A failed OTG
+open at startup is silent-degrade-only — the instrument-device path is
+already fully functional without it.
+
+## Sampler capture must tap the fully-effected post-fx signal, including glitch/microrepeat
+
+User requirement: sample recording must capture the loop content AFTER the
+whole effects chain (pitch/glitch/filter/delay/reverb), not a pre-fx
+snapshot — the same fully-effected signal the loopers themselves record
+from. `src/dsp/sampler/sampler.h`'s own header comment previously
+documented `captureBlock` as reading `fin` (dry input) plus the SHIFT/
+glitch fold applied to a COPY of `fin` — a pre-fx snapshot, missing
+filter/delay/reverb and, before the chain reorder, even glitch itself.
+
+Fixed in `src/dsp/audio_thread.cpp`'s `worker()`: `captureBlock` now reads
+from `prevFiltOut` (the same one-block-lagged, fully-effected snapshot the
+loopers' own `prevFiltIn` record-only input already uses — see the
+"Recording must tap a dedicated post-fx Faust input" entry above) instead
+of the pre-fx `captureFin` buffer, which was removed entirely (it had no
+other reader once this changed). Same one-block-lag discipline as the
+looper record path: never fed back into `fin`, so it cannot re-enter `fx`
+on any later block.
