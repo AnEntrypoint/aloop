@@ -10,7 +10,14 @@ import("stdfaust.lib");
 HPCUT    = hslider("HPCUT",   0.0, 0.0, 1.0, 0.001);
 LPCUT    = hslider("LPCUT",   1.0, 0.0, 1.0, 0.001);
 LPRES    = hslider("LPRES",   0.0, 0.0, 1.0, 0.001);
-REVAMT   = hslider("REVAMT",  0.0, 0.0, 1.0, 0.001);
+// REVAMT max raised 1.0 -> 2.0 (user-requested: more reverb than the
+// original hardware's ceiling allows). reverb.dsp's own verified/ported
+// math (effects/home/faust/reverb.dsp) is untouched -- amt feeds linearly
+// into `reverb(amt,t,x) = x + revL*amt*0.25`, so widening the UI range here
+// (a runtime-control wrapper, not the hardware-parity-ported DSP itself)
+// simply lets the wet mix scale further than the original hardware's own
+// UI ever exposed, without altering the verified formula at REVAMT<=1.0.
+REVAMT   = hslider("REVAMT",  0.0, 0.0, 2.0, 0.001);
 DELAYAMT = hslider("DELAYAMT",0.0, 0.0, 1.0, 0.001);
 TIME     = hslider("TIME",    0.5, 0.0, 1.0, 0.001);
 FORMANT  = hslider("FORMANT", 0.0, -3.0, 3.0, 0.001);
@@ -30,10 +37,23 @@ reverbStage = component("effects/home/faust/reverb.dsp")[ REVAMT=REVAMT; TIME=TI
 microStage  = component("effects/home/faust/microrepeat.dsp")[ DIV=DIV; MLB=MLB; ];
 pitchStage  = component("effects/home/faust/pitch.dsp")[ SEMIS=SEMIS; FORMANT=FORMANT; ENGAGED=ENGAGED; ];
 
-// Second output: microStage's OWN output (post-glitch, pre-filter), a native
-// tap so audio_thread.cpp can fold the STUTTERED signal back into next
-// block's input -- the same one-block-lag native-mix technique used for the
-// SHIFT-fold (aloop.dsp), so glitch content becomes recordable into a new
-// loop, matching ../looper's real design (loopMachine.cpp:806-833's "that
-// stutter becomes BOTH the audible output and the record source").
-process = pitchStage : delayStage : reverbStage : microStage <: (filterStage, _);
+// Chain order: filter now runs BEFORE delay/reverb (user-requested: turning
+// the filter should audibly shape what feeds the reverb/delay tails, e.g. a
+// lowpass cut should darken the reverb wash too, not just the dry/direct
+// signal). Previously filterStage ran LAST (after microStage, at the final
+// <: split), so delay/reverb always received full-band input regardless of
+// the filter knobs. microrepeat's position is UNCHANGED (still after
+// reverb) -- only the filter moved earlier, per explicit confirmation this
+// change should not also relocate microStage.
+//
+// Second output: aloop.dsp's mixAndFx unpacks this as `rawGlitchTap`, a
+// leftover tap from an EARLIER design (the old separate glitchIn/
+// prevGlitchTap record-path mechanism, since replaced by prevFiltOut --
+// see aloop.dsp's own top-of-file history and audio_thread.cpp's
+// "REPLACES the old glitch-only prevGlitchTap wiring" comment). Confirmed
+// dead: audio_thread.cpp's fouts[1] (rawGlitchTap) is populated every
+// block but never read again anywhere in that file -- so this second
+// output has no live consumer today, and simply mirrors the same
+// (filtered) signal as output 1 rather than needing a separate pre-filter
+// tap.
+process = pitchStage : filterStage : delayStage : reverbStage : microStage <: (_, _);

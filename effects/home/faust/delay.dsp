@@ -20,8 +20,13 @@ SLEW = 0.0001;
 DELAYAMT = 0.0;
 TIME     = 0.5;
 
-// setTime: delayMs = time*999+1 (1..1000ms) -> samples, clamped [1, MAXD-1].
-targetSamples(t) = max(1.0, min(MAXD - 1.0, (t*999.0 + 1.0) * SR / 1000.0));
+// setTime: delayMs = time*999.5+0.5 (0.5..1000ms) -> samples, clamped
+// [1, MAXD-1]. DELIBERATE DEPARTURE from the original hardware-parity
+// mapping (was time*999+1, i.e. 1..1000ms) -- user-requested: halve the
+// minimum delay time from 1ms to 0.5ms. Everything else (the feedback
+// comb math, SLEW, MAXD ceiling) is untouched and still matches the
+// verified port; only this one endpoint of the time->ms mapping moved.
+targetSamples(t) = max(1.0, min(MAXD - 1.0, (t*999.5 + 0.5) * SR / 1000.0));
 
 // Delay-length state (reduced recurrence — the best-matching model found).
 // C++: currentDelay = writePos - readPos == newDelay[n-1] + 1 (for n>=1),

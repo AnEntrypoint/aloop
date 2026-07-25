@@ -350,30 +350,38 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             // extending far past the performed content. Also capped at 4M,
             // so a genuinely-intended 8M/16M/64M take had no candidate to
             // reach at all.
-            // FIX: an UNBOUNDED geometric candidate sequence (powers of 2,
-            // M/16 up through as many multiples as kMaxLoopSamples allows),
-            // and instead of "nearest by raw distance across the whole set",
-            // find the bracketing PAIR immediately below/above rawSamples,
-            // then apply the user's own confirmed 68% threshold: extend to
-            // the UPPER candidate only if rawSamples is past 68% of the way
-            // from the lower to the upper candidate; otherwise trim to the
-            // LOWER one. This bounds the maximum possible "wait" extension
-            // to at most 32% of one octave's span from wherever the user
-            // actually released -- never a multi-bar jump like the old
-            // fixed-set-nearest design could produce.
-            // Bracket rawSamples between consecutive powers of 2 (times M)
-            // directly via log2 of the ratio -- correct regardless of
-            // whether rawSamples is above or below M, no directional walk
-            // to get backwards (an earlier draft of this fix had exactly
-            // that bug: a lower-only walk starting at M could never find a
-            // lower bracket ABOVE M for a raw recording already past M,
-            // caught and fixed before this ever reached CI).
-            double ratio = (double)rawSamples / (double)m_masterLenSamples;
-            if (ratio < 1.0 / 16.0) ratio = 1.0 / 16.0;   // floor: never propose below M/16
-            double log2Ratio = std::log2(ratio);
-            double lowerExp = std::floor(log2Ratio);
-            double lowerCand = (double)m_masterLenSamples * std::pow(2.0, lowerExp);
-            double upperCand = (double)m_masterLenSamples * std::pow(2.0, lowerExp + 1.0);
+            // FIX (round 3, WITNESSED live: "the quant of successive
+            // recordings should extend to the nearest exponent of a 16th to
+            // the recordings length, it cut them shorter than its supposed
+            // to"): round 2's octave-doubling brackets (M*2^n, M*2^(n+1))
+            // made the bracket SPAN itself scale with the multiple -- e.g.
+            // between M and 2M the span is a full M, so ANYTHING in the
+            // lower 68% of that whole octave (up to 1.68M raw) trimmed all
+            // the way back down to exactly M, discarding up to 0.68M of
+            // genuinely-performed content. A 1.5M recording (clearly deep
+            // into "the user meant to record past one phrase") landed at
+            // frac=0.5 and got cut to M, losing a third of the take -- this
+            // is the concrete mechanism behind "cut shorter than it's
+            // supposed to." Root cause: bracket granularity was a full
+            // octave (2x), not the M/16 grid this project's own gridStep
+            // concept already uses everywhere else (dsp/loop.dsp's
+            // gridStep = masterLen/16 for ARM-press quantization).
+            // Fixed: bracket rawSamples between the two nearest M/16-spaced
+            // candidates directly (floor/ceil of rawSamples/(M/16)), so the
+            // span the 68% threshold applies across is always exactly M/16
+            // regardless of how many multiples of M the recording ran to --
+            // the maximum possible trim-back is now 0.68*(M/16), not
+            // 0.68*M. Extends correctly to ANY M/16-aligned length (M/16,
+            // 2M/16, ..., up through kMaxLoopSamples), matching "any
+            // multiple of the loop" from the original round-2 requirement
+            // while fixing the coarse-bracket under-trim round 2 introduced.
+            double unit = (double)m_masterLenSamples / 16.0;
+            if (unit < 1.0) unit = 1.0;   // degenerate guard for a tiny M
+            double steps = (double)rawSamples / unit;
+            double lowerSteps = std::floor(steps);
+            if (lowerSteps < 1.0) lowerSteps = 1.0;   // floor: never propose below M/16 (1 step)
+            double lowerCand = lowerSteps * unit;
+            double upperCand = (lowerSteps + 1.0) * unit;
             if (upperCand > (double)kMaxLoopSamples) upperCand = (double)kMaxLoopSamples;
             if (lowerCand > upperCand) lowerCand = upperCand;   // degenerate guard at the ceiling
             double span = upperCand - lowerCand;
