@@ -268,14 +268,22 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
     // fails against a device that is very much still there and already held
     // open by `in`, producing a spurious disconnect roughly once per second
     // (confirmed live: 51 false disconnect/reconnect cycles in under a
-    // minute with the real controller never touched). The correct,
-    // non-invasive check: capture the real device node's inode+rdev via
-    // stat() right after a successful open, then on each liveness-probe
-    // tick, stat() the SAME path again (a read-only filesystem lookup, no
-    // ALSA call, cannot conflict with the held handle) and compare -- if
-    // the path is now gone (ENOENT) or its identity changed (removed then
-    // replaced by a fresh enumeration reusing the same card slot), the
-    // original handle is stale. Only meaningful for the auto-scan path
+    // minute with the real controller never touched).
+    //
+    // A second attempt (WITNESSED, corrected here) compared a stat() SNAPSHOT
+    // taken at open time against a fresh stat() on each probe tick -- this is
+    // ALSO unreliable: /dev is devtmpfs-backed, so a removed-then-replaced
+    // device node's inode number can be RECYLED for the fresh enumeration
+    // (small, densely-reused inode pool), producing a false "still the same
+    // device" match precisely in the rapid unbind-then-immediately-rebind
+    // case this fix exists to catch. The correct, still non-invasive check:
+    // fstat() the REAL open fd `in` is reading from (pfds[0].fd, the exact
+    // descriptor snd_rawmidi_poll_descriptors already extracted -- no new
+    // open, no snapshot to go stale) and compare it against a FRESH stat()
+    // of the well-known path on every probe tick. This directly answers "is
+    // the path I'd re-open still pointing at the SAME underlying device I'm
+    // currently reading from," with no open-time snapshot that can go stale
+    // relative to intervening churn. Only meaningful for the auto-scan path
     // (devbuf = "hw:N,0,0" -- the underlying node is the well-known
     // /dev/snd/midiCND0); an explicit config device string isn't
     // necessarily even a card-number form, so this check is simply skipped
@@ -288,8 +296,7 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
         if (sscanf(devbuf, "hw:%d,", &probeCard) == 1)
             snprintf(probeStatPath, sizeof probeStatPath, "/dev/snd/midiC%dD0", probeCard);
     }
-    struct stat probeStatAtOpen{};
-    bool haveProbeStatAtOpen = probeStatPath[0] && stat(probeStatPath, &probeStatAtOpen) == 0;
+    bool haveProbeStatPath = probeStatPath[0] != '\0';
     constexpr unsigned kLivenessProbeMs = 1000;
     unsigned lastLivenessProbeMs = nowMs();
     for (;;) {
@@ -314,20 +321,40 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
         }
         bool realReady = false;
         for (int i = 0; i < nfds; i++) if (pfds[(size_t)i].revents & POLLIN) { realReady = true; break; }
+        // Liveness probe: runs on its OWN ~1s timer, independent of whether
+        // this particular poll cycle carried real/injected MIDI traffic --
+        // WITNESSED live: nesting this inside the `!gotInjectedByte` branch
+        // (as an earlier version of this fix did) meant a busy injection
+        // stream (e.g. this project's own test/hardware/midi-inject.js
+        // reproduction tooling, which sends real bytes on tcp/9401)
+        // permanently starved the probe from ever running -- confirmed via
+        // /proc/<pid>/fd showing the same disconnected device's fd held
+        // open indefinitely (mtime frozen) across multiple probe intervals'
+        // worth of wall-clock time while inject traffic kept flowing. A
+        // real controller unplugged while the user is still actively
+        // pressing OTHER buttons (real bytes still arriving on `in` itself,
+        // a distinct scenario from the injection-only case here but the
+        // same class of "probe starved by any traffic") must not silently
+        // disable disconnect detection either -- checking on every loop
+        // iteration regardless of `pr`/`gotInjectedByte` closes both.
+        {
+            unsigned n = nowMs();
+            if (haveProbeStatPath && realNfds > 0 && n - lastLivenessProbeMs >= kLivenessProbeMs) {
+                lastLivenessProbeMs = n;
+                struct stat fdStat{}, pathStat{};
+                bool stillThere = fstat(pfds[0].fd, &fdStat) == 0
+                    && stat(probeStatPath, &pathStat) == 0
+                    && fdStat.st_ino == pathStat.st_ino
+                    && fdStat.st_dev == pathStat.st_dev;
+                if (!stillThere) break;   // device genuinely gone/replaced -- fall through to disconnect cleanup below
+            }
+        }
         if (!gotInjectedByte) {
             if (pr == 0) {
                 unsigned n = nowMs();
                 grid.pollHolds(n, ps);   // timeout: no MIDI, just poll holds
                 auto t = audio ? audio->snapshotTelemetry() : AudioThread::Telemetry{};
                 leds.refresh(n, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr);
-                if (haveProbeStatAtOpen && n - lastLivenessProbeMs >= kLivenessProbeMs) {
-                    lastLivenessProbeMs = n;
-                    struct stat nowStat{};
-                    bool stillThere = stat(probeStatPath, &nowStat) == 0
-                        && nowStat.st_ino == probeStatAtOpen.st_ino
-                        && nowStat.st_rdev == probeStatAtOpen.st_rdev;
-                    if (!stillThere) break;   // device genuinely gone/replaced -- fall through to disconnect cleanup below
-                }
                 continue;
             }
             if (pr < 0) {
