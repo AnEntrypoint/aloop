@@ -74,8 +74,23 @@ function writeFileContent(conn, remotePath, content) {
       const tmpPath = remotePath + '.tmp-bisect';
       const writeStream = sftp.createWriteStream(tmpPath);
       writeStream.on('close', () => {
-        // Atomic-ish rename into place once the write is fully flushed.
-        sftp.rename(tmpPath, remotePath, (err2) => (err2 ? reject(err2) : resolve()));
+        // WITNESSED live against this device's OpenSSH sftp-server:
+        // sftp.rename() onto an EXISTING destination fails with a bare
+        // "Failure" status -- SFTPv3's rename has no atomic-overwrite
+        // guarantee (unlike POSIX rename(2)), so a target that already
+        // exists (remotePath always does here, aloop.conf is never
+        // missing) must be unlinked first. This is why the CANDIDATE
+        // write step failed every run: the FIRST writeFileContent call in
+        // a given process (the candidate write) is renaming onto the
+        // pre-existing real config for the first time, since Node's own
+        // sftp client has no prior successful rename in this connection
+        // to have already cleared the target.
+        sftp.unlink(remotePath, () => {
+          // Ignore the unlink error/success either way -- remotePath may
+          // not exist on a first-ever run, and rename() below is the real
+          // arbiter of success.
+          sftp.rename(tmpPath, remotePath, (err2) => (err2 ? reject(err2) : resolve()));
+        });
       });
       writeStream.on('error', reject);
       writeStream.end(content);
@@ -147,7 +162,11 @@ async function main() {
     const confRead = await execOnce(conn, `cat ${CONF_PATH}`);
     if (confRead.code !== 0) throw new Error(`could not read ${CONF_PATH}: ${confRead.errOut}`);
     const originalConf = confRead.out;
-    if (/disable_core3_lv2\s*=\s*1/.test(originalConf)) {
+    // Match only an ACTIVE (uncommented) assignment -- WITNESSED live: the
+    // shipped aloop.conf's own reference comment ("# disable_core3_lv2 = 1
+    // # DIAGNOSTIC ONLY: ...") matched a bare /disable_core3_lv2\s*=\s*1/,
+    // producing a false-positive warning on every normal, unmodified config.
+    if (/^\s*disable_core3_lv2\s*=\s*1/m.test(originalConf)) {
       console.warn('[bisect] WARNING: disable_core3_lv2=1 already present in the live config -- this run will still restore whatever was there, but the "baseline" capture below is NOT a true Core-3-enabled baseline.');
     }
     const backupPath = path.join(__dirname, `aloop.conf.backup.${Date.now()}`);

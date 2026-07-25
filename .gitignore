@@ -56,3 +56,8 @@ tmp/
 # MinGW/MSYS2 subprocess crash dumps (host-tooling artifact, not repo state)
 *.stackdump
 .image-flash-work/
+
+# test/hardware/bisect-1hz-stall.js's local safety-backup of the live
+# /etc/aloop.conf before it temporarily mutates it -- host-tooling scratch,
+# not repo state
+test/hardware/aloop.conf.backup.*

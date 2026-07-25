@@ -207,6 +207,37 @@ the magnitude — this is what let a "seems like it's happening often" symptom
 resolve into a hard, provable "fires at almost exactly a 1.000-second
 period" measurement.
 
+**Update (2026-07-25): the ~1Hz periodic stall documented above no longer
+reproduces** on the fully-fixed device (all 3 fixes below applied, live,
+survived a real reboot). Re-ran `test/hardware/bisect-1hz-stall.js` (after
+fixing two real bugs in the tool itself, see below) three times: 20s and
+60s captures with the Core-3 LV2 host both active and disabled (identical
+in both configurations — 2 minor diag-gap lines each, zero "big" ≥10ms
+events), plus a clean 90-second direct log capture showing ZERO diag-gap
+lines at all. Given the stall's own documented signature is "fires at
+almost exactly a 1.000-second period," a 60s+ clean window is decisive —
+at the previously-measured rate it would have fired ~60+ times. No
+specific mechanism was proven (this is an A/B-disappeared result, not a
+root-cause trace), but the most likely explanation is that it was caused
+or exacerbated by one of the 3 bugs below — most plausibly the MIDI-remap
+loop's growing per-block cost (bug #1), which could plausibly have
+produced periodic pressure spikes as its cost scaled with bound-control
+count, or contention from the pre-fix `aloop.lv2` duplicate-DSP load (bug
+#3) intermittently competing for the same core. Do not re-open this as
+"still unresolved" without a fresh live re-test first — the evidence
+currently on hand says it is gone.
+
+Two real, unrelated bugs were found and fixed IN the bisection tool itself
+while re-running it: (1) `writeFileContent()`'s SFTP `rename()` call failed
+with a bare `Failure` status when the destination already existed (it
+always does — `/etc/aloop.conf` is never missing) — SFTPv3's rename has no
+POSIX atomic-overwrite guarantee; fixed by `unlink()`-ing the destination
+first. (2) The "is `disable_core3_lv2` already active" detector's regex
+matched the shipped config's own commented-out documentation line
+(`# disable_core3_lv2 = 1      # DIAGNOSTIC ONLY: ...`), producing a
+false-positive warning on every normal, unmodified config; fixed by
+anchoring the regex to line-start with no leading `#`.
+
 ## Severe continuous readi()-slowdown (NOT the ~1Hz periodic stall above — a distinct, separate issue, now resolved): a per-block string/map-lookup path scaling with control count, not USB hardware
 
 A different symptom from the periodic-stall section above: `readi()` itself
