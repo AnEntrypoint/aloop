@@ -1037,38 +1037,50 @@ looper record path: never fed back into `fin`, so it cannot re-enter `fx`
 on any later block.
 
 ## SHIFT-hold recording latency compensation: `recordStartPhaseOffset` is
-biased backward at FINISH, doubled when the pitch engine was engaged
+biased backward at FINISH when SHIFT (`fx/monitorfold`) was held during the take
 
-The pitch/varispeed engine (`effects/home/faust/pitch_ffi.h`'s
-`dubfx_pitch_tick`, the exact ported `EngineSoladSnac` SNAC pitch shifter)
-introduces a real, documented, measurable latency whenever it is engaged
-(`fx/pitchbend_engaged`, driven by mod-wheel/absolute-pitch/keybed-note
-gestures — a distinct control from `fx/monitorfold`'s SHIFT-fold glitch
-gesture): a genuine 1-block (64-sample) framing delay, since the engine
-buffers a full 64-sample block before it can call `processBlock()` and
-serves that block's output across the NEXT 64 ticks (see `pitch_ffi.h`'s
-own header for the exact mechanism). Because loopers record from
-`prevFiltOut` (the post-fx tap, itself already one block lagged — see the
-sampler-capture entry above), a take made with the pitch engine engaged at
-any point carries this extra block of delay baked into its recorded
-content relative to the real live performance timing.
+CORRECTED (a first implementation pass of this feature wrongly gated on
+`fx/pitchbend_engaged`, the SNAC pitch/varispeed engine, instead of SHIFT
+— caught live: user held SHIFT during a recording and reported the
+looper's playback was audibly LATE relative to the other loops, i.e. the
+recorded content lagged behind where it should sit). The two controls are
+genuinely distinct: `fx/pitchbend_engaged` (mod-wheel/absolute-pitch/
+keybed-note gestures) drives the SNAC pitch-shift engine
+(`effects/home/faust/pitch_ffi.h`), while `fx/monitorfold`
+(`ApcGrid::onShiftPress`/`onShiftRelease`) is the SHIFT-fold glitch
+gesture — only the latter is the one that needs compensating here.
 
-Fix: `dsp/loop.dsp` gained a new per-looper zone,
-`latencyBiasN = hslider("latencybias", 0, -MAXLEN, MAXLEN, 1)`, subtracted
-from `masterPhase` at the exact instant `recordStartPhaseOffset` latches
-(`recordStartPhaseOffsetStep(prev) = ba.if(finishEdge, masterPhase -
-latencyBiasN, prev)`) — this shifts the looper's own read-position anchor
-earlier by the bias amount, compensating for the recorded content's own
-lag. `src/control/apc_grid.cpp`'s `applyRecPlayCycle` writes this zone at
-FINISH: base bias is `kPitchEngineBlockLatencySamples` (64), DOUBLED
-(128) if `m_looperPitchEngagedDuringTake[looper]` was ever set true during
-the take — a flag sampled every `pollHolds` tick (not just at ARM/FINISH)
-against `fx/pitchbend_engaged`, so a pitch engagement at ANY point mid-take
-is captured, not only if it happened to be active at the exact ARM or
-FINISH instant. This mirrors the `finishtarget` zone's own established
-per-looper-hslider pattern exactly (a genuine `par()`-replicated UI zone,
-confirmed via generated C++ showing 20 distinct instances, not the
-shared-signal-input class of bug documented elsewhere in this file) — no
-new signal-input wiring was needed since this value only needs to change
-once per take, unlike `effSpeed`/`clearAll`/`masterPhase`, which need
-per-sample ramping.
+SHIFT's own real mechanism (`src/dsp/audio_thread.cpp`'s `worker()`):
+`fin[i] += prevLoopSum[i] * combinedFold` feeds the PREVIOUS block's loop
+output back into this block's input whenever `fx/monitorfold` is engaged
+(ramped over 16 samples via `kFoldStep`, negligible next to the block-size
+lag) — `prevLoopSum` is always exactly one block (`g_cfg.blockSize`, 64
+samples by default) behind the live signal. Since loopers record from
+`prevFiltOut`/`prevFiltIn` (already one block lagged on its own, see the
+sampler-capture entry above), SHIFT engagement adds this same block-size
+lag into what's actually captured, on top of the baseline pipeline lag —
+recorded content ends up effectively delayed relative to the live
+performance, which is exactly the symptom reported ("behind" the other
+loops).
+
+Fix: `dsp/loop.dsp`'s `latencyBiasN = hslider("latencybias", 0, -MAXLEN,
+MAXLEN, 1)` is subtracted from `masterPhase` at the exact instant
+`recordStartPhaseOffset` latches (`recordStartPhaseOffsetStep(prev) =
+ba.if(finishEdge, masterPhase - latencyBiasN, prev)`). A smaller
+`recordStartPhaseOffset` makes `absPos = wrapAbs(masterPhase -
+recordStartPhaseOffset + cycleOffset, wrapLen)` LARGER for the same
+`masterPhase` — i.e. playback reads further ahead into the ring at any
+given moment, catching the content up to compensate for it having arrived
+late. `src/control/apc_grid.cpp`'s `applyRecPlayCycle` writes this zone at
+FINISH: `kShiftFoldBlockLatencySamples` (64) if
+`m_looperShiftHeldDuringTake[looper]` was ever set true during the take,
+else 0. The flag is sampled every `pollHolds` tick (not just at ARM/
+FINISH) against `fx/monitorfold`, so a SHIFT engagement at ANY point
+mid-take is captured, not only if it happened to be held at the exact ARM
+or FINISH instant, and is reset to false at ARM. This mirrors the
+`finishtarget` zone's own established per-looper-hslider pattern exactly
+(a genuine `par()`-replicated UI zone, confirmed via generated C++ showing
+20 distinct instances, not the shared-signal-input class of bug
+documented elsewhere in this file) — no new signal-input wiring was
+needed since this value only needs to change once per take, unlike
+`effSpeed`/`clearAll`/`masterPhase`, which need per-sample ramping.
