@@ -440,7 +440,43 @@ with {
     recordStartPhaseOffsetStep(prev) = ba.if(finishEdge, masterPhase, prev);
     recordStartPhaseOffset = recordStartPhaseOffsetStep ~ _;
     wrapAbs(p, len) = p - floor(p / float(len)) * float(len);
-    absPos = wrapAbs(masterPhase - recordStartPhaseOffset, wrapLen);
+    // MULTI-PHRASE PLAYBACK (WITNESSED live, real hardware: "record long,
+    // play back short" / "maxing out at 4 beats regardless of hold
+    // duration" -- confirmed via diag9 telemetry that recording/
+    // quantization both work correctly, e.g. an 8s hold correctly stored
+    // and quantized to 3.71xM, but audibly played back as only ~1xM).
+    // ROOT CAUSE: audio_thread.cpp's masterPhaseSamples wraps modulo
+    // masterLen (M) every block (the deliberate PHRASE-LOCK design -- see
+    // this function's own header comment -- masterPhase is a shared clock
+    // ALL loopers read against, so it must repeat every M for inter-looper
+    // sync). But absPos's old formula (`wrapAbs(masterPhase -
+    // recordStartPhaseOffset, wrapLen)`) implicitly assumed
+    // masterPhase-relative position could range up to wrapLen -- for any
+    // looper whose OWN wrapLen is a genuine multiple of M (k*M, k>1, from
+    // the M/16-bracket quantization fix), masterPhase-recordStartPhaseOffset
+    // can only ever range within roughly (-M,M), so the wrapLen modulo was
+    // a no-op and playback could never advance past the first M worth of
+    // content, no matter how much MORE was actually recorded and stored.
+    // FIX: track which of this looper's own k phrase-repeats masterPhase is
+    // currently traversing, via a per-looper cycleOffset that increments by
+    // M every time masterPhase wraps (the same "current < previous" edge
+    // idiom gridTickCrossed already uses, just at the FULL M boundary
+    // instead of the 1/16 grid), reset to 0 at this looper's own
+    // finishEdge/armEdge (a fresh take always starts its own cycle count at
+    // its own phrase-repeat 0, matching recordStartPhaseOffset's own reset
+    // timing), and itself wrapping at wrapLen so a k-multiple looper cycles
+    // through phrase-repeats 0..k-1 before repeating from 0 again. Combined
+    // additively into absPos's own wrapLen-modulo -- a looper with
+    // wrapLen==M (k=1) is numerically unaffected (cycleOffset can only ever
+    // be 0 when wrapLen<=M, since it wraps at wrapLen itself), so this is a
+    // pure extension for k>1 loopers, not a behavior change for the common
+    // single-phrase case.
+    masterPhasePrev = masterPhase : mem;
+    masterPhaseWrapped = masterPhase < masterPhasePrev;
+    cycleOffsetStep(prev) = ba.if(finishEdge | armEdge, 0.0,
+                             ba.if(masterPhaseWrapped, wrapAbs(prev + masterLen, wrapLen), prev));
+    cycleOffset = cycleOffsetStep ~ _;
+    absPos = wrapAbs(masterPhase - recordStartPhaseOffset + cycleOffset, wrapLen);
     // effSpeed is a plain process()-level SIGNAL INPUT (see ROOT CAUSE
     // comment above oneLooper for why it must never be a UI hslider/button
     // threaded through par()). Clamp to a sane nonzero range so a
