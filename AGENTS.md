@@ -175,6 +175,26 @@ commit's binary won't have current fixes — expect it to crash if it predates
 the nullptr-features fix above and any LV2 bundle is present in
 `/effects/home` or `/effects/user`; this is expected, not a new bug.
 
+**The automatic path's SHA-tracking is blind to changes in the packaging
+scripts themselves** (`image/lib-boot-tree.sh`, `image/build-netboot.sh`) —
+it only compares `build-binary.yml`/`build-lv2.yml`'s own latest green-run
+SHAs, and neither workflow lists `image/**` in its trigger `paths:`.
+WITNESSED live: a real fix to `lib-boot-tree.sh` (excluding a
+duplicate-DSP `.lv2` bundle from what gets packaged — see the
+`aloop.lv2` entry below) was committed and pushed, but the auto-updater's
+`.netboot-update-sha` never changed (neither workflow re-ran), so
+`.netboot-serve/`'s actual packaged content silently stayed on the OLD,
+unfixed packaging indefinitely — a device that rebooted from netboot
+picked the stale image back up, undoing a fix that had already been
+verified live via manual on-device patching minutes earlier. Any change to
+the packaging scripts themselves (not just `dsp/`/`effects/`/`src/dsp/`
+content) requires a **manual** `.netboot-serve/` rebuild
+(`ALOOP_BIN=<path> LV2_DIR=<path> OUT=.netboot-serve
+NETBOOT_SERVER=192.168.137.1 bash image/build-netboot.sh`, using
+already-downloaded `.netboot-update-work/{bin,lv2}` artifacts if the
+binary/LV2 content itself hasn't changed) — do not assume the automatic
+poll loop will ever pick it up on its own.
+
 ## Diagnosing periodic audio stalls: always add wall-clock timestamps, not just magnitudes
 
 A gap-logging line that only fires when the gap exceeds some threshold
