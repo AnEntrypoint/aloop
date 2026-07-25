@@ -250,6 +250,24 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
         pfds[0].events = 0;
     }
     uint8_t st = 0, d1 = 0, d2 = 0; int phase = 0; uint8_t b;
+    // HOTPLUG liveness probe state: a real USB device REMOVAL does not
+    // reliably deliver POLLHUP/POLLERR on this platform while `in`'s fd
+    // stays open -- WITNESSED live via a real sysfs USB unbind/bind cycle
+    // (simulating a genuine unplug/replug): the underlying /dev/snd/midiCxDx
+    // inode is deleted (confirmed via /proc/<pid>/fd showing "(deleted)"),
+    // but poll() on the still-open fd kept returning 0 (timeout) forever --
+    // never POLLHUP, never a read error -- so the disconnect `break` further
+    // down was never reached, and the thread stayed parked on the stale
+    // handle even after the device came back on a FRESH inode at the same
+    // path. Detected instead via an explicit periodic liveness probe: every
+    // ~kLivenessProbeMs, re-attempt snd_rawmidi_open() on the SAME devbuf
+    // path -- ALSA validates real hardware presence on open (unlike poll on
+    // an already-open handle to a removed device), so this reliably fails
+    // once the device is genuinely gone. Closed immediately after a
+    // successful probe (never held open) -- cheap, and only run a few times
+    // per second at most, not every 100ms poll tick.
+    constexpr unsigned kLivenessProbeMs = 1000;
+    unsigned lastLivenessProbeMs = nowMs();
     for (;;) {
         pfds[(size_t)kListenSlot].fd = injectListenFd;
         pfds[(size_t)kListenSlot].events = POLLIN;
@@ -278,6 +296,13 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
                 grid.pollHolds(n, ps);   // timeout: no MIDI, just poll holds
                 auto t = audio ? audio->snapshotTelemetry() : AudioThread::Telemetry{};
                 leds.refresh(n, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr);
+                if (n - lastLivenessProbeMs >= kLivenessProbeMs) {
+                    lastLivenessProbeMs = n;
+                    snd_rawmidi_t* probeIn = nullptr;
+                    int probeRc = snd_rawmidi_open(&probeIn, nullptr, devbuf, SND_RAWMIDI_SYNC | SND_RAWMIDI_NONBLOCK);
+                    if (probeIn) snd_rawmidi_close(probeIn);
+                    if (probeRc < 0) break;   // device genuinely gone -- fall through to disconnect cleanup below
+                }
                 continue;
             }
             if (pr < 0) {
