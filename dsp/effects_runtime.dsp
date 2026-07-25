@@ -37,14 +37,16 @@ reverbStage = component("effects/home/faust/reverb.dsp")[ REVAMT=REVAMT; TIME=TI
 microStage  = component("effects/home/faust/microrepeat.dsp")[ DIV=DIV; MLB=MLB; ];
 pitchStage  = component("effects/home/faust/pitch.dsp")[ SEMIS=SEMIS; FORMANT=FORMANT; ENGAGED=ENGAGED; ];
 
-// Chain order: filter now runs BEFORE delay/reverb (user-requested: turning
-// the filter should audibly shape what feeds the reverb/delay tails, e.g. a
-// lowpass cut should darken the reverb wash too, not just the dry/direct
-// signal). Previously filterStage ran LAST (after microStage, at the final
-// <: split), so delay/reverb always received full-band input regardless of
-// the filter knobs. microrepeat's position is UNCHANGED (still after
-// reverb) -- only the filter moved earlier, per explicit confirmation this
-// change should not also relocate microStage.
+// Chain order (REVISED per direct user correction after the first reorder):
+// glitch (microrepeat) -> filter -> delay -> reverb. The user's own words:
+// "filter isnt applying to glitch, glitch should be before filter" and
+// "glitch, once filtered, should feed into delay and reverb" -- so
+// microStage moves BEFORE filterStage (glitch content must be filterable,
+// which it wasn't when filter ran first), and filterStage stays before
+// delay/reverb (from the earlier reorder: turning the filter should shape
+// what feeds the reverb/delay tails, not just the dry/direct signal).
+// Previous (now superseded) order was pitch->filter->delay->reverb->micro;
+// original (pre-session) order was pitch->delay->reverb->micro->filter.
 //
 // Second output: aloop.dsp's mixAndFx unpacks this as `rawGlitchTap`, a
 // leftover tap from an EARLIER design (the old separate glitchIn/
@@ -56,4 +58,4 @@ pitchStage  = component("effects/home/faust/pitch.dsp")[ SEMIS=SEMIS; FORMANT=FO
 // output has no live consumer today, and simply mirrors the same
 // (filtered) signal as output 1 rather than needing a separate pre-filter
 // tap.
-process = pitchStage : filterStage : delayStage : reverbStage : microStage <: (_, _);
+process = pitchStage : microStage : filterStage : delayStage : reverbStage <: (_, _);
