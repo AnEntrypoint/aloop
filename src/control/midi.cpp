@@ -465,7 +465,7 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
             // docs/COMMAND-SURFACE.md, a deliberate model difference) -- so
             // shift+PLAY has nothing to reroute TO yet and is left unbound
             // rather than silently doing the wrong thing.
-            if (type == 0x90 && d2 > 0 && d1 == 0x51 && grid.shiftHeld()) { grid.onStopImmediate(ps); continue; }
+            if (type == 0x90 && d2 > 0 && d1 == 0x51 && grid.shiftHeld()) { grid.onStopImmediate(ps, link); continue; }
             // PLAY (note 0x5B/91) = CLEAR_ALL. Previously routed ONLY through
             // controls.conf's flat note91->cmd/clearall binding, which
             // ApcGrid never observed -- its own shadow state never got reset
@@ -489,8 +489,8 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
             // reachable regardless of shift state until loop-immediate is
             // actually implemented.
             if (d1 == 0x5B) {
-                if (type == 0x90 && d2 > 0) { grid.onClearAll(true, ps); continue; }
-                if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onClearAll(false, ps); continue; }
+                if (type == 0x90 && d2 > 0) { grid.onClearAll(true, ps, link); continue; }
+                if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onClearAll(false, ps, link); continue; }
             }
         }
 

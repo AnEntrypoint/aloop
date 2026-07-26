@@ -42,6 +42,10 @@ struct AudioConfig {
     // edit + restart, without a full rebuild/redeploy cycle each time.
     bool disableCore3Lv2 = false;
 
+    // [link] enabled = 0|1 in aloop.conf. Default on: Ableton Link is how this
+    // device meshes with ../esp-idf-link and other peers.
+    bool linkEnabled = true;
+
     // MIDI input device: "auto" scans hw:0..7 for the first rawmidi input; an
     // explicit "hw:N,0,0" pins it (aloop.conf midi_device).
     std::string midiDevice = "auto";
@@ -106,6 +110,11 @@ public:
         float    coreBusyPct[4] = {0,0,0,0};
         uint64_t xruns = 0;
         bool     linkSynced = false;
+        // Raw peer count, not just synced>0: the 2+2-device mesh test in
+        // docs/LINK-MESH-TESTING.md needs to tell 1 peer from 3.
+        int      linkPeers  = 0;
+        // Session transport (start-stop-sync is enabled, so this is shared).
+        bool     linkPlaying = false;
         double   bpm = 0.0;
         bool     apMode = false;    // hosting AP vs joined STA
         bool     monitorMode = false;   // SHIFT held (apcKey25.cpp:361's p.monitorMode) -- loops folded into effects

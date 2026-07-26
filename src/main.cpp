@@ -121,6 +121,14 @@ aloop::AudioConfig loadConfig(const char* path) {
         else if (sscanf(line, " instrument_device = %199s", s) == 1) cfg.instrumentDevice = s;
         // remote-control shared secret ([remote] token=); unset = listener disabled.
         else if (sscanf(line, " token = %199s", s) == 1) cfg.remoteToken = s;
+        // [link] enabled. Previously parsed NOWHERE while link.start() got a
+        // hardcoded true, so the key was a silent decoy. Parsed as a WORD, not
+        // %d: the shipped value is `true`, and sscanf("%d") returns 0 against
+        // that (verified) -- so an int parse would have left it a decoy still.
+        else if (sscanf(line, " enabled = %199s", s) == 1) {
+            cfg.linkEnabled = (strcmp(s, "true") == 0 || strcmp(s, "1") == 0 ||
+                               strcmp(s, "yes") == 0  || strcmp(s, "on") == 0);
+        }
     }
     fclose(f);
     return cfg;
@@ -157,7 +165,7 @@ int main(int argc, char** argv) {
     // Ableton Link on the control thread (never the audio cores). Telemetry is
     // started AFTER the audio thread below so it can read the live snapshot.
     aloop::LinkBridge link;
-    link.start((double)cfg.sampleRate, /*enabled=*/true);
+    link.start((double)cfg.sampleRate, cfg.linkEnabled);
     // See pinLinkThreadsToControlCore's own comment: steers Link's internal
     // threads off the isolated audio cores (1, 3) onto the control core (2),
     // matching kernel/rt-tune.sh's CONTROL_CORE. Core 2 is currently hardcoded

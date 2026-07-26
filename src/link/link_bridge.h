@@ -15,6 +15,13 @@
 
 namespace aloop {
 
+// The shared Link phrase length, in beats. 16 beats = 4 bars at 4/4, the user's
+// standing requirement that every looper length be a multiple/division of.
+// ../esp-idf-link pins the SAME value as `#define LINK_QUANTUM 16.0` (main.h);
+// the two MUST agree or the projects disagree on phase — see AGENTS.md
+// "aloop <-> esp-idf-link mesh: paired invariants".
+constexpr double kLinkQuantum = 16.0;
+
 // The subset of Link state the loop engine needs (mirrors looper LiveParams).
 struct LinkSnapshot {
     double  bpm          = 120.0;
@@ -22,6 +29,10 @@ struct LinkSnapshot {
     bool    phaseValid   = false;
     int64_t beatPhaseMicroBeats = 0;   // sub-beat phase, fixed-point (looper units)
     int64_t quantumMicroBeats   = 0;
+    // Transport, shared across peers because start/stop sync is enabled. Reading
+    // this is what makes that capability real rather than advertised-and-ignored.
+    bool    isPlaying    = false;
+    int     peerCount    = 0;       // raw count, not just synced>0 (mesh testing)
 };
 
 class LinkBridge {
@@ -42,7 +53,16 @@ public:
 
     // Propose our internal tempo to the session (when a loop defines the phrase),
     // mirroring looper's tempo-set burst. Called from control, not audio.
+    //
+    // TEMPO AUTHORITY: this writes the tempo for EVERY peer in the session, so it
+    // is deliberately not called unconditionally. See the .cpp — a propose is
+    // skipped when peers are already present and have a tempo we did not set,
+    // so two devices cannot fight over the session tempo.
     void proposeTempo(double bpm);
+
+    // Share OUR transport state with the session (start-stop-sync is enabled, and
+    // a peer that only ever consumes transport is half-wired). Control thread.
+    void setTransportPlaying(bool playing);
 
 private:
     // The official ableton::Link instance lives here (control-thread owned).

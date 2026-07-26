@@ -74,6 +74,22 @@ static double deriveTempoBpm(double seconds) { return deriveTempoQuant(seconds).
 
 constexpr long kShiftFoldBlockLatencySamples = 64;
 
+// Publish OUR transport to the Link session whenever it changes. Start-stop-sync
+// is enabled on both this project and ../esp-idf-link, but a peer that only ever
+// READS isPlaying is half-wired -- the ESP acts on a peer's transport (MIDI
+// Start/Stop + all-notes-off) and would never hear from us otherwise.
+// "Playing" for aloop = at least one looper is playing.
+void ApcGrid::publishTransport(LinkBridge* link) {
+    if (!link) return;
+    bool anyPlaying = false;
+    for (int lp = 0; lp < kLooperCount; lp++) {
+        if (m_looperPlaying[lp]) { anyPlaying = true; break; }
+    }
+    if (anyPlaying == m_lastPublishedPlaying) return;   // edge only
+    m_lastPublishedPlaying = anyPlaying;
+    link->setTransportPlaying(anyPlaying);
+}
+
 void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, LinkBridge* link, AudioThread* audio) {
     if (m_looperRecording[looper]) {
         setLooper(ps, looper, "rec", 0.0f);
@@ -157,6 +173,9 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
         setLooper(ps, looper, "play", 1.0f);
         m_looperPlaying[looper] = true;
     }
+    // Every branch above can change whether ANY looper is playing (FINISH starts
+    // one, pause/resume toggles one). Publish the resulting transport to Link.
+    publishTransport(link);
 }
 
 void ApcGrid::forgetLooperFromPresets(int looper) {
@@ -336,7 +355,7 @@ void ApcGrid::onLiveEngageToggle(ParamStore& ps) {
         ps.setByName("fx/pitchbend_engaged", 0.0f);
     }
 }
-void ApcGrid::onStopImmediate(ParamStore& ps) {
+void ApcGrid::onStopImmediate(ParamStore& ps, LinkBridge* link) {
     for (int lp = 0; lp < kLooperCount; lp++) {
         if (m_looperRecording[lp]) {
             setLooper(ps, lp, "rec", 0.0f);
@@ -345,8 +364,9 @@ void ApcGrid::onStopImmediate(ParamStore& ps) {
         setLooper(ps, lp, "play", 0.0f);
         m_looperPlaying[lp] = false;
     }
+    publishTransport(link);
 }
-void ApcGrid::onClearAll(bool held, ParamStore& ps) {
+void ApcGrid::onClearAll(bool held, ParamStore& ps, LinkBridge* link) {
     ps.setByName("cmd/clearall", held ? 1.0f : 0.0f);
     if (!held) return;
     for (int lp = 0; lp < kLooperCount; lp++) {
@@ -373,6 +393,7 @@ void ApcGrid::onClearAll(bool held, ParamStore& ps) {
     m_masterLenSamples = 0;
     ps.setByName("cmd/master_len", 0.0f);
     ps.setByName("cmd/recorded_bpm", 0.0f);
+    publishTransport(link);
 }
 void ApcGrid::onKeybedNoteOn(int note, ParamStore& ps, Sampler* sampler) {
     if (sampler) {

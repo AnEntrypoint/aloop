@@ -187,7 +187,7 @@ public:
     // LOOP_COMMAND_STOP_IMMEDIATE (apcKey25Notes.cpp:171) -- stops ALL
     // playback AND aborts any in-progress recording (unshifted STOP_ALL only
     // stops playback, matching audio_thread.cpp's existing cmd/stopall).
-    void onStopImmediate(ParamStore& ps);
+    void onStopImmediate(ParamStore& ps, class LinkBridge* link = nullptr);
 
     // PLAY button (note 0x5B/91, channel 0) unshifted = CLEAR_ALL
     // (LOOP_COMMAND_CLEAR_ALL, apcKey25Notes.cpp:175). WITNESSED live: this
@@ -200,7 +200,7 @@ public:
     // pause/resume branches of applyRecPlayCycle instead of re-arming record
     // on what the DSP now considers empty loopers -- exactly the reported
     // "doing a new set didn't work" after clear. Reset all shadow state here.
-    void onClearAll(bool held, ParamStore& ps);
+    void onClearAll(bool held, ParamStore& ps, class LinkBridge* link = nullptr);
 
     // Microrepeat latch notes 82-86 (channel 0 only); div in {1,2,4,8,16}, 0=off.
     void onMicrorepeatOn(int note, ParamStore& ps);
@@ -307,6 +307,9 @@ private:
     bool m_looperRecording[kLooperCount] = {};    // true from arm-press until the finish-press (../looper: TRACK_STATE_RECORDING)
     unsigned m_recordStartMs[kLooperCount] = {};  // wall-clock ms at the ARM press, for computing actual recorded duration at finish
     bool m_looperShiftHeldDuringTake[kLooperCount] = {};
+    // Last transport state we published to the Link session, so publishTransport
+    // only writes on a real edge instead of every call.
+    bool m_lastPublishedPlaying = false;
 
     bool m_presetHeld[kPresetCount] = {};
     unsigned m_presetHoldStart[kPresetCount] = {};
@@ -372,6 +375,8 @@ private:
     void capturePreset(int p, ParamStore& ps);
     void applyPreset(int p, ParamStore& ps);
     void forgetLooperFromPresets(int looper);
+    // Publish our transport (any looper playing) to the Link session on change.
+    void publishTransport(class LinkBridge* link);
 };
 
 } // namespace aloop

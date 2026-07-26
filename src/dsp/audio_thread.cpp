@@ -367,6 +367,8 @@ static void* worker(void*) {
                 LinkSnapshot ls = g_link->audioRead();
                 g_telem.linkSynced = ls.synced;
                 g_telem.bpm = ls.bpm;
+                g_telem.linkPeers = ls.peerCount;
+                g_telem.linkPlaying = ls.isPlaying;
                 if (ls.synced && ls.bpm > 1.0) {
                     linkDrivingLength = true;
                     double beatsPerBar = 4.0;

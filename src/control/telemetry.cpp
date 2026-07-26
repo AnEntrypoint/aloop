@@ -91,13 +91,15 @@ void Telemetry::publish() {
     char json[1024];
     int n = snprintf(json, sizeof json,
         "{\"core_busy\":[%.0f,%.0f,%.0f,%.0f],\"xruns\":%llu,"
-        "\"link\":{\"synced\":%s,\"bpm\":%.1f},\"wifi\":\"%s\",\"monitor_mode\":%s,"
+        "\"link\":{\"synced\":%s,\"bpm\":%.1f,\"peers\":%d,\"playing\":%s},"
+        "\"wifi\":\"%s\",\"monitor_mode\":%s,"
         "\"glitch_engaged\":%s,"
         "\"audio_peak\":{\"in\":%.4f,\"out\":%.4f},\"eff_speed\":%.4f,"
         "\"loopers\":{\"rec\":%u,\"play\":%u,\"vol\":%s,\"level\":%s,\"wraplen\":%s}}",
         t.coreBusyPct[0], t.coreBusyPct[1], t.coreBusyPct[2], t.coreBusyPct[3],
         (unsigned long long)t.xruns,
         t.linkSynced ? "true" : "false", t.bpm,
+        t.linkPeers, t.linkPlaying ? "true" : "false",
         t.apMode ? "ap" : "sta",
         t.monitorMode ? "true" : "false",
         t.glitchEngaged ? "true" : "false",
