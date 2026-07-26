@@ -20,6 +20,9 @@ on:
       - '.github/workflows/build-image.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   alpine-image:
     runs-on: ubuntu-latest
@@ -27,7 +30,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Tools (mtools, dosfstools, fdisk, file — unprivileged FAT assembly)
-        run: sudo apt-get update && sudo apt-get install -y mtools dosfstools fdisk curl gzip file
+        run: sudo apt-get update && sudo apt-get install -y mtools dosfstools fdisk curl gzip file zip
 
       # Pull the aloop binary + LV2 bundle produced by build-binary / build-lv2.
       # They live in DIFFERENT workflows' runs, so fetch each from the latest
@@ -35,7 +38,7 @@ jobs:
       # its own run's artifacts). Missing artifacts don't fail the image build — it
       # still produces a valid bootable layout — but the validate step WARNS, and a
       # release build requires them.
-      - name: Download aloop binary + LV2 bundle from their latest green runs
+      - name: Download aloop binary + LV2 bundles from their latest green runs
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -47,18 +50,28 @@ jobs:
                     --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
           echo "binary run: ${BIN_RUN:-none}   lv2 run: ${LV2_RUN:-none}"
           [ -n "$BIN_RUN" ] && gh run download "$BIN_RUN" -n aloop-aarch64-musl -D dl/bin || echo "no binary artifact yet"
-          [ -n "$LV2_RUN" ] && gh run download "$LV2_RUN" -n home-fx-lv2 -D dl/lv2 || echo "no lv2 artifact yet"
+          # BOTH lv2 jobs from the SAME build-lv2.yml run: home-fx-lv2 (contains
+          # aloop.lv2, EXCLUDED by lib-boot-tree.sh's own name filter, see its
+          # comment) and guitar-lofi-fx-lv2 (contains guitar_lofi_fx.lv2, the
+          # actual wanted standalone effect). Downloading only home-fx-lv2 here
+          # meant every image this workflow ever built shipped with ZERO home-FX
+          # LV2 effects, silently, since aloop.lv2 was the only bundle present
+          # and it's deliberately filtered back out -- fixed by fetching both
+          # into sibling dirs under dl/lv2, matching the find -maxdepth 2 shape
+          # lib-boot-tree.sh's boot_tree_apkovl expects.
+          [ -n "$LV2_RUN" ] && gh run download "$LV2_RUN" -n home-fx-lv2 -D dl/lv2/home-fx-lv2 || echo "no home-fx-lv2 artifact yet"
+          [ -n "$LV2_RUN" ] && gh run download "$LV2_RUN" -n guitar-lofi-fx-lv2 -D dl/lv2/guitar-lofi-fx-lv2 || echo "no guitar-lofi-fx-lv2 artifact yet"
           find dl -type f | head -20
 
       - name: Locate payload
         id: payload
         run: |
           BIN=$(find dl/bin -type f -name aloop 2>/dev/null | head -n1 || true)
-          LV2=$(find dl/lv2 -maxdepth 3 -name '*.lv2' -type d 2>/dev/null | head -n1 || true)
-          LV2DIR=""; [ -n "$LV2" ] && LV2DIR=$(dirname "$LV2")
+          LV2DIR=""; [ -d dl/lv2 ] && [ -n "$(find dl/lv2 -maxdepth 2 -name '*.lv2' -type d 2>/dev/null)" ] && LV2DIR="dl/lv2"
           echo "bin=$BIN"   >> "$GITHUB_OUTPUT"
           echo "lv2dir=$LV2DIR" >> "$GITHUB_OUTPUT"
           echo "found binary: '${BIN:-<none>}'  lv2 dir: '${LV2DIR:-<none>}'"
+          find dl/lv2 -maxdepth 2 -name '*.lv2' -type d 2>/dev/null
 
       - name: Build the flashable image (image/build-image.sh)
         env:
@@ -117,3 +130,66 @@ jobs:
           path: aloop-netboot.tar.gz
           if-no-files-found: error
           retention-days: 3
+
+      # Zip of the SAME validated FAT partition contents (firmware + kernel +
+      # DTBs + apkovl + SD-flavored config, no ip=dhcp) for direct extraction
+      # onto a freshly-formatted FAT32 SD card -- the format-in-place flow
+      # (format E: FAT32, unzip onto it) rather than the raw-dd aloop-pi4.img.gz
+      # path above. Extracted straight out of the already-built+validated
+      # aloop-pi4.img via the same mtools offset-view validate-image.sh uses,
+      # so this can never independently drift from what was actually validated.
+      - name: Extract SD boot tree from the validated image and zip it
+        run: |
+          OFF=$((2048 * 512))
+          MT=$(mktemp)
+          printf 'drive z: file="%s/aloop-pi4.img" offset=%s\n' "$PWD" "$OFF" > "$MT"
+          export MTOOLSRC="$MT"
+          rm -rf sd-boot-tree
+          mkdir -p sd-boot-tree
+          mcopy -s z:/ sd-boot-tree/
+          ls -la sd-boot-tree | head -20
+          (cd sd-boot-tree && zip -r -9 -q ../aloop-sdcard.zip .)
+          ls -la aloop-sdcard.zip
+
+      # A release must never publish a payload-less "layout only" build as
+      # "latest" -- image/validate-image.sh deliberately WARNS (not FAILS) on a
+      # missing binary/LV2, since that's a legitimate structural-only build. The
+      # release step needs a stricter, hard gate: refuse to publish unless a
+      # real aarch64 binary was actually bundled this run.
+      - name: Assert the image actually carries a real payload before releasing
+        id: payload_check
+        run: |
+          if [ -z "${{ steps.payload.outputs.bin }}" ]; then
+            echo "no aloop binary was found this run -- refusing to publish a payload-less release" >&2
+            echo "has_payload=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_payload=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish rolling "latest" GitHub Release with the SD card zip
+        if: |
+          steps.payload_check.outputs.has_payload == 'true' &&
+          github.ref == 'refs/heads/main' &&
+          (github.event_name == 'push' ||
+           (github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success') ||
+           github.event_name == 'workflow_dispatch')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: aloop latest (auto-updated on every green main build)
+          body: |
+            Automatically rebuilt SD card image on every successful push to `main`.
+            Commit: ${{ github.sha }}
+
+            **aloop-sdcard.zip** — extract onto a freshly-formatted FAT32 SD card
+            (firmware + kernel + DTBs + apkovl + config, ready to boot a Pi 4).
+
+            **aloop-pi4.img.gz** — raw dd-able image (`dd if=aloop-pi4.img of=/dev/sdX bs=4M conv=fsync`
+            after `gunzip`, or Raspberry Pi Imager).
+          prerelease: true
+          make_latest: true
+          files: |
+            aloop-sdcard.zip
+            aloop-pi4.img.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

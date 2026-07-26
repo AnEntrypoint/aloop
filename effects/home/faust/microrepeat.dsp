@@ -27,9 +27,9 @@ MR_MAX = 48000;
 // sliceLen=sliceBlocks*64 capped 48000. Computed as a constant per render.
 // DIV=0 (off) must not divide by zero — guard the divisor to 1 (sliceLen is
 // irrelevant when active is false).
-divSafe     = max(1, int(DIV / 2));
+divSafe     = max(1, DIV);
 beatBlocks  = int(MLB / 16);
-sliceBlocks = max(1, int(beatBlocks / divSafe));
+sliceBlocks = max(1, int(beatBlocks / divSafe)) * 2;
 sliceLenRaw = sliceBlocks * BS;
 sliceLen    = min(MR_MAX, sliceLenRaw);
 

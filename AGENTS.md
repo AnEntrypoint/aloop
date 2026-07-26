@@ -1099,11 +1099,26 @@ note-to-div table in `apc_grid.cpp` is untouched, so which physical pad
 triggers which relative step doesn't change, only how long each resulting
 slice is.
 
-Fix: `divSafe = max(1, int(DIV / 2))` (was `max(1, DIV)`) — halving the
-effective divisor doubles `sliceBlocks`, doubling `sliceLen` for every
-`DIV` value except `DIV=1`, where `int(1/2)=0` floors back up to `1` via
-the `max(1, ...)` guard (correctly a no-op, since `div=1` is already the
-widest step and "one step wider" than the widest is undefined). Verified:
+Fix, ROUND 2 (round 1 was wrong, caught live): the first attempt used
+`divSafe = max(1, int(DIV / 2))` — halving the divisor BEFORE the
+division. This collapsed `div=1` and `div=2` to the identical `divSafe=1`
+(`int(1/2)=0` floors to `1` via the `max` guard; `int(2/2)=1` is already
+`1`), so the widest and second-widest glitch steps produced the SAME
+slice length — user confirmed this live ("the widest glitch and the
+second widest glitch is the same length"). The reasoning that `div=1`
+should be a no-op (nothing wider above it) was wrong: the user's actual
+spec is every step, including the current widest, shifts one notch
+wider — there is no floor.
+
+Fixed, correctly: `sliceBlocks = max(1, int(beatBlocks / divSafe)) * 2`
+with `divSafe` back to the original `max(1, DIV)` — multiply the
+ALREADY-COMPUTED slice length by 2 instead of halving the divisor going
+in. A multiply after the integer division can never collide the way
+halving the divisor before it did (there's no floor step for it to hit).
+`div=16` now lands exactly on old `div=8`'s slice length (matches round
+1's intent for every step except the top), and `div=1` now genuinely
+doubles past its own old value instead of staying pinned — no two
+adjacent steps can ever produce the same `sliceBlocks` again. Verified:
 native Faust compile clean standalone AND as part of the full production
 `dsp/aloop.dsp` stack (this file is imported by `effects_runtime.dsp`'s
 `microStage` and separately by the constants-baked `chain.dsp` reference
