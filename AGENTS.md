@@ -1181,6 +1181,52 @@ Four independent defects, any one of which alone prevented meshing:
    with `Syntax error: "(" unexpected`. So the AP→STA path could not run at
    all. Keep this file POSIX-clean; check with `dash -n src/net/autoap.sh`.
 
+### By-the-book Ableton Link integration checklist (both projects)
+
+Derived from a full audit of both trees against Link's own header docs. Check
+any change to either project's Link usage against this list.
+
+- **Thread-correct session-state API.** `captureAppSessionState()` /
+  `commitAppSessionState()` from any non-audio thread;
+  `captureAudioSessionState()` / `commitAudioSessionState()` from the audio
+  thread ONLY. aloop deliberately calls only the App variants and hands the
+  audio thread a lock-free double-buffered `LinkSnapshot` instead (ADR-005) —
+  that is a legitimate alternative, but it means audio-side beat/phase is up
+  to one control-tick stale, so shortening that interval is the lever if
+  phase accuracy is ever questioned.
+- **`enableStartStopSync(true)` must be paired with actually reading
+  `isPlaying()` AND with setting it.** A peer that enables the capability but
+  only consumes transport is half-wired; one that never calls
+  `setIsPlaying()` is invisible to peers' transport. aloop now does both
+  (`LinkSnapshot::isPlaying` + `LinkBridge::setTransportPlaying`, published on
+  every play-state edge from `ApcGrid`). esp-idf-link only CONSUMES, and that
+  is correct for it — it has no local play/stop control at all, it translates
+  the session's transport into outgoing MIDI Start/Stop for downstream gear.
+- **The three notification callbacks** — `setNumPeersCallback(std::size_t)`,
+  `setTempoCallback(double)`, `setStartStopCallback(bool)`. Link's own header
+  documents each as "invoked on a Link-managed thread" and **"Realtime-safe:
+  no"**, so a callback may do bounded logging / touch atomics and nothing
+  else: never allocate, never lock, never reach into the audio thread.
+- **Tempo authority.** `setTempo` rewrites the tempo for EVERY peer. Calling
+  it unconditionally lets two devices fight. aloop's `proposeTempo` now
+  refuses when peers are already present and aloop never set the tempo
+  itself; esp-idf-link only sets tempo on an explicit LTMP command.
+- **Quantum is a shared constant, not a local literal.** `kLinkQuantum` in
+  `src/link/link_bridge.h` and `LINK_QUANTUM` in esp-idf-link's `main.h` are
+  both `16.0` and must move together.
+- **Peer count belongs in telemetry, not just a bool.** `synced` (peers>0)
+  cannot distinguish 1 peer from 3, which the multi-device mesh test needs.
+  aloop's `status.json` now carries `link.peers` and `link.playing`.
+- **Interface readiness is a real race.** Link opens its multicast socket
+  during `enable()`. esp-idf-link waits 500ms before constructing Link and
+  re-asserts IGMP membership for ~10s after every connection, its own comment
+  noting a single join at GOT_IP can race netif readiness so membership does
+  not stick. On aloop the equivalent hazard was structural: the `aloop` and
+  `autoap` OpenRC services both declared only `after local` and neither
+  referenced the other, so Link could start before `wlan0` had an address.
+  Fixed by `depend() { after local autoap; ... }` plus a bounded
+  `waitForNetworkInterface()` before `link.start()`.
+
 ### Still unproven: AP-mode multicast forwarding on the Pi
 
 Whether Link's multicast actually crosses between the Pi's own AP and its
