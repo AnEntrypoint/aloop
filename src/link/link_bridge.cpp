@@ -30,8 +30,15 @@ void LinkBridge::start(double sampleRate, bool enabled) {
 #ifdef ALOOP_HAVE_LINK
     auto* l = new ableton::Link(120.0);   // start at 120 BPM until synced
     l->enable(true);
+    // Share transport start/stop across peers, matching ../esp-idf-link's own
+    // g_link->enableStartStopSync(true). enable() alone carries tempo and
+    // beat/phase; without start-stop-sync the two projects agree on tempo but
+    // NOT on transport state, so one can be rolling while the other is stopped.
+    // Both projects must set this or the pairing is asymmetric -- see AGENTS.md
+    // "aloop <-> esp-idf-link mesh: paired invariants".
+    l->enableStartStopSync(true);
     link_ = l;
-    fprintf(stderr, "[link] Ableton Link enabled (official lib, UDP multicast)\n");
+    fprintf(stderr, "[link] Ableton Link enabled (official lib, UDP multicast, start-stop-sync on)\n");
 #else
     fprintf(stderr, "[link] built without the Link submodule — Link inactive\n");
 #endif

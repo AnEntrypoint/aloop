@@ -1124,3 +1124,74 @@ native Faust compile clean standalone AND as part of the full production
 `microStage` and separately by the constants-baked `chain.dsp` reference
 file — both pick up the fix automatically since neither declares its own
 copy of the divisor logic).
+
+## aloop <-> esp-idf-link mesh: paired invariants (change BOTH or the mesh splits)
+
+aloop (Pi 4) and `../esp-idf-link` (ESP32, the "ticker" box) form ONE ad-hoc
+single-AP mesh so Ableton Link's multicast peer discovery reaches every
+device. There is no credential provisioning: exactly one device hosts the
+open SSID `ticker` and everyone else joins it as a station. Every value
+below exists in BOTH trees — changing it in one project alone silently
+stops the two from meshing, with no error on either side.
+
+| Invariant | aloop | esp-idf-link |
+|---|---|---|
+| Mesh SSID | `src/net/config/hostapd.conf` `ssid=ticker`, `wpa_supplicant.conf` `ssid="ticker"` | `main.cpp` `wifi_scan_best_bssid("ticker")` / `wifi_start_link_ap("ticker")` |
+| Auth | open (`key_mgmt=NONE`; `wpa=` lines commented out) | `wifi_connect_sta("ticker", "")` (empty password) |
+| AP address / DHCP | `192.168.4.1/24`, dnsmasq `.2-.20` | `esp_netif_set_ip_info` `192.168.4.1/255.255.255.0` |
+| Channel | `hostapd.conf` `channel=6` | SoftAP ch6 |
+| Link multicast | Link's own hardcoded `224.76.78.75:20808` | same (hardcoded in Link itself — cannot drift) |
+| Link quantum | `link_bridge.cpp` `quantum = 16.0` | `main.h` `#define LINK_QUANTUM 16.0` |
+| Start/stop sync | `link_bridge.cpp` `enableStartStopSync(true)` | `main.cpp` `g_link->enableStartStopSync(true)` |
+| Host election | lowest MAC/BSSID wins | lowest MAC/BSSID wins |
+
+`PHRASE_BEATS 64.0` in esp-idf-link is NOT the Link quantum — it is that
+project's own transport-correction/SPP boundary (16 bars). It intentionally
+differs from `LINK_QUANTUM 16.0` and does not affect phase agreement.
+
+### Why the host election is MAC-ordered, not "host if scan found nothing"
+
+Two devices cold-booting together can each scan before the other's AP
+exists, so a naive "nothing found -> host" makes BOTH host, producing two
+isolated L2 domains Link can never cross. Both projects instead hold for a
+duration strictly monotonic in their own MAC (lowest MAC ≈ 0s, highest
+≈ 6s), rescanning every second during the hold and joining the instant a
+peer's AP appears. This gives a total order needing no cross-device
+visibility during the hold. A genuinely lone device just hosts when its
+own hold expires. Both supervisors additionally yield if another `ticker`
+AP with a strictly-lower BSSID appears — but never while clients are
+attached, since that would drop peers mid-session.
+
+### `autoap.sh` was structurally broken before this pass (all WITNESSED)
+
+Four independent defects, any one of which alone prevented meshing:
+1. **Wrong SSID.** It hosted `aloop`, never `ticker` — the two projects
+   hosted different networks and could never see each other.
+2. **No joinable network.** `wpa_supplicant.conf` had ZERO active
+   `network={}` blocks (the only `ssid=` line was inside a commented-out
+   example), so `known_net_available()` could never associate and the
+   script always fell through to hosting.
+3. **AP-mode rescan matched a placeholder.** The switchback test built its
+   pattern with `grep -oE 'ssid="[^"]*"' wpa_supplicant.conf` — grep does
+   not skip comments, so the pattern file contained the literal
+   `YourHomeWiFi`. In AP mode it scanned for a network that cannot exist.
+4. **That same line was a hard syntax error on the device.** It used
+   `grep -qFf <(...)` — process substitution is a bashism; `autoap.sh` is
+   `#!/bin/sh` = busybox ash on Alpine. Verified: a POSIX shell rejects it
+   with `Syntax error: "(" unexpected`. So the AP→STA path could not run at
+   all. Keep this file POSIX-clean; check with `dash -n src/net/autoap.sh`.
+
+### Still unproven: AP-mode multicast forwarding on the Pi
+
+Whether Link's multicast actually crosses between the Pi's own AP and its
+associated stations on Broadcom `brcmfmac` is UNVERIFIED. `ap_isolate=0` is
+set, which may be sufficient — but the ESP32's SoftAP needed a full
+unicast relay beyond isolation (`wifi_config.cpp`'s
+`link_multicast_relay_task` re-emits each Link datagram to the group, to
+the AP's own IP, and unicast to every associated station, preserving the
+original source IP because Link needs it for direct peer connect). Do NOT
+port that relay to aloop speculatively — confirm the gap is real on real
+hardware first (`docs/LINK-MESH-TESTING.md` Tests 1-3). If it is real, the
+Linux-side fix is a networking-layer daemon fanning out to the dnsmasq
+lease IPs alongside `hostapd`; it does not require touching
+`link_bridge.cpp`.
