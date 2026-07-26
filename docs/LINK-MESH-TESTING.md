@@ -156,6 +156,31 @@ aloop's `src/net/autoap.sh`:
   esp-idf-link's "only rescans while it has zero AP clients" caution (to
   avoid dropping already-connected peers by flapping off-channel).
 
+## Run it with one command instead of two consoles
+
+Both sides now expose comparable, machine-readable Link state, so the tests
+below no longer need a human watching a serial console next to a curl:
+
+- **aloop**: `/run/aloop/status.json` carries
+  `link.{synced,bpm,peers,playing}` plus `wifi: "ap"|"sta"`.
+- **esp-idf-link**: a UDP status responder on port **20812**
+  (`main/link_sync.cpp`'s `status_responder_task`) replies to any datagram
+  with one JSON line: `peers`, `bpm`, `playing`, `beat`, `phase`,
+  `quantum`, `ap`.
+
+`test/hardware/link-mesh-status.js` polls both and prints one comparable row
+per device:
+
+```
+node test/hardware/link-mesh-status.js --aloop 192.168.4.1 --esp 192.168.4.2
+node test/hardware/link-mesh-status.js --aloop 192.168.137.100 --esp 192.168.4.3 --watch
+```
+
+`--watch` repolls every 2s, which is what Test 3 wants while power-cycling
+devices: you can watch exactly one device settle on `role=ap`, everyone
+else on `role=sta`, and all of them converge on the same `bpm` and a peer
+count of (devices - 1).
+
 ## Next step
 
 Run Test 1, 2, and 3 against real hardware and report the actual peer-count
