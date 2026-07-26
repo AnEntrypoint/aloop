@@ -45,6 +45,10 @@ struct AudioConfig {
     // [link] enabled = 0|1 in aloop.conf. Default on: Ableton Link is how this
     // device meshes with ../esp-idf-link and other peers.
     bool linkEnabled = true;
+    // Interface Link's multicast socket rides on, and how long to wait at
+    // startup for it to carry an address before constructing Link anyway.
+    std::string linkIface = "wlan0";
+    int linkIfaceWaitSec = 20;
 
     // MIDI input device: "auto" scans hw:0..7 for the first rawmidi input; an
     // explicit "hw:N,0,0" pins it (aloop.conf midi_device).

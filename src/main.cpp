@@ -15,6 +15,9 @@
 #include "control/remote_control.h"
 
 #include <sys/mman.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
@@ -56,6 +59,36 @@ void onSignal(int) { g_run.store(false); }
 // kernel/rt-tune.sh's existing "steer non-audio work off the isolated
 // cores" strategy for IRQs, applied here to these two specific threads by
 // name since Link creates them internally with no host-visible handle.
+// Bounded wait for `iface` to have an IPv4 address. Returns true if it got one.
+// Polls getifaddrs once a second rather than blocking on a netlink event: this
+// runs once at startup on the control path, so simplicity beats precision, and
+// a miss is non-fatal (Link still starts and keeps discovering).
+bool waitForNetworkInterface(const char* iface, int maxSeconds) {
+    for (int elapsed = 0; elapsed <= maxSeconds; elapsed++) {
+        struct ifaddrs* ifa = nullptr;
+        bool haveAddr = false;
+        if (getifaddrs(&ifa) == 0) {
+            for (struct ifaddrs* p = ifa; p; p = p->ifa_next) {
+                if (!p->ifa_addr || !p->ifa_name) continue;
+                if (p->ifa_addr->sa_family != AF_INET) continue;
+                if (strcmp(p->ifa_name, iface) != 0) continue;
+                if (!(p->ifa_flags & IFF_UP)) continue;
+                haveAddr = true;
+                break;
+            }
+            freeifaddrs(ifa);
+        }
+        if (haveAddr) {
+            fprintf(stderr, "[link] %s is up with an address after %ds — starting Link\n", iface, elapsed);
+            return true;
+        }
+        if (elapsed < maxSeconds) sleep(1);
+    }
+    fprintf(stderr, "[link] warning: %s had no IPv4 address after %ds — starting Link anyway "
+                    "(peer discovery may take longer)\n", iface, maxSeconds);
+    return false;
+}
+
 void pinLinkThreadsToControlCore(int controlCore) {
     DIR* d = opendir("/proc/self/task");
     if (!d) return;
@@ -129,6 +162,10 @@ aloop::AudioConfig loadConfig(const char* path) {
             cfg.linkEnabled = (strcmp(s, "true") == 0 || strcmp(s, "1") == 0 ||
                                strcmp(s, "yes") == 0  || strcmp(s, "on") == 0);
         }
+        // [link] iface / iface_wait_sec: which interface Link's multicast rides
+        // on, and the bounded startup wait for it to carry an address.
+        else if (sscanf(line, " iface = %199s", s) == 1) cfg.linkIface = s;
+        else if (sscanf(line, " iface_wait_sec = %d", &v) == 1) cfg.linkIfaceWaitSec = v;
     }
     fclose(f);
     return cfg;
@@ -164,6 +201,18 @@ int main(int argc, char** argv) {
 
     // Ableton Link on the control thread (never the audio cores). Telemetry is
     // started AFTER the audio thread below so it can read the live snapshot.
+    //
+    // Wait (bounded) for the WiFi interface to actually carry an address before
+    // constructing Link. Link opens its UDP multicast socket during enable(), and
+    // an interface with no address yet means that socket binds against a
+    // not-ready netif -- ../esp-idf-link hit exactly this and defends with a
+    // settle delay plus a repeated IGMP re-join, its own comment noting that a
+    // single join at GOT_IP can race netif readiness so the membership does not
+    // stick. The aloop service is now also ordered `after autoap`, but autoap
+    // backgrounds immediately and association takes seconds, so ordering alone
+    // is not enough. Never fatal: if the interface never comes up we start Link
+    // anyway and let its own periodic peer discovery sort it out.
+    if (cfg.linkEnabled) waitForNetworkInterface(cfg.linkIface.c_str(), cfg.linkIfaceWaitSec);
     aloop::LinkBridge link;
     link.start((double)cfg.sampleRate, cfg.linkEnabled);
     // See pinLinkThreadsToControlCore's own comment: steers Link's internal

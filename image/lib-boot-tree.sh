@@ -180,7 +180,19 @@ respawn_max=0
 # this fix is not claimed to resolve it, only to make memlock actually
 # unlimited for the service as rt-tune.sh always intended.
 rc_ulimit="-l unlimited -r 95"
-depend() { after local; need localmount; }
+# `after autoap`: aloop constructs ableton::Link (and with it Link's UDP
+# multicast socket) during startup. Both services previously declared only
+# `after local` and neither referenced the other, so OpenRC was free to start
+# them in either order or in parallel -- meaning Link could open its socket
+# before autoap had brought wlan0 up or given it an address. ../esp-idf-link
+# treats this exact race as real and defends against it twice (a 500ms
+# interface settle before constructing Link in main.cpp, plus re-asserting
+# IGMP membership for ~10s after every connection in wifi_config.cpp, whose
+# own comment says a single join at GOT_IP can race netif readiness so the
+# membership does not stick). Ordering aloop after autoap is the cheap half of
+# the same defence; src/main.cpp additionally waits for the interface to carry
+# an address before starting Link.
+depend() { after local autoap; need localmount; }
 SVC
   cat > "$OVL/etc/init.d/autoap" <<'SVC'
 #!/sbin/openrc-run
