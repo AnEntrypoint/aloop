@@ -1,9 +1,39 @@
 # aloop <-> esp-idf-link mesh: first-contact test plan
 
-**Status: not yet run.** This is prep for the first-ever test of aloop
+**Status: still not run on hardware — but the code-level blockers it
+assumed are now fixed.** This is prep for the first-ever test of aloop
 (Pi 4, hardware looper) and esp-idf-link (ESP32) Link peers on the same
 network. Nothing below has been executed against real hardware yet — treat
 every "expect" as a hypothesis to falsify, not a known result.
+
+## Update: the two projects could not have meshed at all before
+
+A source-level pass found four independent defects that each alone made
+Test 1 impossible, so any earlier attempt would have failed for reasons
+having nothing to do with the multicast question this doc was written to
+answer. All four are fixed (see AGENTS.md "aloop <-> esp-idf-link mesh:
+paired invariants"):
+
+1. aloop hosted SSID `aloop`; esp-idf-link hosts/joins `ticker`. Different
+   networks. **Now both use `ticker`.**
+2. aloop's `wpa_supplicant.conf` had zero active `network={}` blocks, so it
+   could never join anything and always fell through to hosting. **Now
+   contains a real open `ticker` block.**
+3. `autoap.sh`'s AP-mode rescan matched a commented-out placeholder
+   (`YourHomeWiFi`) because `grep` does not skip comments.
+4. That same line used `grep -qFf <(...)` — process substitution, a
+   bashism, in a `#!/bin/sh` script that runs under busybox ash. Verified a
+   POSIX shell rejects it: `Syntax error: "(" unexpected`. The AP→STA path
+   was a hard syntax error on the device.
+
+aloop's `autoap.sh` also gained the MAC-ordered election and self-healing
+supervisor this doc's "If Test 3 fails" section specified, and
+`LinkBridge::start` now calls `enableStartStopSync(true)` to match
+esp-idf-link. Quantum (`16.0`), open auth, `192.168.4.1/24`, and channel 6
+were each verified already identical across the two projects.
+
+So Tests 1–3 below are now worth actually running: the remaining unknown is
+genuinely the multicast-forwarding question, not configuration drift.
 
 ## Why this doc exists
 
@@ -30,7 +60,9 @@ actually reach a station connected to it?
 | aloop's Pi 4 WiFi chip is Broadcom BCM4343-series (`brcmfmac` driver) | **Confirmed** (docs/MIGRATION-MAP.md cites `CBcm4343Device` as the bare-metal reference this was ported from) |
 | ESP32 SoftAP does not forward multicast between host and stations at all | **Confirmed for ESP32** (esp-idf-link's own `wifi_config.cpp` comments + its unicast-relay workaround exist because of this) |
 | Broadcom `brcmfmac` AP-mode on Linux has the SAME structural gap (not just a client-isolation setting `ap_isolate=0` already addresses) | **UNKNOWN — this is what the live test below determines** |
-| aloop's `autoap.sh` (STA-fail-count -> become AP) avoids a two-devices-both-AP race the way esp-idf-link's MAC-rank election does | **UNKNOWN — no peer-election logic found in autoap.sh; may deadlock if multiple aloop units boot with no existing AP** |
+| aloop's `autoap.sh` avoids a two-devices-both-AP race the way esp-idf-link's MAC-rank election does | **FIXED — it did not, and now does.** The old script hosted purely on a STA-fail counter with no election. `autoap.sh` now ports esp-idf-link's scheme: MAC-ordered hold (0–6s, same bound as its `HOLD_MAX_MS=6000`), rescan-and-join during the hold, and an AP-role yield to any strictly-lower BSSID (never while clients are attached). Hold monotonicity and the BSSID comparator were unit-verified by execution; live multi-device behaviour is still Test 3. |
+| Both projects host the same SSID / auth / subnet / channel / Link quantum | **Confirmed by source comparison** — `ticker`, open (`key_mgmt=NONE` vs empty-password join), `192.168.4.1/24`, ch6, quantum `16.0`. Tabulated in AGENTS.md as paired invariants. |
+| Both projects enable Link start-stop-sync | **FIXED** — esp-idf-link always did; aloop did not (`grep` found no `enableStartStopSync` in `src/`). Added to `LinkBridge::start`; compiled green on aarch64/musl CI. |
 
 ## Test 1: does standard Link discovery complete at all, AP role = aloop
 
