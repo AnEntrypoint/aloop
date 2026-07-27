@@ -1407,6 +1407,31 @@ xruns. Note `rc-service autoap status` reporting `started` is the real signal
 here — a `crashed` status with a plausible-looking `ip addr` is exactly what
 this failure looked like for its whole lifetime.
 
+### Anything newly vendored into the apkovl needs adding to BOTH `tar --mode='+x'` lists, or it ships non-executable
+
+NTFS does not carry a Unix exec bit, so `chmod +x` in the overlay is a silent
+no-op on this Windows dev host. Both packaging passes compensate with an
+explicit `tar --mode='+x' -rf ...` re-append listing every executable path by
+name — `image/lib-boot-tree.sh` (apkovl build) and `image/build-netboot.sh`
+(netboot repack). A file not named in those lists ships `-rw-r--r--`.
+
+WITNESSED immediately after vendoring the mesh daemons: the apkovl contained
+`usr/sbin/hostapd` and `usr/sbin/dnsmasq` with correct content and correct
+size, but mode `-rw-r--r--` — they would have been unusable on the device
+despite every other check passing. The tell is in `tar -tvzf` output, NOT in
+an extraction: extracting on Windows loses the bit anyway, so **always read
+modes from the archive listing, never from extracted files**.
+
+`opt/aloop/aloop` legitimately appears TWICE in the listing (a `-rw-r--r--`
+entry then a `-rwxr-xr-x` one) because the `+x` pass re-appends rather than
+overwrites — this is why the existing verifier greps the LAST match. A single
+`-rw-r--r--` entry with no later `-rwxr-xr-x` twin is the failure signature.
+
+Both lists now include `$(find usr/sbin -type f ...)`, and
+`build-netboot.sh` verifies hostapd/dnsmasq explicitly (missing / non-exec /
+OK) rather than only checking the aloop binary — the old verifier passed
+cleanly while shipping two non-executable daemons.
+
 ### Still unproven: AP-mode multicast forwarding on the Pi
 
 Whether Link's multicast actually crosses between the Pi's own AP and its

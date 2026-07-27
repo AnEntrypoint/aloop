@@ -91,6 +91,7 @@ NBOVL_TAR="$WORK/nbovl.tar"
     ./opt/aloop/aloop ./opt/aloop/autoap.sh \
     ./etc/local.d/10-rt-tune.start ./etc/local.d/20-usb-gadget.start \
     ./etc/init.d/aloop ./etc/init.d/autoap \
+    $(find usr/sbin -type f 2>/dev/null | sed 's|^|./|') \
     $(find opt/aloop/test -type f -name '*.sh' 2>/dev/null | sed 's|^|./|') )
 gzip -f "$NBOVL_TAR"
 mv "$NBOVL_TAR.gz" "$BOOT/aloop.apkovl.tar.gz"
@@ -100,6 +101,16 @@ if [ "$NB_LASTMODE" = "-rwxr-xr-x" ]; then
 else
   echo "[netboot] ERROR: aloop binary lost its +x bit during the netboot overlay repack (last entry mode: $NB_LASTMODE) — aloop service will crash-loop"
 fi
+for _x in usr/sbin/hostapd usr/sbin/dnsmasq; do
+  _m=$(tar -tzvf "$BOOT/aloop.apkovl.tar.gz" 2>/dev/null | grep "$_x\$" | tail -1 | cut -c1-10)
+  if [ -z "$_m" ]; then
+    echo "[netboot] ERROR: $_x missing from the apkovl — the ticker AP cannot start"
+  elif [ "$_m" = "-rwxr-xr-x" ]; then
+    echo "[netboot] $_x confirmed +x in archive"
+  else
+    echo "[netboot] ERROR: $_x is NOT executable in the apkovl (mode: $_m) — autoap will fail to host the AP"
+  fi
+done
 
 # --- 4. Netboot-specific cmdline: HTTP-served Alpine root over the network -------
 # WITNESSED on a real Pi 4 (docs/NETBOOT.md): the stock diskless cmdline expects a

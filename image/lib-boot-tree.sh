@@ -288,6 +288,7 @@ SSHCFG
       ./opt/aloop/aloop ./opt/aloop/autoap.sh \
       ./etc/local.d/10-rt-tune.start ./etc/local.d/20-usb-gadget.start \
       ./etc/init.d/aloop ./etc/init.d/autoap \
+      $(find usr/sbin -type f 2>/dev/null | sed 's|^|./|') \
       $(find opt/aloop/test -type f -name '*.sh' 2>/dev/null | sed 's|^|./|') )
   gzip -f "$APKOVL_TAR"
   # $APKOVL_TAR.gz IS $_work/$APKOVL already (APKOVL_TAR = $_work/aloop.apkovl.tar,
