@@ -1227,6 +1227,54 @@ any change to either project's Link usage against this list.
   Fixed by `depend() { after local autoap; ... }` plus a bounded
   `waitForNetworkInterface()` before `link.start()`.
 
+### Ableton's own conformance spec lives in the tree — use it, don't guess
+
+`build/_deps/abletonlink-src/TEST-PLAN.md` is Ableton's official Link Test
+Plan (12 cases). Link's own README names compliance with it as the bar for
+"apps supporting Link behave consistently", calling out *"not hijacking a
+jam's tempo when joining"* specifically. Audit any Link change against it:
+
+- **TEMPO-1..5** — tempo propagates both ways; joining a session must NOT
+  change that session's tempo; enabling/disabling Link with no session must
+  not change our own tempo. aloop's `proposeTempo` authority guard is what
+  satisfies TEMPO-2/3.
+- **TEMPO-4 range is 20..999 bpm**, and the plan exercises both ends. Checked
+  by computation: aloop's follow path (`linkSpeedRatio = recordedBpm /
+  sessionBpm` into `effSpeed`, clamped 0.1..8.0 in `dsp/loop.dsp`) never
+  saturates inside that range — saturation begins only below ~15bpm — so
+  aloop tracks the full range. `../esp-idf-link` originally clamped to
+  20..400 at two sites and silently dropped anything above; widened to
+  20..999 (its 24ppqn clock is beat-position-derived, and 999bpm is only
+  ~12.8% of DIN MIDI bandwidth, so the ceiling was arbitrary).
+- **STARTSTOPSTATE-1/2** — must BOTH listen and send. aloop now does both:
+  `publishTransport` sends on every play-state edge, `applyRemoteTransport`
+  follows a peer's transport with a **quantized start** ("according to its
+  quantization") and an **immediate stop**. The ESP is listen-only by design
+  (no local transport control; it bridges to MIDI Start/Stop).
+- **BEATTIME-1/2** — no beat-time jump when enabling Link with no session,
+  and an app already in a session must have no discontinuity when a peer
+  joins. Worth checking against `cycleOffset`/`absPos` phase derivation.
+- **AUDIOENGINE-1** — the one case with a hard number: recorded audio onset
+  must align with the session pulse to **within 3 ms**. Unverified here, and
+  it interacts with both the SHIFT-fold latency compensation (64 samples =
+  1.333ms) and the one-control-tick staleness of the audio-thread snapshot.
+  If it ever fails, the levers are a shorter publish interval or explicit
+  output-latency compensation — never added buffering.
+
+### Netboot silently outranks the SD card
+
+WITNESSED: a correctly-written SD card looked like a broken fix because the
+Pi 4 firmware prefers network boot when a netboot server is reachable. The
+device fetched `start4.elf`/kernel/initramfs over TFTP and the apkovl over
+HTTP, booting a 19-hour-old image that still hosted SSID `aloop` with none
+of the mesh fixes. Worse, `serve-netboot-win.js` had died while holding its
+`updateInFlight` guard, so `.netboot-serve/` was frozen at an old build and
+`.netboot-update-sha` never advanced — the `finally` and the child's own
+`REBUILD_TIMEOUT_MS` bound only the child process, not a wedged async flow.
+Before trusting ANY on-device observation after an SD update, confirm which
+path actually booted (check `.netboot-serve.log` for fresh TFTP/HTTP lines)
+and compare the running binary's md5 against the card's.
+
 ### Still unproven: AP-mode multicast forwarding on the Pi
 
 Whether Link's multicast actually crosses between the Pi's own AP and its
