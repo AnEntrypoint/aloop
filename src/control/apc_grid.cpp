@@ -79,6 +79,59 @@ constexpr long kShiftFoldBlockLatencySamples = 64;
 // READS isPlaying is half-wired -- the ESP acts on a peer's transport (MIDI
 // Start/Stop + all-notes-off) and would never hear from us otherwise.
 // "Playing" for aloop = at least one looper is playing.
+// Ableton's own Test Plan, STARTSTOPSTATE-1: with Link + Start Stop Sync on, a
+// peer pressing Play must START this app "according to its quantization", and a
+// peer stopping must stop it. aloop previously only READ the session transport
+// into telemetry and acted on none of it, so it satisfied STARTSTOPSTATE-2
+// (sending) but failed -1 (listening).
+//
+// Precedence: a remote transport edge drives loopers that already have content;
+// it never arms a recording and never erases. A local pad press still wins for
+// the looper it touches, because publishTransport() immediately re-publishes our
+// resulting state to the session.
+//
+// Start is deferred to the next quantum boundary rather than applied instantly
+// -- that is what "according to its quantization" means, and it mirrors
+// ../esp-idf-link's own pending-realign-then-honor-at-phrase-boundary shape.
+// Stop is immediate: stopping late is audible, and no spec wants a stop to wait.
+void ApcGrid::applyRemoteTransport(ParamStore& ps, LinkBridge* link) {
+    if (!link) return;
+    LinkSnapshot ls = link->audioRead();
+    if (!ls.synced) return;              // no session, nothing to follow
+
+    if (ls.isPlaying != m_lastSeenRemotePlaying) {
+        m_lastSeenRemotePlaying = ls.isPlaying;
+        if (ls.isPlaying) {
+            m_remoteStartPending = true;   // honored at the next quantum boundary
+        } else {
+            for (int lp = 0; lp < kLooperCount; lp++) {
+                if (!m_looperPlaying[lp]) continue;
+                setLooper(ps, lp, "play", 0.0f);
+                m_looperPlaying[lp] = false;
+            }
+            m_remoteStartPending = false;
+            m_lastPublishedPlaying = false;   // matches the session; don't re-emit
+        }
+        return;
+    }
+
+    if (!m_remoteStartPending) return;
+    // Honor the pending start once the shared phase wraps past the quantum start.
+    // beatPhaseMicroBeats counts 0..quantumMicroBeats; a wrap means a boundary.
+    if (ls.quantumMicroBeats <= 0) return;
+    bool wrapped = (ls.beatPhaseMicroBeats < m_lastRemotePhaseMicroBeats);
+    m_lastRemotePhaseMicroBeats = ls.beatPhaseMicroBeats;
+    if (!wrapped) return;
+
+    m_remoteStartPending = false;
+    for (int lp = 0; lp < kLooperCount; lp++) {
+        if (!m_looperHasContent[lp] || m_looperPlaying[lp]) continue;
+        setLooper(ps, lp, "play", 1.0f);
+        m_looperPlaying[lp] = true;
+    }
+    m_lastPublishedPlaying = true;        // matches the session; don't re-emit
+}
+
 void ApcGrid::publishTransport(LinkBridge* link) {
     if (!link) return;
     bool anyPlaying = false;
@@ -249,10 +302,13 @@ void ApcGrid::onPadRelease(int note, unsigned now_ms, ParamStore& ps, LinkBridge
     }
 }
 
-void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps) {
+void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps, LinkBridge* link) {
     if (m_bankFlashReleaseAt != 0 && now_ms >= m_bankFlashReleaseAt) {
         m_bankFlashReleaseAt = 0;
     }
+    // Follow the session's transport (Test Plan STARTSTOPSTATE-1). Runs on every
+    // control tick so a peer's start lands within one quantum boundary.
+    applyRemoteTransport(ps, link);
     bool shiftHeldNow = ps.get("fx/monitorfold", 0.0f) > 0.5f;
     if (shiftHeldNow) {
         for (int looper = 0; looper < kLooperCount; looper++) {

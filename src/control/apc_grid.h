@@ -141,7 +141,7 @@ public:
     // Poll for long-holds that must fire without waiting for release (erase
     // trigger at >= kHoldEraseMs, and preset-capture at the same threshold).
     // Call once per control-thread tick (e.g. on every MIDI byte, cheap).
-    void pollHolds(unsigned now_ms, ParamStore& ps);
+    void pollHolds(unsigned now_ms, ParamStore& ps, class LinkBridge* link = nullptr);
 
     // Live pitch: CC1 (mod-wheel, deadzone 59-69) or CC52 (absolute 0-127).
     void onModWheel(uint8_t data2, ParamStore& ps);     // CC1
@@ -310,6 +310,10 @@ private:
     // Last transport state we published to the Link session, so publishTransport
     // only writes on a real edge instead of every call.
     bool m_lastPublishedPlaying = false;
+    // Inbound (peer-driven) transport, for Test Plan STARTSTOPSTATE-1.
+    bool    m_lastSeenRemotePlaying = false;
+    bool    m_remoteStartPending    = false;   // start honored at next quantum boundary
+    int64_t m_lastRemotePhaseMicroBeats = 0;   // wrap detection on the shared phase
 
     bool m_presetHeld[kPresetCount] = {};
     unsigned m_presetHoldStart[kPresetCount] = {};
@@ -377,6 +381,9 @@ private:
     void forgetLooperFromPresets(int looper);
     // Publish our transport (any looper playing) to the Link session on change.
     void publishTransport(class LinkBridge* link);
+    // Follow the session's transport (Test Plan STARTSTOPSTATE-1): quantized
+    // start, immediate stop. Called from pollHolds on the control thread.
+    void applyRemoteTransport(ParamStore& ps, class LinkBridge* link);
 };
 
 } // namespace aloop
