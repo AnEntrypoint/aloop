@@ -29,6 +29,7 @@
 const fs = require('fs');
 const path = require('path');
 const dgram = require('dgram');
+const os = require('os');
 const http = require('http');
 const https = require('https');
 const { execFileSync, execFile } = require('child_process');
@@ -37,13 +38,6 @@ const execFileAsync = promisify(execFile);
 
 function arg(name, def) { const i = process.argv.indexOf(name); return i > 0 && process.argv[i + 1] ? process.argv[i + 1] : def; }
 
-// Mirror all console output to a logfile so an elevated (UAC) launch, which cannot
-// redirect stdout, is still observable. --log <path> overrides the default.
-// This process runs indefinitely (self-update poll loop) and mirrors every
-// TFTP/HTTP/DHCP line — with no cap the file grows unbounded over a
-// multi-day serve session. Truncate back to zero once it crosses LOG_MAX_BYTES
-// (a crude rotation: no history kept, but that matches this script's own
-// existing "truncate on every restart" behavior, just applied mid-run too).
 const LOG_FILE = arg('--log', path.join(__dirname, '..', '.netboot-serve.log'));
 const LOG_MAX_BYTES = parseInt(arg('--log-max-bytes', String(10 * 1024 * 1024)));   // 10 MiB
 try { fs.writeFileSync(LOG_FILE, ''); } catch (e) {}
@@ -59,12 +53,50 @@ const _log = (...a) => {
 console.log = _log; console.error = _log;
 
 const ROOT      = path.resolve(arg('--root', path.join(__dirname, '..', '.netboot-serve')));
-const SERVER_IP = arg('--server', '192.168.137.1');
 const HTTP_PORT = parseInt(arg('--http', '8080'));
-const BOOTFILE  = 'bootcode.bin';                 // Pi 4 firmware entry point (Alpine tree)
+const BOOTFILE  = 'bootcode.bin';
 const POOL_START = [192, 168, 137, 100];
 const SUBNET     = [255, 255, 255, 0];
 const LEASE_SECS = 3600;
+const NETBOOT_SUBNET_PREFIX = '192.168.137.';
+
+function localAddressesOnNetbootSubnet() {
+  const ifaces = os.networkInterfaces();
+  const found = [];
+  for (const name of Object.keys(ifaces)) {
+    for (const a of (ifaces[name] || [])) {
+      if (a.family === 'IPv4' && !a.internal && a.address.startsWith(NETBOOT_SUBNET_PREFIX)) {
+        found.push({ iface: name, address: a.address });
+      }
+    }
+  }
+  return found;
+}
+
+function resolveServerIp() {
+  const requested = arg('--server', '');
+  const live = localAddressesOnNetbootSubnet();
+  if (requested) {
+    if (live.some(l => l.address === requested)) return requested;
+    console.error('[serve] REFUSING --server ' + requested + ': no local interface holds that address.');
+    console.error('[serve] A DHCP reply advertising an unreachable option-66 TFTP server makes the Pi');
+    console.error('[serve] ACK and then fetch nothing -- it re-DISCOVERs forever with ZERO TFTP reads.');
+    if (live.length) console.error('[serve] Live addresses on this subnet: ' + live.map(l => l.iface + '=' + l.address).join(', '));
+  }
+  if (live.length === 1) {
+    console.log('[serve] auto-detected server IP ' + live[0].address + ' on ' + live[0].iface);
+    return live[0].address;
+  }
+  if (live.length > 1) {
+    console.log('[serve] multiple addresses on ' + NETBOOT_SUBNET_PREFIX + '0/24: ' + live.map(l => l.iface + '=' + l.address).join(', '));
+    console.log('[serve] using ' + live[0].address + ' (pass --server to choose explicitly)');
+    return live[0].address;
+  }
+  console.error('[serve] no local interface on ' + NETBOOT_SUBNET_PREFIX + '0/24 -- is the Pi cable plugged into the shared adapter?');
+  process.exit(2);
+}
+
+const SERVER_IP = resolveServerIp();
 
 // ---- self-update config (see the file header comment) -----------------------
 const REPO           = 'AnEntrypoint/aloop';
@@ -86,7 +118,16 @@ console.log('[serve] server IP:    ' + SERVER_IP + '  (DHCP :67, TFTP :69, HTTP 
 const OP_RRQ = 1, OP_DATA = 3, OP_ACK = 4, OP_ERR = 5, OP_OACK = 6;
 const leases = {};
 function ip2buf(s) { return Buffer.from(s.split('.').map(Number)); }
-function allocate(mac) { if (leases[mac]) return leases[mac]; const ip = [...POOL_START]; ip[3] += Object.keys(leases).length; return leases[mac] = ip.join('.'); }
+const reservedAddresses = new Set(localAddressesOnNetbootSubnet().map(l => l.address).concat([SERVER_IP]));
+function allocate(mac) {
+  if (leases[mac]) return leases[mac];
+  const taken = new Set(Object.values(leases).concat([...reservedAddresses]));
+  for (let n = POOL_START[3]; n <= 250; n++) {
+    const candidate = POOL_START.slice(0, 3).concat([n]).join('.');
+    if (!taken.has(candidate)) return leases[mac] = candidate;
+  }
+  throw new Error('DHCP pool exhausted on ' + NETBOOT_SUBNET_PREFIX + '0/24');
+}
 
 // ---- TFTP -------------------------------------------------------------------
 // The Pi 4 requests files under its BOARD-SERIAL subdir (<serial>/start4.elf). We
