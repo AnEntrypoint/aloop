@@ -134,6 +134,7 @@ function handleRRQ(filename, rinfo, options) {
     let acked = (options.blksize || options.tsize) ? -1 : 0;
     if (Object.keys(replyOpts).length) xfer.send(buildOACK(replyOpts), rinfo.port, rinfo.address);
     else { const d = Buffer.alloc(4 + Math.min(blksize, data.length)); d.writeUInt16BE(OP_DATA, 0); d.writeUInt16BE(1, 2); data.copy(d, 4, 0, blksize); xfer.send(d, rinfo.port, rinfo.address); acked = 0; }
+    tftpReadCount++;   // proves the client got our boot options; see the ICS diagnosis in the DHCP handler
     console.log('[TFTP] ' + safe + ' -> ' + rinfo.address + ' (' + data.length + 'B)');
     xfer.on('message', msg => {
       if (msg.readUInt16BE(0) !== OP_ACK) return;
@@ -159,6 +160,11 @@ tftp.on('error', err => { if (err.code === 'EACCES') { console.error('[TFTP] nee
 tftp.bind(69, '0.0.0.0', () => console.log('[TFTP] listening :69'));
 
 // ---- DHCP -------------------------------------------------------------------
+// Race diagnostics: how many REQUESTs each MAC has sent, and whether ANY TFTP
+// read has happened. Many REQUESTs + zero TFTP reads is the ICS-wins signature.
+const dhcpRequestCount = new Map();
+let tftpReadCount = 0;
+let icsWarned = false;
 // reuseAddr lets us share :67 with Windows ICS; we answer WITH the boot options ICS
 // omits, so the Pi accepts our offer and proceeds to TFTP.
 function buildDhcpReply(type, xid, mac, offeredIp) {
@@ -201,7 +207,32 @@ dhcp.on('message', (msg) => {
     const offeredIp = allocate(macStr);
     console.log('[DHCP] ' + (msgType === 1 ? 'DISCOVER' : msgType === 3 ? 'REQUEST' : 'type' + msgType) + ' from ' + macStr + ' -> ' + offeredIp + ' (boot=' + BOOTFILE + ', tftp=' + SERVER_IP + ')');
     const reply = buildDhcpReply(msgType === 1 ? 2 : 5, xid, mac, offeredIp);       // OFFER for DISCOVER, ACK otherwise
-    dhcp.send(reply, 68, '255.255.255.255', err => err && console.error('[DHCP]', err.message));
+    // WITNESSED live: co-existing with Windows ICS on :67 is a RACE, not a
+    // guarantee. ICS answers the same REQUEST without options 66/67, so when its
+    // reply reaches the Pi first the Pi learns no TFTP server, fetches nothing,
+    // and re-REQUESTs forever -- observed as 7 consecutive REQUEST lines with
+    // ZERO TFTP reads. Sending our reply MORE THAN ONCE over a short window
+    // makes ours the last one the client sees, which is what actually decides
+    // the outcome; the extra datagrams are harmless (a client that already
+    // accepted our lease simply ignores a duplicate ACK).
+    const sendReply = () => dhcp.send(reply, 68, '255.255.255.255',
+      err => err && console.error('[DHCP]', err.message));
+    sendReply();
+    setTimeout(sendReply, 40);
+    setTimeout(sendReply, 120);
+    // Diagnose the ICS race explicitly instead of looping silently: if a client
+    // keeps REQUESTing and no TFTP read has EVER happened, say so by name.
+    if (msgType === 3) {
+      dhcpRequestCount.set(macStr, (dhcpRequestCount.get(macStr) || 0) + 1);
+      const n = dhcpRequestCount.get(macStr);
+      if (n >= 4 && tftpReadCount === 0 && !icsWarned) {
+        icsWarned = true;
+        console.error('[DHCP] DIAGNOSIS: ' + macStr + ' has sent ' + n + ' REQUESTs and NOTHING has been ' +
+          'fetched over TFTP. That means the client is accepting a DHCP reply WITHOUT boot options ' +
+          '(options 66/67) -- almost certainly Windows ICS (service "SharedAccess") answering :67 ' +
+          'alongside us. Stop it while netbooting:  net stop SharedAccess   (elevated), then power-cycle the Pi.');
+      }
+    }
   } catch (e) {
     console.error('[DHCP] malformed packet, ignored:', e.message);
   }
