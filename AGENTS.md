@@ -1309,6 +1309,104 @@ Two related traps found in the same pass:
 address and REFUSES an explicit `--server` no interface holds, failing loud
 with this exact explanation rather than looping silently.
 
+### DHCP DISCOVERs that never become REQUESTs: check the Ethernet netmask and which interface owns the subnet route
+
+A distinct failure from the dead-option-66 case above, and it looks almost
+identical in the log: repeated `[DHCP] DISCOVER from <pi-mac>` lines, ZERO
+`REQUEST` lines, and — importantly — **no send error at all**, so the
+`EHOSTUNREACH` tell is absent. The OFFER is being sent successfully; it is
+just leaving via the wrong NIC.
+
+WITNESSED: the static Ethernet address was set as `192.168.137.1` with a
+**/16** mask (`255.255.0.0`) rather than /24, while Wi-Fi simultaneously held
+`192.168.137.146/24` from a different DHCP server. Windows routes by longest
+prefix match, so Wi-Fi's /24 beat Ethernet's /16 for the whole
+`192.168.137.0/24` range — every reply to the `192.168.137.255` directed
+broadcast went out **Wi-Fi**, where the Pi does not exist. The Pi DISCOVERs
+forever because it genuinely never receives an OFFER.
+
+Diagnose it in one command rather than guessing — this resolves the actual
+egress interface, which `Get-NetRoute` alone does not make obvious when two
+interfaces both have a route:
+
+```
+Find-NetRoute -RemoteIPAddress 192.168.137.255
+```
+
+If it names Wi-Fi (or anything but the Pi's NIC), that is the bug. Confirm
+the mask with `Get-NetIPAddress -AddressFamily IPv4`, looking at
+`PrefixLength` — `16` on the netboot NIC is wrong, it must be `24`.
+
+Fix (both steps; the mask alone can leave a metric tie):
+
+```
+Remove-NetIPAddress -InterfaceAlias Ethernet -IPAddress 192.168.137.1 -Confirm:$false
+New-NetIPAddress   -InterfaceAlias Ethernet -IPAddress 192.168.137.1 -PrefixLength 24
+Set-NetIPInterface -InterfaceAlias Ethernet -InterfaceMetric 10
+```
+
+Re-run `Find-NetRoute` and confirm it now reports `Ethernet 192.168.137.1`
+before restarting the server. Note the netboot server must be restarted after
+any such change — it resolves `SERVER_IP` once at startup, so a running
+instance keeps serving on the old address (and will log
+`replies via <old-ip>`, which is the quickest way to spot a stale process).
+
+Related trap seen in the same pass: `pkill -f serve-netboot-win` does not
+always reap the listener, and the replacement then fails with
+`[TFTP] bind EADDRINUSE 0.0.0.0:69` while silently falling back to a
+different interface. Always confirm the ports are actually free
+(`netstat -ano | grep -E ':(67|69|8080)\s'`) before concluding a restart
+took effect.
+
+### The `ticker` AP needs THREE separate things the image did not ship — all found live, in this order
+
+`ssid=ticker` being correct in `hostapd.conf` proves nothing about whether an
+AP is actually hosted. WITNESSED on a fully-booted device: `rc-service autoap
+status` reported `crashed`, `wlan0` held `192.168.4.1/24`, and yet no AP
+existed. Three independent causes, each of which alone is fatal:
+
+1. **`hostapd`/`dnsmasq` were never installed.** `which hostapd dnsmasq`
+   returned nothing; `hostapd: not found`. The stock Alpine RPi tarball's
+   local `apks/` repo (the ONLY repo `alpine_repo=` points at — no CDN
+   fallback) carries `iw` and `wpa_supplicant` but has **zero** hostapd or
+   dnsmasq packages, so `apk world` could never install them. Appending them
+   to the local repo is not viable either: its `APKINDEX.tar.gz` is
+   RSA-signed by Alpine, and regenerating it needs an `apk` binary this
+   Windows host does not have. Fixed the way the runtime libs were already
+   fixed — vendor the real aarch64 binaries (`vendor/sbin-aarch64/`,
+   extracted from the official `.apk`s, verified `e_machine=0xB7`) and copy
+   them straight into `usr/sbin` in the overlay. `hostapd` additionally
+   needs `libnl-3.so.200`/`libnl-genl-3.so.200`, which are NOT on the device
+   (only libcrypto/libssl are) — both are now vendored into
+   `vendor/lib-aarch64/` from the local repo's own `libnl3` package.
+
+2. **`start_ap()` never cleared a previous hostapd.** It killed only
+   `wpa_supplicant`, so any re-entry into AP mode (a role flip, an
+   `rc-service autoap restart`) hit a hostapd still holding the interface and
+   died with a burst of `nl80211: kernel reports: Match already configured`
+   followed by `Could not set channel for kernel driver` /
+   `Interface initialization failed`. **That channel error is a red herring
+   — channel 6 is fine.** It was mis-diagnosed once as a regulatory-domain
+   problem because ch1 happened to work on the retry; a clean re-test proved
+   plain `channel=6` starts perfectly (`AP-ENABLED`) once the stale process
+   is gone. Do not "fix" this by changing the channel: ch6 is a paired
+   invariant with `../esp-idf-link`'s `cfg.ap.channel = 6`. `start_ap` now
+   pkills dnsmasq+hostapd, waits (bounded, 20s) for the process to actually
+   exit, and logs loudly instead of silently continuing if either fails.
+
+3. **`dnsmasq` refused to start: `unknown user or group: dnsmasq`.** The
+   config passed `dnsmasq --test` ("syntax check OK") yet the daemon exited
+   immediately — vendoring the binary does not create the `dnsmasq` system
+   user its package would have. Fixed with explicit `user=root`/`group=root`
+   in `src/net/config/dnsmasq.conf`.
+
+Verified live end to end after all three: `hostapd` and `dnsmasq` both
+running, `rc-service autoap status` = `started` (was `crashed`), `wlan0` =
+`192.168.4.1/24`, dnsmasq listening on `0.0.0.0:67`, `aloop` started with 0
+xruns. Note `rc-service autoap status` reporting `started` is the real signal
+here — a `crashed` status with a plausible-looking `ip addr` is exactly what
+this failure looked like for its whole lifetime.
+
 ### Still unproven: AP-mode multicast forwarding on the Pi
 
 Whether Link's multicast actually crosses between the Pi's own AP and its

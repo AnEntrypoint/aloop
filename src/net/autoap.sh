@@ -100,11 +100,23 @@ join_sta() {
 start_ap() {
     log "hosting mesh AP '$MESH_SSID' at $AP_IP"
     pkill wpa_supplicant 2>/dev/null || true
+    pkill dnsmasq 2>/dev/null || true
+    pkill hostapd 2>/dev/null || true
+    _waited=0
+    while pgrep hostapd >/dev/null 2>&1 && [ "$_waited" -lt 20 ]; do
+        sleep 1
+        _waited=$((_waited + 1))
+    done
     ip addr flush dev "$IFACE" 2>/dev/null || true
     ip addr add "$AP_IP" dev "$IFACE"
     ip link set "$IFACE" up
-    hostapd -B "$CONF_DIR/hostapd.conf"
-    dnsmasq -C "$CONF_DIR/dnsmasq.conf"
+    if ! hostapd -B "$CONF_DIR/hostapd.conf"; then
+        log "hostapd failed to start on $IFACE -- no mesh AP is being hosted"
+        return 1
+    fi
+    if ! dnsmasq -C "$CONF_DIR/dnsmasq.conf"; then
+        log "dnsmasq failed to start -- peers can associate but will get no lease"
+    fi
 }
 
 stop_ap() {

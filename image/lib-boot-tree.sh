@@ -106,6 +106,15 @@ boot_tree_apkovl() {
     echo "[boot-tree] WARNING: no vendor/lib-aarch64 — aloop will fail to start (missing libasound/liblilv)"
   fi
 
+  mkdir -p "$OVL/usr/sbin"
+  if [ -d "$ROOT/vendor/sbin-aarch64" ]; then
+    cp "$ROOT/vendor/sbin-aarch64/"* "$OVL/usr/sbin/"
+    chmod +x "$OVL/usr/sbin/"* 2>/dev/null || true
+    echo "[boot-tree] laid in vendored mesh daemons: $(ls "$ROOT/vendor/sbin-aarch64" | tr '\n' ' ')"
+  else
+    echo "[boot-tree] WARNING: no vendor/sbin-aarch64 — autoap cannot host the ticker AP (missing hostapd/dnsmasq)"
+  fi
+
   # alsa-lib's OWN config data (not just its .so): WITNESSED live on a real Pi 4
   # — with libasound.so.2 vendored but NO /usr/share/alsa/alsa.conf, calling
   # snd_pcm_open("default", ...) segfaults deep inside alsa-lib's config parser
@@ -219,21 +228,12 @@ SVC
   rl_enable /etc/init.d/aloop  "$OVL/etc/runlevels/default/aloop"
   rl_enable /etc/init.d/autoap "$OVL/etc/runlevels/default/autoap"
 
-  # SSH access — for remote debugging/updates without a serial console or a
-  # power-cycle to inspect state (looper's dev-tooling equivalent: a way to
-  # reach the running device directly, not just poll it over a bespoke UDP
-  # protocol). `openssh-server` ships in the stock Alpine RPi tarball's own
-  # apks/ repo (the SAME local set alpine_repo= already points at — no CDN
-  # dependency), so Alpine's own diskless-boot mechanism installs it: the
-  # initramfs/init reads etc/apk/world and runs `apk add` for anything listed
-  # there against alpine_repo, exactly like the base packages already witnessed
-  # installing (alpine-base, busybox, openssl, etc) — this is the FIRST real use
-  # of that mechanism in this repo (the vendored libs above use direct file
-  # copy instead, precisely because THEIR packages are NOT in the local repo).
   mkdir -p "$OVL/etc/apk"
-  if ! grep -qx 'openssh-server' "$OVL/etc/apk/world" 2>/dev/null; then
-    echo "openssh-server" >> "$OVL/etc/apk/world"
-  fi
+  for _pkg in openssh-server wpa_supplicant iw; do
+    if ! grep -qx "$_pkg" "$OVL/etc/apk/world" 2>/dev/null; then
+      echo "$_pkg" >> "$OVL/etc/apk/world"
+    fi
+  done
   rl_enable /etc/init.d/sshd "$OVL/etc/runlevels/default/sshd"
   # PermitRootLogin + password auth: a DEV/DEBUG convenience for a closed dev
   # LAN (docs/NETBOOT.md's WSL/ICS setup) — never how an internet-reachable
