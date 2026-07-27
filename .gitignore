@@ -52,6 +52,7 @@ tmp/
 .netboot-serve.err.log
 .netboot-update-sha
 .netboot-update-work/
+.netboot-cache/
 
 # MinGW/MSYS2 subprocess crash dumps (host-tooling artifact, not repo state)
 *.stackdump

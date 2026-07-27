@@ -175,7 +175,7 @@ function handleRRQ(filename, rinfo, options) {
     let acked = (options.blksize || options.tsize) ? -1 : 0;
     if (Object.keys(replyOpts).length) xfer.send(buildOACK(replyOpts), rinfo.port, rinfo.address);
     else { const d = Buffer.alloc(4 + Math.min(blksize, data.length)); d.writeUInt16BE(OP_DATA, 0); d.writeUInt16BE(1, 2); data.copy(d, 4, 0, blksize); xfer.send(d, rinfo.port, rinfo.address); acked = 0; }
-    tftpReadCount++;   // proves the client got our boot options; see the ICS diagnosis in the DHCP handler
+    tftpReadCount++;
     console.log('[TFTP] ' + safe + ' -> ' + rinfo.address + ' (' + data.length + 'B)');
     xfer.on('message', msg => {
       if (msg.readUInt16BE(0) !== OP_ACK) return;
@@ -205,7 +205,18 @@ tftp.bind(69, '0.0.0.0', () => console.log('[TFTP] listening :69'));
 // read has happened. Many REQUESTs + zero TFTP reads is the ICS-wins signature.
 const dhcpRequestCount = new Map();
 let tftpReadCount = 0;
-let icsWarned = false;
+let bootOptionWarned = false;
+
+const SUBNET_DIRECTED_BROADCAST = NETBOOT_SUBNET_PREFIX + '255';
+function replyDestinations(offeredIp) { return [SUBNET_DIRECTED_BROADCAST, offeredIp]; }
+
+const LOCAL_MACS = new Set();
+for (const addrs of Object.values(os.networkInterfaces())) {
+  for (const a of (addrs || [])) {
+    if (a.mac && a.mac !== '00:00:00:00:00:00') LOCAL_MACS.add(a.mac.toLowerCase());
+  }
+}
+const localMacWarned = new Set();
 // reuseAddr lets us share :67 with Windows ICS; we answer WITH the boot options ICS
 // omits, so the Pi accepts our offer and proceeds to TFTP.
 function buildDhcpReply(type, xid, mac, offeredIp) {
@@ -225,16 +236,18 @@ function buildDhcpReply(type, xid, mac, offeredIp) {
 }
 const dhcp = dgram.createSocket({ type: 'udp4', reuseAddr: true });
 dhcp.on('message', (msg) => {
-  // A malformed/truncated packet from anything on the LAN must never take the
-  // whole serve process down (same defensive posture as the TFTP/HTTP
-  // handlers, which already guard every path). Node's Buffer indexing itself
-  // can't throw (out-of-range reads return undefined, not an exception), but
-  // wrap the handler anyway — cheap insurance against any future change here
-  // (e.g. a readUInt16BE on a short slice DOES throw) regressing that safety.
   try {
     if (msg.length < 240 || msg[0] !== 1 || msg.readUInt32BE(236) !== 0x63825363) return;
     const xid = msg.readUInt32BE(4), mac = msg.slice(28, 34);
     const macStr = Array.from(mac).map(b => b.toString(16).padStart(2, '0')).join(':');
+    if (LOCAL_MACS.has(macStr)) {
+      if (!localMacWarned.has(macStr)) {
+        localMacWarned.add(macStr);
+        console.log('[DHCP] ignoring ' + macStr + ' -- that is this host\'s own NIC, not a netboot client. ' +
+          'Leasing to it would hand the host an address out of the Pi\'s pool and move SERVER_IP underneath us.');
+      }
+      return;
+    }
     let msgType = 0, o = 240;
     while (o < msg.length) {
       const opt = msg[o++];
@@ -247,31 +260,33 @@ dhcp.on('message', (msg) => {
     }
     const offeredIp = allocate(macStr);
     console.log('[DHCP] ' + (msgType === 1 ? 'DISCOVER' : msgType === 3 ? 'REQUEST' : 'type' + msgType) + ' from ' + macStr + ' -> ' + offeredIp + ' (boot=' + BOOTFILE + ', tftp=' + SERVER_IP + ')');
-    const reply = buildDhcpReply(msgType === 1 ? 2 : 5, xid, mac, offeredIp);       // OFFER for DISCOVER, ACK otherwise
-    // WITNESSED live: co-existing with Windows ICS on :67 is a RACE, not a
-    // guarantee. ICS answers the same REQUEST without options 66/67, so when its
-    // reply reaches the Pi first the Pi learns no TFTP server, fetches nothing,
-    // and re-REQUESTs forever -- observed as 7 consecutive REQUEST lines with
-    // ZERO TFTP reads. Sending our reply MORE THAN ONCE over a short window
-    // makes ours the last one the client sees, which is what actually decides
-    // the outcome; the extra datagrams are harmless (a client that already
-    // accepted our lease simply ignores a duplicate ACK).
-    const sendReply = () => dhcp.send(reply, 68, '255.255.255.255',
-      err => err && console.error('[DHCP]', err.message));
+    const reply = buildDhcpReply(msgType === 1 ? 2 : 5, xid, mac, offeredIp);
+    const sendReply = () => {
+      for (const dest of replyDestinations(offeredIp)) {
+        dhcp.send(reply, 68, dest, err => {
+          if (!err) return;
+          console.error('[DHCP] send ' + err.message.replace(/^send /, '') + ' -> ' + dest);
+          if (err.code === 'EHOSTUNREACH' || err.code === 'ENETUNREACH') {
+            console.error('[DHCP] the limited broadcast left via the wrong interface. Replies are sent to the ' +
+              NETBOOT_SUBNET_PREFIX + '255 directed broadcast and to the offered address so they stay on ' +
+              SERVER_IP + "'s link.");
+          }
+        });
+      }
+    };
     sendReply();
     setTimeout(sendReply, 40);
     setTimeout(sendReply, 120);
-    // Diagnose the ICS race explicitly instead of looping silently: if a client
-    // keeps REQUESTing and no TFTP read has EVER happened, say so by name.
     if (msgType === 3) {
       dhcpRequestCount.set(macStr, (dhcpRequestCount.get(macStr) || 0) + 1);
       const n = dhcpRequestCount.get(macStr);
-      if (n >= 4 && tftpReadCount === 0 && !icsWarned) {
-        icsWarned = true;
+      if (n >= 4 && tftpReadCount === 0 && !bootOptionWarned) {
+        bootOptionWarned = true;
         console.error('[DHCP] DIAGNOSIS: ' + macStr + ' has sent ' + n + ' REQUESTs and NOTHING has been ' +
-          'fetched over TFTP. That means the client is accepting a DHCP reply WITHOUT boot options ' +
-          '(options 66/67) -- almost certainly Windows ICS (service "SharedAccess") answering :67 ' +
-          'alongside us. Stop it while netbooting:  net stop SharedAccess   (elevated), then power-cycle the Pi.');
+          'fetched over TFTP. We are advertising option 66 = ' + SERVER_IP + '. Verify that address is ' +
+          'reachable FROM THE CLIENT and that the netboot tree was built with NETBOOT_SERVER=' + SERVER_IP +
+          ' (cmdline.txt bakes the HTTP URLs at build time, so a stale tree fails after DHCP succeeds). ' +
+          'A second DHCP server answering without options 66/67 would also produce this.');
       }
     }
   } catch (e) {
@@ -279,7 +294,11 @@ dhcp.on('message', (msg) => {
   }
 });
 dhcp.on('error', err => { if (err.code === 'EACCES') { console.error('[DHCP] need ADMIN: port 67'); process.exit(1); } console.error('[DHCP]', err.message); });
-dhcp.bind(67, '0.0.0.0', () => { dhcp.setBroadcast(true); console.log('[DHCP] listening :67'); });
+dhcp.bind(67, '0.0.0.0', () => {
+  dhcp.setBroadcast(true);
+  try { dhcp.setMulticastInterface(SERVER_IP); } catch (e) {}
+  console.log('[DHCP] listening :67 (replies via ' + SERVER_IP + ' to ' + SUBNET_DIRECTED_BROADCAST + ')');
+});
 
 // ---- HTTP root (Alpine initramfs fetches apks/modloop/apkovl over HTTP) ------
 const mime = { '.tar': 'application/x-tar', '.gz': 'application/gzip' };

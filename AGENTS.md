@@ -1275,6 +1275,40 @@ Before trusting ANY on-device observation after an SD update, confirm which
 path actually booted (check `.netboot-serve.log` for fresh TFTP/HTTP lines)
 and compare the running binary's md5 against the card's.
 
+### DHCP REQUESTs with ZERO TFTP reads means option 66 points at a dead address — not a competing DHCP server
+
+WITNESSED, and the first diagnosis was WRONG in a way worth remembering. The
+symptom: `.netboot-serve.log` fills with `[DHCP] REQUEST from <mac>` lines and
+never logs a single `[TFTP]` fetch. This was initially blamed on Windows ICS
+winning the DHCP race, and the proposed remedy (stop the `SharedAccess`
+service, which needs elevation) would have fixed nothing.
+
+The real cause: `serve-netboot-win.js` defaulted `SERVER_IP` to the literal
+`192.168.137.1` and was launched with `--server 192.168.137.1`, but Windows
+ICS had assigned the Ethernet adapter **`192.168.137.101`**. Nothing answers
+on `.1`, so every ACK advertised an option-66 TFTP server that does not
+exist — the Pi ACKs, times out fetching, and re-DISCOVERs forever.
+
+How to tell the two apart in seconds, before theorising: a REQUEST whose
+offered IP is the HOST's own address is the host's ICS adapter renewing its
+own lease, not a rival server. `arp -a` prints the local address as
+`Interface: 192.168.137.101`, and `ping` to it replies `TTL=128` (Windows)
+rather than `TTL=64` (Linux). Confirm with `os.networkInterfaces()` whether
+the address being advertised exists on any interface at all.
+
+Two related traps found in the same pass:
+- **The apkovl bakes the server IP at build time.** `cmdline.txt`'s
+  `alpine_repo`/`modloop`/`apkovl` URLs come from `@NETBOOT_SERVER@`
+  substitution, so fixing DHCP alone still fails at the HTTP stage. Rebuild
+  with `NETBOOT_SERVER=<real ip>` whenever the host address changes.
+- **The DHCP pool could hand out the host's own address.** `allocate()`
+  computed `POOL_START + count(leases)`, so the second client was offered
+  `.101` — the host itself. It now skips every reserved/local address.
+
+`resolveServerIp()` now auto-detects the single live `192.168.137.0/24`
+address and REFUSES an explicit `--server` no interface holds, failing loud
+with this exact explanation rather than looping silently.
+
 ### Still unproven: AP-mode multicast forwarding on the Pi
 
 Whether Link's multicast actually crosses between the Pi's own AP and its
