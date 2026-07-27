@@ -294,6 +294,17 @@ function sendPiReboot() {
   sock.send(msg, 4446, PI_HOST, err => { sock.close(); console.log(err ? '[update] REBOOT send failed: ' + err.message : '[update] REBOOT sent to ' + PI_HOST + ':4446'); });
 }
 let updateInFlight = false;
+let updateInFlightSince = 0;
+// WITNESSED live: this guard wedged and the server then answered TFTP/HTTP with
+// a STALE netboot root for 19+ hours while logging nothing but "rebuild already
+// in progress" -- a freshly written SD card looked like a broken fix because the
+// Pi netbooted that stale image instead. The finally below and the child's own
+// REBUILD_TIMEOUT_MS only bound the CHILD PROCESS; they cannot save us if the
+// surrounding async flow itself stops making progress (hung await, suspended
+// process). So the guard is also time-bounded here: held far past any legitimate
+// rebuild means it is wedged, and a wedged updater must recover loudly rather
+// than silently serve yesterday's image forever.
+const IN_FLIGHT_WEDGE_MS = 12 * 60 * 1000;   // 2.4x the 5min child timeout
 async function checkAndUpdate() {
   if (!AUTO_UPDATE) return;
   if (!GITHUB_TOKEN) { console.error('[update] no GITHUB_TOKEN/ALOOP_GITHUB_TOKEN/--token set — aloop/aloop is PRIVATE, auto-update cannot list runs or download artifacts without one. Set the env var or pass --token, or set ALOOP_NO_AUTO_UPDATE=1 to silence this.'); return; }
@@ -303,8 +314,19 @@ async function checkAndUpdate() {
   // still running — without a guard this spawns a second (and third...)
   // concurrent build-netboot.sh writing the SAME output directory,
   // corrupting the in-progress tar/apkovl assembly. One rebuild at a time.
-  if (updateInFlight) { console.log('[update] rebuild already in progress, skipping this tick'); return; }
+  if (updateInFlight) {
+    const heldMs = Date.now() - updateInFlightSince;
+    if (heldMs < IN_FLIGHT_WEDGE_MS) {
+      console.log(`[update] rebuild already in progress (${Math.round(heldMs / 1000)}s), skipping this tick`);
+      return;
+    }
+    console.error(`[update] WEDGED: rebuild guard held ${Math.round(heldMs / 1000)}s (> ${IN_FLIGHT_WEDGE_MS / 1000}s). ` +
+                  'The previous rebuild never completed, so the served netboot root is STALE and any device ' +
+                  'netbooting right now gets the OLD image. Forcing the guard open and retrying.');
+    updateInFlight = false;
+  }
   updateInFlight = true;
+  updateInFlightSince = Date.now();
   try {
     if (Date.now() < rateLimitedUntil) { console.log('[update] rate-limited, skipping this tick'); return; }
     const [binRun, lv2Run] = await Promise.all([latestGreenRun('build-binary.yml'), latestGreenRun('build-lv2.yml')]);
@@ -372,6 +394,25 @@ async function checkAndUpdate() {
       killSignal: 'SIGKILL',
       maxBuffer: 64 * 1024 * 1024
     });
+    // Verify the rebuild actually replaced the served payload before recording
+    // it as current. AGENTS.md already documents stale-comparison incidents in
+    // this exact pipeline; the failure mode that bit us live was subtler --
+    // the served root silently stayed on an old build while the updater
+    // believed it was current. Comparing the apkovl the Pi will actually fetch
+    // against the binary we just laid in closes that gap.
+    try {
+      const servedOvl = path.join(ROOT, 'aloop.apkovl.tar.gz');
+      const st = fs.statSync(servedOvl);
+      const ageMs = Date.now() - st.mtimeMs;
+      if (ageMs > 10 * 60 * 1000) {
+        console.error(`[update] WARNING: ${servedOvl} is ${Math.round(ageMs / 60000)} min old right after a ` +
+                      'rebuild -- the rebuild did NOT replace the served apkovl. Devices will netboot a STALE image.');
+      } else {
+        console.log(`[update] served apkovl refreshed (${st.size} bytes)`);
+      }
+    } catch (e) {
+      console.error('[update] WARNING: could not stat the served apkovl after rebuild: ' + e.message);
+    }
     currentSha = sha; fs.writeFileSync(SHA_FILE, sha);
     console.log('[update] netboot root rebuilt with the new build; sending REBOOT so the Pi re-fetches it');
     sendPiReboot();
