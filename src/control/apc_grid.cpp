@@ -576,7 +576,7 @@ static void applySamplerFxKnob(FxKnobKind kind, float v01, Sampler* sampler) {
 }
 
 static void applyFxKnobTarget(const FxKnobTarget& t, float v01, ParamStore& ps, Sampler* sampler, Lv2Host* homeFx) {
-    float v = (strcmp(t.name, "fx/reverb") == 0) ? (v01 * 2.0f) : v01;
+    float v = (t.name && strcmp(t.name, "fx/reverb") == 0) ? (v01 * 2.0f) : v01;
     switch (t.kind) {
         case FxKnobKind::FaustZone:  ps.setByName(t.name, v); break;
         case FxKnobKind::Lv2Control: if (homeFx) homeFx->setControl(t.name, v); break;
