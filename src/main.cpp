@@ -154,6 +154,8 @@ aloop::AudioConfig loadConfig(const char* path) {
         else if (sscanf(line, " instrument_device = %199s", s) == 1) cfg.instrumentDevice = s;
         else if (sscanf(line, " instrument_device_match = %199[^\n\r]", s) == 1) {
             std::string m(s);
+            size_t hashPos = m.find('#');
+            if (hashPos != std::string::npos) m.erase(hashPos);
             while (!m.empty() && (m.back() == ' ' || m.back() == '\t')) m.pop_back();
             cfg.instrumentDeviceMatch = m;
         }
