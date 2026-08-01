@@ -306,6 +306,8 @@ SSHCFG
   APKOVL_LASTMODE=$(tar -tzvf "$_work/$APKOVL" 2>/dev/null | grep 'opt/aloop/aloop$' | tail -1 | cut -c1-10)
   if [ "$APKOVL_LASTMODE" = "-rwxr-xr-x" ]; then
     echo "[boot-tree] apkovl -> $_boot/$APKOVL ($(du -h "$_work/$APKOVL" | cut -f1)) [aloop binary confirmed +x in archive]"
+  elif [ -z "$APKOVL_LASTMODE" ] && [ ! -f "$OVL/opt/aloop/aloop" ]; then
+    echo "[boot-tree] apkovl -> $_boot/$APKOVL ($(du -h "$_work/$APKOVL" | cut -f1)) [no ALOOP_BIN this run, nothing to verify]"
   else
     echo "[boot-tree] ERROR: aloop binary is NOT executable in the built apkovl (last entry mode: $APKOVL_LASTMODE) — aloop service will crash-loop with 'Permission denied'"
   fi

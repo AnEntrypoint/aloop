@@ -87,17 +87,22 @@ NBOVL_TAR="$WORK/nbovl.tar"
 # `./`-prefixed paths, matching the first pass's `.`-rooted entries exactly —
 # see lib-boot-tree.sh's identical fix for why this must match, not just be
 # equivalent (tar -r appends rather than overwrites a differently-spelled path).
-( cd "$NBOVL" && tar --mode='+x' -rf "$NBOVL_TAR" \
-    ./opt/aloop/aloop ./opt/aloop/autoap.sh \
+_nb_exec_paths="./opt/aloop/autoap.sh \
     ./etc/local.d/10-rt-tune.start ./etc/local.d/20-usb-gadget.start \
     ./etc/init.d/aloop ./etc/init.d/autoap \
     $(find usr/sbin -type f 2>/dev/null | sed 's|^|./|') \
-    $(find opt/aloop/test -type f -name '*.sh' 2>/dev/null | sed 's|^|./|') )
+    $(find opt/aloop/test -type f -name '*.sh' 2>/dev/null | sed 's|^|./|')"
+if [ -f "$NBOVL/opt/aloop/aloop" ]; then
+  _nb_exec_paths="./opt/aloop/aloop $_nb_exec_paths"
+fi
+( cd "$NBOVL" && tar --mode='+x' -rf "$NBOVL_TAR" $_nb_exec_paths )
 gzip -f "$NBOVL_TAR"
 mv "$NBOVL_TAR.gz" "$BOOT/aloop.apkovl.tar.gz"
 NB_LASTMODE=$(tar -tzvf "$BOOT/aloop.apkovl.tar.gz" 2>/dev/null | grep 'opt/aloop/aloop$' | tail -1 | cut -c1-10)
 if [ "$NB_LASTMODE" = "-rwxr-xr-x" ]; then
   echo "[netboot] overlay: added eth0 dhcp + networking service [aloop binary confirmed +x after repack]"
+elif [ -z "$NB_LASTMODE" ] && [ ! -f "$NBOVL/opt/aloop/aloop" ]; then
+  echo "[netboot] overlay: added eth0 dhcp + networking service [no ALOOP_BIN this run, nothing to verify]"
 else
   echo "[netboot] ERROR: aloop binary lost its +x bit during the netboot overlay repack (last entry mode: $NB_LASTMODE) — aloop service will crash-loop"
 fi
