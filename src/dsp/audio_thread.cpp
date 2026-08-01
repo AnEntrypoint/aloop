@@ -26,6 +26,34 @@
 #define ALOOP_HAVE_ALSA 1
 #endif
 
+#include <fstream>
+#include <sstream>
+#include <string>
+
+static std::string resolveInstrumentDevice(const std::string& configured, const std::string& matchName) {
+    if (matchName.empty()) return configured;
+    std::ifstream cards("/proc/asound/cards");
+    if (!cards.is_open()) return configured;
+    std::string line;
+    int index = -1;
+    while (std::getline(cards, line)) {
+        if (line.find(matchName) == std::string::npos) continue;
+        std::istringstream iss(line);
+        iss >> index;
+        if (iss.fail()) { index = -1; continue; }
+        break;
+    }
+    if (index < 0) {
+        fprintf(stderr, "[audio] instrument_device_match '%s' not found in /proc/asound/cards -- falling back to configured %s\n",
+                matchName.c_str(), configured.c_str());
+        return configured;
+    }
+    char resolved[32];
+    snprintf(resolved, sizeof resolved, "hw:%d,0", index);
+    fprintf(stderr, "[audio] instrument device '%s' matched card %d -> %s\n", matchName.c_str(), index, resolved);
+    return resolved;
+}
+
 #if __has_include("loop.cpp")
 #define FAUSTFLOAT float
 struct FaustMeta { void declare(const char*, const char*) {} };
@@ -197,8 +225,10 @@ static void* worker(void*) {
 #ifdef ALOOP_HAVE_ALSA
     snd_pcm_t *cap = nullptr, *play = nullptr;
     const int kAlsaOpenRetries = 30;
-    const char* wireDev = g_cfg.instrumentDevice.c_str();
+    std::string wireDevStr;
     for (int attempt = 0; attempt < kAlsaOpenRetries; attempt++) {
+        wireDevStr = resolveInstrumentDevice(g_cfg.instrumentDevice, g_cfg.instrumentDeviceMatch);
+        const char* wireDev = wireDevStr.c_str();
         if (snd_pcm_open(&cap,  wireDev, SND_PCM_STREAM_CAPTURE,  0) == 0 &&
             snd_pcm_open(&play, wireDev, SND_PCM_STREAM_PLAYBACK, 0) == 0) break;
         if (cap)  { snd_pcm_close(cap);  cap  = nullptr; }

@@ -69,6 +69,7 @@ struct AudioConfig {
     // audio card, e.g. the M-Audio AIR 192|4). This is what the audio thread
     // reads capture from and writes its tight-latency playback to every block.
     std::string instrumentDevice = "hw:0,0";
+    std::string instrumentDeviceMatch = "AIR 192";
     // audioDevice = the f_uac2 OTG gadget (aloop.conf [audio] audio_device=).
     // The gadget's ALSA card name is stable across boots (unlike its numeric
     // index, which shifts depending on USB host-device enumeration order);
