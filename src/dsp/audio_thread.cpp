@@ -271,7 +271,7 @@ static void* worker(void*) {
             return true;
         };
         if (!configurePcm(cap) || !configurePcm(play))
-            fprintf(stderr, "[audio] warning: explicit hw_params rejected by %s — falling back to driver defaults (higher latency)\n", wireDev);
+            fprintf(stderr, "[audio] warning: explicit hw_params rejected by %s — falling back to driver defaults (higher latency)\n", wireDevStr.c_str());
         snd_pcm_prepare(cap);
         snd_pcm_prepare(play);
 
