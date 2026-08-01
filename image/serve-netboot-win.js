@@ -316,6 +316,7 @@ httpSrv.listen(HTTP_PORT, SERVER_IP, () => console.log('[HTTP] listening http://
 
 // ---- self-update (mirrors looper's tftp-server.js checkAndUpdate) -----------
 let currentSha = null, rateLimitedUntil = 0;
+const knownExpiredShas = new Set();
 try { currentSha = fs.readFileSync(SHA_FILE, 'utf8').trim(); console.log('[update] last-built sha: ' + currentSha); } catch (e) {}
 
 function ghGet(apiPath) {
@@ -367,11 +368,13 @@ async function latestGreenRun(workflowFile) {
   const runs = JSON.parse(r.body).workflow_runs;
   return runs && runs[0] ? runs[0] : null;
 }
+class ArtifactExpiredError extends Error {}
 async function downloadRunArtifact(runId, artifactName, destDir) {
   const r = await ghGet('/repos/' + REPO + '/actions/runs/' + runId + '/artifacts');
   if (r.status !== 200) throw new Error('list artifacts HTTP ' + r.status);
   const art = JSON.parse(r.body).artifacts.find(a => a.name === artifactName);
   if (!art) throw new Error('no artifact named ' + artifactName + ' on run ' + runId);
+  if (art.expired) throw new ArtifactExpiredError(artifactName + ' on run ' + runId + ' expired at ' + art.expires_at);
   fs.mkdirSync(destDir, { recursive: true });
   const zipPath = path.join(destDir, artifactName + '.zip');
   await downloadArtifactZip(art.archive_download_url, zipPath);
@@ -418,12 +421,14 @@ async function checkAndUpdate() {
   }
   updateInFlight = true;
   updateInFlightSince = Date.now();
+  let sha = null;
   try {
     if (Date.now() < rateLimitedUntil) { console.log('[update] rate-limited, skipping this tick'); return; }
     const [binRun, lv2Run] = await Promise.all([latestGreenRun('build-binary.yml'), latestGreenRun('build-lv2.yml')]);
     if (!binRun || !lv2Run) { console.log('[update] no green build-binary/build-lv2 run found yet'); return; }
-    const sha = binRun.head_sha + ':' + lv2Run.head_sha;
+    sha = binRun.head_sha + ':' + lv2Run.head_sha;
     if (sha === currentSha) { console.log('[update] up to date (sha ' + sha.slice(0, 16) + '...)'); return; }
+    if (knownExpiredShas.has(sha)) { console.log('[update] sha ' + sha.slice(0, 16) + '... has expired artifacts, waiting for a newer build'); return; }
     console.log('[update] new build found: ' + sha.slice(0, 16) + '... (was ' + (currentSha ? currentSha.slice(0, 16) + '...' : 'none') + ')');
 
     const work = path.join(path.dirname(ROOT), '.netboot-update-work');
@@ -508,7 +513,13 @@ async function checkAndUpdate() {
     console.log('[update] netboot root rebuilt with the new build; sending REBOOT so the Pi re-fetches it');
     sendPiReboot();
   } catch (e) {
-    console.error('[update] failed:', e.message);
+    if (e instanceof ArtifactExpiredError && sha) {
+      knownExpiredShas.add(sha);
+      console.error('[update] ' + sha.slice(0, 16) + '... artifacts expired before this Pi netbooted (retention-days: 3) -- ' +
+                     'will wait for a newer green build instead of retrying this one every tick: ' + e.message);
+    } else {
+      console.error('[update] failed:', e.message);
+    }
   } finally {
     updateInFlight = false;
   }

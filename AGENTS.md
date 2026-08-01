@@ -1446,3 +1446,40 @@ hardware first (`docs/LINK-MESH-TESTING.md` Tests 1-3). If it is real, the
 Linux-side fix is a networking-layer daemon fanning out to the dnsmasq
 lease IPs alongside `hostapd`; it does not require touching
 `link_bridge.cpp`.
+
+## Fast DSP-only iteration: `image/dsp-hotdeploy.js`, skip the netboot cycle
+
+A pure `.dsp`/Faust edit does not need `image/build-netboot.sh`'s full image
+assembly or a device reboot -- `image/dsp-hotdeploy.js` pushes a commit
+through CI's real musl/aarch64 cross-compile (the same `build-binary.yml`/
+`build-lv2.yml` jobs the netboot pipeline already relies on -- see "The
+device runs Alpine/musl/aarch64" above for why a host-built `.so` cannot
+substitute for this), then SFTPs just the changed artifact onto a live
+device and runs `rc-service aloop restart` (not `reboot`) over the same
+pure-JS `ssh2` client the rest of this file's SSH guidance already
+mandates.
+
+Usage: `node image/dsp-hotdeploy.js --target home` (home-stack `.dsp`
+changes -> `aloop-aarch64-musl` artifact -> `/opt/aloop/aloop`), `--target
+guitar` (`guitar_lofi_fx.dsp` changes -> `guitar-lofi-fx-lv2` artifact ->
+`/effects/home/guitar_lofi_fx.lv2/`), or `--target both`. Requires the edit
+already committed and pushed (this script polls the CI run that commit
+triggered, via `gh run list --workflow <file> --json headSha,...` matched
+against `git rev-parse HEAD` -- it does not itself trigger a run) and `gh`
+authenticated. Fails loudly if the matched run's conclusion isn't
+`success`, or if `rc-service aloop status` doesn't report `started` after
+the restart -- never silently declares success on a stale/crashed process
+(see the REBOOT-listener and staleness caveats elsewhere in this file for
+why that check matters).
+
+This preserves every constraint the netboot cycle also preserves -- zero
+added audio latency (a service restart takes the same code path as any
+other `aloop` start, no new buffering), the real target ISA/libc (CI, not
+this Windows host, does the actual link step), and the existing 4-core
+pinning (unchanged binary/config, only the compiled artifact differs) --
+while skipping the image-assembly and reboot wall-clock cost entirely for
+the DSP-only edit case. It intentionally does NOT replace the netboot path
+for anything touching `image/lib-boot-tree.sh`/`image/build-netboot.sh`
+themselves, kernel/cmdline config, or OpenRC service files -- those still
+need a real image rebuild, exactly as documented in "The netboot
+self-update pipeline" above.

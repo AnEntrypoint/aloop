@@ -438,7 +438,10 @@ with {
     // apart from each other regardless of how long they've been playing,
     // glitch engagement, or repeat presses (none of which touch masterPhase
     // or any looper's own offset).
-    recordStartPhaseOffsetStep(prev) = ba.if(finishEdge, masterPhase - latencyBiasN, prev);
+    rawRecordStartPhase = wrapAbs(masterPhase - writeIdxForLatch, max(1.0, masterLen));
+    quantizedSliceGrid = max(1.0, finishTargetN);
+    recordStartGridBackdate = rawRecordStartPhase - floor(rawRecordStartPhase / quantizedSliceGrid) * quantizedSliceGrid;
+    recordStartPhaseOffsetStep(prev) = ba.if(finishEdge, masterPhase - latencyBiasN - recordStartGridBackdate, prev);
     recordStartPhaseOffset = recordStartPhaseOffsetStep ~ _;
     wrapAbs(p, len) = p - floor(p / float(len)) * float(len);
     // MULTI-PHRASE PLAYBACK (WITNESSED live, real hardware: "record long,

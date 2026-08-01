@@ -383,8 +383,14 @@ static void* worker(void*) {
                 }
             }
             if (!linkDrivingLength && g_params) {
+                static float frozenMasterLen = 0.0f;
                 float masterLen = g_params->get("cmd/master_len", 0.0f);
-                fui.set("MLB", masterLen > 0.0f ? (masterLen / (float)N) : 0.0f);
+                if (masterLen <= 0.0f) {
+                    frozenMasterLen = 0.0f;
+                } else if (frozenMasterLen <= 0.0f) {
+                    frozenMasterLen = masterLen;
+                }
+                fui.set("MLB", frozenMasterLen > 0.0f ? (frozenMasterLen / (float)N) : 0.0f);
             }
             float linkSpeedRatio = 1.0f;
             if (linkDrivingLength && g_params && g_link) {
