@@ -388,6 +388,7 @@ static void* worker(void*) {
                     snprintf(z, sizeof z, "looper%2d/level", lp); g_telem.looperLevel[lp] = fui.get(z, 0.0f);
                     snprintf(z, sizeof z, "looper%2d/writeidx", lp); g_telem.looperWriteIdx[lp] = fui.get(z, 0.0f);
                     snprintf(z, sizeof z, "looper%2d/wraplen", lp); g_telem.looperWrapLen[lp] = fui.get(z, 0.0f);
+                    snprintf(z, sizeof z, "looper%2d/readposdiag2", lp); g_telem.looperReadPos[lp] = fui.get(z, 0.0f);
                 }
             }
             g_telem.monitorMode = g_params && g_params->get("fx/monitorfold") > 0.5f;

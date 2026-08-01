@@ -166,6 +166,10 @@ public:
         // query or scripted test harness confirm a loop's real quantized
         // length without needing to listen to it.
         float    looperWrapLen[kLoopers] = {};
+        // TEMPORARY diagnostic (bisecting "loop 2+ changes position on
+        // first playback"): dsp/loop.dsp's "readposdiag2" hbargraph, the
+        // live readPos value. To be removed once the bug is found/fixed.
+        float    looperReadPos[kLoopers] = {};
     };
     Telemetry snapshotTelemetry() const;
 

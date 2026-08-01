@@ -72,6 +72,10 @@ void Telemetry::publish() {
     // quantized length without needing to listen to it. Up to 8 digits per
     // entry (MAXLEN = 48000*60 = 2,880,000 fits in 7 digits) plus separator.
     char wraplens[20 * 9 + 2]; int wlp = 0; wraplens[wlp++] = '[';
+    // TEMPORARY diagnostic (bisecting "loop 2+ changes position on first
+    // playback"): each looper's live readPos, same exposure pattern as
+    // wraplen above. To be removed once the bug is found/fixed.
+    char readposes[20 * 9 + 2]; int rpp = 0; readposes[rpp++] = '[';
     for (int i = 0; i < AudioThread::Telemetry::kLoopers; i++) {
         if (t.looperRec[i])  recBits  |= (1u << i);
         if (t.looperPlay[i]) playBits |= (1u << i);
@@ -83,19 +87,21 @@ void Telemetry::publish() {
         // reason (routing, volume, playback gating).
         lvp += snprintf(levels + lvp, sizeof levels - lvp, i ? ",%.4f" : "%.4f", t.looperLevel[i]);
         wlp += snprintf(wraplens + wlp, sizeof wraplens - wlp, i ? ",%.0f" : "%.0f", t.looperWrapLen[i]);
+        rpp += snprintf(readposes + rpp, sizeof readposes - rpp, i ? ",%.0f" : "%.0f", t.looperReadPos[i]);
     }
     vols[vp++] = ']'; vols[vp] = 0;
     levels[lvp++] = ']'; levels[lvp] = 0;
     wraplens[wlp++] = ']'; wraplens[wlp] = 0;
+    readposes[rpp++] = ']'; readposes[rpp] = 0;
 
-    char json[1024];
+    char json[1280];
     int n = snprintf(json, sizeof json,
         "{\"core_busy\":[%.0f,%.0f,%.0f,%.0f],\"xruns\":%llu,"
         "\"link\":{\"synced\":%s,\"bpm\":%.1f,\"peers\":%d,\"playing\":%s},"
         "\"wifi\":\"%s\",\"monitor_mode\":%s,"
         "\"glitch_engaged\":%s,"
         "\"audio_peak\":{\"in\":%.4f,\"out\":%.4f},\"eff_speed\":%.4f,"
-        "\"loopers\":{\"rec\":%u,\"play\":%u,\"vol\":%s,\"level\":%s,\"wraplen\":%s}}",
+        "\"loopers\":{\"rec\":%u,\"play\":%u,\"vol\":%s,\"level\":%s,\"wraplen\":%s,\"readpos\":%s}}",
         t.coreBusyPct[0], t.coreBusyPct[1], t.coreBusyPct[2], t.coreBusyPct[3],
         (unsigned long long)t.xruns,
         t.linkSynced ? "true" : "false", t.bpm,
@@ -104,7 +110,7 @@ void Telemetry::publish() {
         t.monitorMode ? "true" : "false",
         t.glitchEngaged ? "true" : "false",
         t.inPeak, t.outPeak, t.effSpeed,
-        recBits, playBits, vols, levels, wraplens);
+        recBits, playBits, vols, levels, wraplens, readposes);
 
     // Write the status file for shell/curl inspection.
     FILE* f = fopen("/run/aloop/status.json", "w");
