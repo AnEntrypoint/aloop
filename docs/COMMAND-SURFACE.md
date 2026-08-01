@@ -172,6 +172,18 @@ instead of head-to-tail) — a reversed grain keeps the exact same
 raised-cosine window and lifespan as a forward one, so reversal is purely
 a read-direction flip, orthogonal to grain size/rate/scan.
 
+**Un-granulating: SHIFT + lofi-fx toggles the granulator on/off.** Every
+granulator knob's `applySamplerFxKnob` case unconditionally calls
+`setGranulatorEnabled(true)` (turning any knob on the bank engages
+granulation), but nothing ever called `setGranulatorEnabled(false)` --
+once touched, there was no way back to a plain (non-granulated) sample
+without a full service restart. Fixed: holding SHIFT (`fx/monitorfold`)
+while pressing lofi-fx toggles `granulatorEnabled()` instead of selecting
+the bank (a plain tap, SHIFT not held, still selects the bank exactly as
+before) — mirrors guitar-fx's own dual-gesture precedent (tap = normal
+action, modifier-held = alternate action) rather than inventing a new
+gesture shape.
+
 ### guitar-fx's dual gesture
 guitar-fx is the one bank button with a second, independent gesture layered on
 top of plain tap-to-select:

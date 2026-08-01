@@ -432,7 +432,7 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
             // m_guitarFxHeld correctly clears even after a sidechain-toggling
             // hold, not just a plain bank-select tap.
             if (d1 == kApcBtnDubFx    && type == 0x90 && d2 > 0) { grid.onDubFxPress(now, ps); continue; }
-            if (d1 == kApcBtnLofiFx   && type == 0x90 && d2 > 0) { grid.onLofiFxPress(now, ps); continue; }
+            if (d1 == kApcBtnLofiFx   && type == 0x90 && d2 > 0) { grid.onLofiFxPress(now, ps, audio ? audio->sampler() : nullptr); continue; }
             if (d1 == kApcBtnGuitarFx) {
                 if (type == 0x90 && d2 > 0) { grid.onGuitarFxPress(now, ps); continue; }
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onGuitarFxRelease(ps); continue; }

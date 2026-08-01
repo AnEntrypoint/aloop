@@ -631,7 +631,12 @@ void ApcGrid::onDubFxPress(unsigned now_ms, ParamStore&) {
     m_bankFlashWhich = FxBank::Dub;
     m_bankFlashReleaseAt = nonZeroDeadline(now_ms, kBankFlashMs);
 }
-void ApcGrid::onLofiFxPress(unsigned now_ms, ParamStore&) {
+void ApcGrid::onLofiFxPress(unsigned now_ms, ParamStore& ps, Sampler* sampler) {
+    bool shiftHeld = ps.get("fx/monitorfold", 0.0f) > 0.5f;
+    if (shiftHeld && sampler) {
+        sampler->setGranulatorEnabled(!sampler->granulatorEnabled());
+        return;
+    }
     m_activeBank = FxBank::LofiFx;
     m_bankFlashWhich = FxBank::LofiFx;
     m_bankFlashReleaseAt = nonZeroDeadline(now_ms, kBankFlashMs);

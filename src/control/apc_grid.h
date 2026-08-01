@@ -236,7 +236,13 @@ public:
     // nothing left to re-push on a bank switch. `now_ms` starts the brief LED
     // flash window (see bankFlashActive/pollHolds).
     void onDubFxPress(unsigned now_ms, ParamStore& ps);
-    void onLofiFxPress(unsigned now_ms, ParamStore& ps);
+    // SHIFT (fx/monitorfold) held at press time toggles the granulator
+    // on/off instead of selecting the LofiFx bank -- lets the sample play
+    // back plain (non-granulated) without needing to zero every knob back
+    // to a passthrough value. A plain tap (SHIFT not held) still selects
+    // the bank exactly as before, matching guitar-fx's own dual-gesture
+    // precedent (tap = normal action, modifier-held = alternate action).
+    void onLofiFxPress(unsigned now_ms, ParamStore& ps, Sampler* sampler);
     // guitar-fx is a dual-gesture button: a quick tap (press+release with NO
     // looper pad pressed in between) selects the guitar bank, exactly like
     // dub-fx/lofi-fx above. HOLDING guitar-fx while pressing a looper pad
