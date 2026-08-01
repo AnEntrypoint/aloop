@@ -11,6 +11,7 @@
 #include <dirent.h>
 #include <csetjmp>
 #include <csignal>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -351,16 +352,44 @@ void Lv2Host::process(float* buf, int nframes) {
     for (int i = 0; i < n; i++) buf[i] = ioBuffer_[(size_t)i];
 }
 
+// Faust's lv2.cpp architecture (mangle(), see faust/share/faust/lv2.cpp)
+// never emits the raw Faust hslider label as the LV2 port symbol: it
+// replaces every non-alnum/non-underscore character (including '/') with
+// '_', then appends "_<portIndex>" -- so a Faust label of "fx2/FLANGEAMT"
+// becomes a real TTL port symbol of "fx2_FLANGEAMT_<N>" for whatever index
+// N that control happened to get. WITNESSED live: apc_grid.cpp's guitar/
+// lofi-fx knob targets were the raw unmangled Faust labels
+// ("fx2/FLANGEAMT" etc), which can never equal any real port symbol --
+// setControl's exact-match scan silently matched nothing, every call,
+// forever, so switching to the Guitar/LofiFx bank never actually reached
+// the plugin (audibly indistinguishable from "stuck on Dub", since Dub is
+// a separate always-audible Faust-zone effect layered underneath).
+static std::string mangleFaustLabel(const std::string& s) {
+    std::string t = s;
+    for (size_t i = 0; i < t.size(); i++) {
+        char c = t[i];
+        bool ok = (i == 0) ? (isalpha((unsigned char)c) || c == '_')
+                            : (isalnum((unsigned char)c) || c == '_');
+        if (!ok) t[i] = '_';
+    }
+    return t;
+}
+
 void Lv2Host::setControl(const std::string& symbol, float value) {
-    // Flat scan, matched by symbol == LV2 port symbol (connectPorts()'s own
-    // documented ParamStore-bind-key convention). Every guitar/lofi-fx zone name
-    // (fx2/FLANGEAMT etc) is unique across the whole loaded bundle set, so the
-    // first match per plugin is the only match; still applied to every plugin in
-    // case more than one loaded bundle happens to share a symbol.
+    // Match by MANGLED-LABEL PREFIX (mangledLabel + "_" + digits), not an
+    // exact symbol match against the raw Faust label -- see mangleFaustLabel
+    // above for why an exact match against the raw label can never succeed.
+    // Every guitar/lofi-fx zone name (fx2/FLANGEAMT etc) is unique across the
+    // whole loaded bundle set, so the first match per plugin is the only
+    // match; still applied to every plugin in case more than one loaded
+    // bundle happens to share a symbol.
+    std::string prefix = mangleFaustLabel(symbol) + "_";
     for (auto& p : plugins_) {
         for (size_t i = 0; i < p.controlPortIdx.size(); i++) {
             size_t portIdx = p.controlPortIdx[i];
-            if (portIdx < p.ports.size() && p.ports[portIdx].symbol == symbol) {
+            if (portIdx >= p.ports.size()) continue;
+            const std::string& sym = p.ports[portIdx].symbol;
+            if (sym.size() > prefix.size() && sym.compare(0, prefix.size(), prefix) == 0) {
                 p.controlValues[portIdx] = value;
             }
         }
