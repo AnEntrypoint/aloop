@@ -438,22 +438,34 @@ with {
     // apart from each other regardless of how long they've been playing,
     // glitch engagement, or repeat presses (none of which touch masterPhase
     // or any looper's own offset).
-    rawRecordStartPhase = wrapAbs(masterPhase - writeIdxForLatch, max(1.0, masterLen));
-    // quantizedSliceGrid MUST be the SHARED master phrase length (masterLen),
-    // never finishTargetN (this looper's OWN recorded/quantized length).
-    // WITNESSED live: for looper 1 finishTargetN==masterLen so the two were
-    // numerically identical and this bug was invisible, but every
-    // consecutive looper's finishTargetN is a power-of-2 MULTIPLE/FRACTION
-    // of masterLen (M/16 .. 8M, see the finish-quantization history above)
-    // -- backdating rawRecordStartPhase (itself already computed modulo
-    // masterLen) against that looper's own finishTargetN instead of
-    // masterLen snaps to the wrong grid, so its record-start anchor lands
-    // at a fractional offset into its own recorded content -- symptom:
-    // "first playback starts at the wrong point / doesn't loop like it was
-    // recorded" for every looper after the first.
-    quantizedSliceGrid = max(1.0, masterLen);
-    recordStartGridBackdate = rawRecordStartPhase - floor(rawRecordStartPhase / quantizedSliceGrid) * quantizedSliceGrid;
-    recordStartPhaseOffsetStep(prev) = ba.if(finishEdge, masterPhase - latencyBiasN - recordStartGridBackdate, prev);
+    // recordStartPhaseOffset ANCHOR (2nd generation, THE REAL FIX):
+    // WITNESSED live, TWICE, after the grid-backdate mechanism below was
+    // tried: "the first loop loops fine but consecutive loops change their
+    // position at first playback, don't loop like they're recorded" --
+    // still broken even after fixing the grid UNIT (masterLen vs
+    // finishTargetN) the backdate math used, because the entire backdate
+    // CONCEPT was wrong, not just its grid-unit parameter. At finishEdge we
+    // want absPos==0 (the read anchor lands exactly on ring position 0,
+    // i.e. "start playing back from precisely where this take's first
+    // sample was written") -- a plain `masterPhase - latencyBiasN` anchor
+    // (no backdate term) already gives exactly that: absPos =
+    // wrapAbs(masterPhase - recordStartPhaseOffset + cycleOffset, wrapLen)
+    // = wrapAbs(latencyBiasN + 0, wrapLen) = latencyBiasN (~0 in the
+    // common no-SHIFT-held case) at the finishEdge sample itself. The
+    // previous backdate formula instead produced absPos ==
+    // recordStartGridBackdate at that same instant -- a NONZERO offset
+    // into the ring whenever this looper's raw arm-time masterPhase wasn't
+    // already sitting exactly on a masterLen boundary -- so playback
+    // started partway through the just-recorded content and only reached
+    // the true beginning after wrapping once, i.e. exactly "doesn't loop
+    // like it was recorded." This directly contradicts the standing,
+    // explicitly-confirmed spec (see AGENTS.md's "master-phrase length"
+    // section): loop content plays back from where it was actually
+    // recorded, verbatim -- inter-looper phrase alignment is already fully
+    // handled by armEdge's own gridTick gating (recording can only ever
+    // START on a 1/16-grid tick), so the READ anchor needs no separate
+    // grid-snapping of its own on top of that.
+    recordStartPhaseOffsetStep(prev) = ba.if(finishEdge, masterPhase - latencyBiasN, prev);
     recordStartPhaseOffset = recordStartPhaseOffsetStep ~ _;
     wrapAbs(p, len) = p - floor(p / float(len)) * float(len);
     // MULTI-PHRASE PLAYBACK (WITNESSED live, real hardware: "record long,
