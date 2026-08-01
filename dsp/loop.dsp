@@ -662,12 +662,14 @@ with {
     // (readPos/gridStep) actually uses.
     wrapLenMeter = hbargraph("wraplen", 0.0, float(MAXLEN));
     attachWrapLen(x) = attach(x, x*0.0 + float(wrapLen) : wrapLenMeter);
-    // TEMPORARY diagnostic (bisecting the "loop 2+ changes position on
-    // first playback" bug): expose readPos live via the same proven
-    // attach()-chain idiom as writeIdxMeter/wrapLenMeter above, so real
-    // ground truth (not hand-traced arithmetic) settles what readPos is
-    // actually doing across a real finishEdge/masterPhase-wrap boundary.
-    // To be removed once the bug is found and fixed.
+    // readPos telemetry: exposes the live read position via the same
+    // proven attach()-chain idiom as writeIdxMeter/wrapLenMeter above.
+    // Added while bisecting "loop 2+ changes position on first playback"
+    // (fixed -- see AGENTS.md's "recordStartGridBackdate" history); kept
+    // permanently since it lets a scripted test harness or udp/4445 query
+    // verify read-position continuity across a finishEdge/masterPhase-wrap
+    // boundary without needing to listen to it, matching writeidx/wraplen's
+    // own established verification role.
     readPosMeter = hbargraph("readposdiag2", 0.0, float(MAXLEN));
     attachReadPos(x) = attach(x, x*0.0 + float(readPos) : readPosMeter);
     attachLevel(x) = attach(x, abs(x) : ba.slidingMax(4096, 4096) : levelMeter) : attachWriteIdx : attachWrapLen : attachReadPos;

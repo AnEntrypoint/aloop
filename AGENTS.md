@@ -1489,6 +1489,14 @@ the restart -- never silently declares success on a stale/crashed process
 (see the REBOOT-listener and staleness caveats elsewhere in this file for
 why that check matters).
 
+**STOPS the service BEFORE overwriting `/opt/aloop/aloop`, not after.**
+WITNESSED live: `sftp.fastPut` against the binary's own path while `aloop`
+was still running failed with a bare `Failure` -- musl/Alpine's ETXTBSY on
+a write to a currently-executing file's inode, no more specific error text
+than that. The script now does `rc-service aloop stop` -> `fastPut` ->
+`rc-service aloop start`, never `restart`-after-write (which implicitly,
+incorrectly relied on the OLD binary still being writable while running).
+
 This preserves every constraint the netboot cycle also preserves -- zero
 added audio latency (a service restart takes the same code path as any
 other `aloop` start, no new buffering), the real target ISA/libc (CI, not
@@ -1500,3 +1508,72 @@ for anything touching `image/lib-boot-tree.sh`/`image/build-netboot.sh`
 themselves, kernel/cmdline config, or OpenRC service files -- those still
 need a real image rebuild, exactly as documented in "The netboot
 self-update pipeline" above.
+
+## `Lv2Host::setControl` must match Faust's MANGLED LV2 port symbol, never the raw Faust hslider label
+
+WITNESSED live: "switching fx modes from dub to lofi/guitar doesn't work,
+just stays on dub effects" -- and this was true from the very first commit
+that added the Guitar/LofiFx bank, not a regression. Faust's own `lv2.cpp`
+architecture (`mangle()`, in the Faust install's `share/faust/lv2.cpp`)
+never emits a control's raw Faust label as the real LV2 TTL port
+`lv2:symbol` -- it replaces every non-alnum/non-underscore character
+(including `/`) with `_`, then appends `"_<portIndex>"` (the control's own
+index within the plugin's port list, assigned in declaration order).
+`hslider("fx2/FLANGEAMT", ...)` therefore gets a REAL port symbol of
+`fx2_FLANGEAMT_3` (verified directly against the deployed bundle's own
+`.ttl`: `grep lv2:symbol guitar_lofi_fx.ttl`), never `fx2/FLANGEAMT`.
+`apc_grid.cpp`'s guitar/lofi-fx knob target tables use the raw Faust
+labels verbatim (matching the `.dsp` source's own `hslider()` calls, which
+is the natural thing to write), so `Lv2Host::setControl`'s old
+exact-symbol-match scan could never succeed -- every knob CC silently
+matched nothing, permanently, since this bank was first added. This is
+audibly indistinguishable from "stuck on Dub" because Dub is a wholly
+separate, always-audible Faust-zone effect chain layered underneath the
+(silently inert) Core-3 LV2 stage -- the bank-select buttons themselves
+worked correctly the whole time (confirmed via LED behavior), only the
+knob-to-plugin control path was dead.
+
+Fixed: `setControl` now matches by MANGLED-LABEL PREFIX
+(`mangleFaustLabel(rawLabel) + "_"` compared as a string prefix against
+each port's real symbol) rather than requiring an exact match, so it's
+robust to whatever numeric port-index suffix Faust's codegen happens to
+assign on a given build, without `apc_grid.cpp` needing to hardcode
+fragile per-build indices. Verified live via temporary `[lv2-diag]`
+logging in `setControl` itself (since removed): a real CC48 send with the
+Guitar bank active produced `setControl symbol=fx2/FLANGEAMT
+prefix=fx2_FLANGEAMT_ -> port=fx2_FLANGEAMT_3 value=0.7874` -- the control
+value genuinely reaches `controlValues[3]`, the exact memory
+`connect_port` bound to the plugin's real port.
+
+**Any future LV2-hosted Faust control target must be verified this way**
+(read the deployed bundle's own `.ttl` `lv2:symbol` lines directly, or add
+temporary match-diagnostic logging) rather than assumed to equal the raw
+Faust `hslider()`/`button()` label string -- this is the LV2-hosting
+equivalent of the `par()`-UI-duplication and `strcmp(nullptr,...)` classes
+of bug already documented elsewhere in this file: a plausible-looking
+target string that silently never matches anything at runtime, with zero
+error output anywhere in the pipeline.
+
+## A stray uncommented `disable_core3_lv2 = 1` in `/etc/aloop.conf` silently kills the ENTIRE always-on guitar/lofi-fx stage, not just a bisection test
+
+WITNESSED live, found immediately after fixing the LV2 symbol-mangling bug
+above: even with `setControl` genuinely reaching the plugin's real port
+(confirmed via the diagnostic logging), knob turns still produced zero
+audible effect. Root cause: an earlier session's `bisect-1hz-stall.js` A/B
+testing (see "Diagnosing periodic audio stalls" above) had left
+`/etc/aloop.conf` with a real, uncommented `disable_core3_lv2 = 1` line
+still active on the device -- this flag makes `audio_thread.cpp`'s worker
+skip `homeFx.process()`/`userFx.process()` entirely every block, so
+`guitar_lofi_fx.lv2` (which lives in `/effects/home`, loaded onto `homeFx`,
+per the "Two ALSA devices" section's own established Core-1/Core-3
+terminology) never runs its DSP at all regardless of any control value
+fix -- fully silent, fully inert, with no error or warning anywhere. This
+is a LIVE-DEVICE-ONLY state (the shipped `config/aloop.conf` template only
+ever carries this line commented-out, as pure documentation), so it does
+not reproduce on a fresh netboot/reflash -- but it can persist silently
+across any number of `rc-service aloop restart`s on an already-running
+device, since restart re-reads the same live `/etc/aloop.conf`, not the
+repo's template. Always `grep -n disable_core3_lv2 /etc/aloop.conf` on the
+live device (anchored to line-start, no leading `#`, matching the already-
+fixed detector regex in the bisection tool) before spending further time
+debugging "guitar/lofi effects don't do anything" as a code bug.

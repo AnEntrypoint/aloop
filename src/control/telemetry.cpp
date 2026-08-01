@@ -72,9 +72,9 @@ void Telemetry::publish() {
     // quantized length without needing to listen to it. Up to 8 digits per
     // entry (MAXLEN = 48000*60 = 2,880,000 fits in 7 digits) plus separator.
     char wraplens[20 * 9 + 2]; int wlp = 0; wraplens[wlp++] = '[';
-    // TEMPORARY diagnostic (bisecting "loop 2+ changes position on first
-    // playback"): each looper's live readPos, same exposure pattern as
-    // wraplen above. To be removed once the bug is found/fixed.
+    // Each looper's live readPos, same exposure pattern as wraplen above --
+    // lets a scripted test harness verify read-position continuity without
+    // needing to listen to it.
     char readposes[20 * 9 + 2]; int rpp = 0; readposes[rpp++] = '[';
     for (int i = 0; i < AudioThread::Telemetry::kLoopers; i++) {
         if (t.looperRec[i])  recBits  |= (1u << i);
