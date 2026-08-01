@@ -539,27 +539,38 @@ Investigated and found not applicable (corrected a wrong initial premise):
   `-dlt <INT_MAX>`) are already the memory-efficient choice for these sizes,
   with no measured bottleneck to justify a change. No action taken.
 
-**`-mapp` — verified and SHIPPED** (was HIGH RISK, now proven safe): a real
-A/B numeric harness settled this rather than leaving it as a docs-driven
-guess. Built natively (no Docker needed — a native Windows Faust install
-already exists at `C:\faust`; `mingw g++` compiles the generated C++
-directly): generated `dsp/aloop.dsp` twice (current shipped flags, and the
-same plus `-mapp`), compiled both into a standalone harness reusing the
-EXACT `FaustUI`/`FaustDspBase` shim `audio_thread.cpp` uses in production
-(see that file's own `#include "loop.cpp"` block), and drove both through an
-identical synthetic cycle exercising precisely the arithmetic this
-codebase's own history flags as fragile: first-recording immediate arm,
-finish-quantization's EXTEND case (`gridStep = masterLen/16` snapping),
-varispeed engage → disengage (the re-snap-to-`absPos` edge case), a second
-loop's own quantization, and dual-loop playback under two different
-`wrapLen`s — 9280 samples total. Result: **byte-identical output, 0 diff
-lines, identical md5sum**, with and without `-mapp`. One caveat found along
-the way (Windows-specific, harmless): `AloopLoopDsp` is ~232MB
-(`sizeof()`) — 20 loopers × `MAXLEN` rwtable storage each — so it must be
-heap/static-allocated, never stack-allocated, in any future standalone
-harness (a stack allocation blew the default 1MB Windows thread stack
-immediately, `STATUS_STACK_OVERFLOW`, before a single sample was even
-processed).
+**`-mapp` — SHIPPED, then REVERTED after a real-hardware SIGSEGV; NOT
+shipped as of this entry.** An earlier pass "verified and shipped" this
+flag based on a synthetic x86_64 A/B harness (built natively via
+`C:\faust` + MinGW g++, reusing the exact `FaustUI`/`FaustDspBase` shim
+`audio_thread.cpp` uses, driven through a 9280-sample synthetic cycle
+covering first-recording arm, finish-quantization EXTEND, varispeed
+engage/disengage, and dual-loop playback) that showed byte-identical
+output, 0 diff, identical md5sum with and without `-mapp`. That result
+was real but insufficient: it was later WITNESSED live on the actual Pi 4
+that the combination of real aarch64 codegen and real (non-synthetic,
+genuinely varying) audio content triggers a 100%-reproducible SIGSEGV
+(`si_addr=0x0`) inside `AloopLoopDsp::compute()` the instant real audio
+first reaches the DSP — something the synthetic x86_64 harness never
+exercised and could not have caught. A crash bisection ruled out `-ct 0`
+first (removing it alone did not stop the crash), then removing `-mapp`
+alone fixed it (confirmed live: `compute()` returns normally every block,
+service stays `started`, held stable 20+s, zero xruns). `-mapp` is
+deliberately NOT passed at any of the 3 real Faust invocation sites
+(`build-binary.yml`'s `loop.cpp` codegen, both jobs in `build-lv2.yml`)
+going forward. Lesson: a synthetic-signal x86_64 A/B, however thorough,
+does not substitute for a real-hardware, real-signal test before shipping
+a numeric-approximation flag — this is the same class of gap the
+CI-green-but-never-loads musl/aarch64 lesson elsewhere in this file
+warns about, just for arithmetic behavior instead of linkage. Any future
+attempt to re-add `-mapp` needs a fresh live Pi 4 test with real audio,
+not a reuse of this old synthetic result. The Windows-specific
+stack-vs-heap caveat from the original harness still applies to any
+future standalone harness: `AloopLoopDsp` is ~232MB (`sizeof()`) — 20
+loopers × `MAXLEN` rwtable storage each — so it must be heap/
+static-allocated, never stack-allocated (a stack allocation blew the
+default 1MB Windows thread stack immediately, `STATUS_STACK_OVERFLOW`,
+before a single sample was even processed).
 
 **Real measured CPU improvement — closed the loop from theoretical to
 proven.** Added a `faust2bench`-based benchmark step to CI
@@ -568,12 +579,18 @@ proven.** Added a `faust2bench`-based benchmark step to CI
 under MinGW, so this genuinely cannot run on Windows). 20 runs each, `-bs 64`
 (matching aloop's real block size), same `dsp/aloop.dsp` source:
 - **Baseline** (no flags): DSP CPU ≈ **4.27%**, ≈44.9 MBytes/sec.
-- **Shipped** (`-vec -fun -dfs -vs32 -nvi -ct0 -mapp`): DSP CPU ≈ **4.12%**,
-  ≈47.5 MBytes/sec.
+- **Shipped at the time of this benchmark** (`-vec -fun -dfs -vs32 -nvi
+  -ct0 -mapp`): DSP CPU ≈ **4.12%**, ≈47.5 MBytes/sec. `-mapp` was later
+  reverted (see the `-mapp` entry above) after a real-hardware SIGSEGV;
+  the actual currently-shipped flag set is `-vec -fun -dfs -vs32 -nvi
+  -ct0` (no `-mapp`), not re-benchmarked separately, but `-mapp`'s own
+  measured contribution here was a minor slice of the total win — the
+  codegen-strategy flags (`-vec -fun -dfs -nvi`) are the dominant
+  contributor and remain shipped.
 
 A real, reproducible ~3.5% relative CPU reduction and ~6% throughput
-increase from the flag change alone (same DSP math, verified byte-identical
-output earlier in this section) — measured on the CI runner's x86_64 core,
+increase from the flag change altogether (same DSP math on the synthetic
+harness, verified byte-identical output there) — measured on the CI runner's x86_64 core,
 not the Pi 4's aarch64 Cortex-A72 specifically, but the same flags apply
 there via `-mcpu=cortex-a72` (also shipped, see below) and the underlying
 codegen-strategy win (fewer scalar loop overheads, inlined functions, no

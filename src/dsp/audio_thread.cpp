@@ -330,7 +330,6 @@ static void* worker(void*) {
                 }
             }
             if (r < 0) { g_telem.xruns++; snd_pcm_recover(cap, (int)r, 1); continue; }
-            fprintf(stderr, "[trace] post-readi r=%ld\n", (long)r); fflush(stderr);
 
 #ifdef ALOOP_HAVE_FAUST_LOOP
             if (g_params) {
@@ -479,10 +478,8 @@ static void* worker(void*) {
                 if (a > inPeak) inPeak = a;
             }
             g_telem.inPeak = inPeak;
-            fprintf(stderr, "[trace] pre-sampler-render\n"); fflush(stderr);
             for (int i = 0; i < N; i++) samplerBuf[(size_t)i] = (int32_t)(fin[i] * 32768.0f);
             g_sampler->renderInto(samplerBuf.data(), N);
-            fprintf(stderr, "[trace] post-sampler-render\n"); fflush(stderr);
             for (int i = 0; i < N; i++) fin[i] = (float)samplerBuf[(size_t)i] / 32768.0f;
             if (g_params) {
                 static float foldGain = 0.0f;
@@ -503,10 +500,8 @@ static void* worker(void*) {
                 fui.set("MONITORFOLD", foldGain);
                 fui.set("GLITCHFOLD", glitchFoldGain);
             }
-            fprintf(stderr, "[trace] pre-sampler-capture\n"); fflush(stderr);
             for (int i = 0; i < N; i++) samplerBuf[(size_t)i] = (int32_t)(prevFiltOut[i] * 32768.0f);
             g_sampler->captureBlock(samplerBuf.data(), N);
-            fprintf(stderr, "[trace] post-sampler-capture\n"); fflush(stderr);
             {
                 float sidechainEnv = 0.0f;
                 if (g_params) {
@@ -526,14 +521,11 @@ static void* worker(void*) {
             }
             timespec t0, t1;
             clock_gettime(CLOCK_MONOTONIC, &t0);
-            fprintf(stderr, "[trace] pre-compute\n"); fflush(stderr);
             faustHome.compute(N, fins, fouts);
-            fprintf(stderr, "[trace] post-compute\n"); fflush(stderr);
             if (!g_cfg.disableCore3Lv2) {
                 homeFx.process(fout.data(), N);
                 userFx.process(fout.data(), N);
             }
-            fprintf(stderr, "[trace] post-lv2\n"); fflush(stderr);
             prevLoopSum = rawLoopSum;
             prevFiltOut = rawFiltTap;
             clock_gettime(CLOCK_MONOTONIC, &t1);

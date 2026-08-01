@@ -46,20 +46,21 @@ jobs:
           # -ct 0: disables Faust's default table range-checking -- verified
           # safe (every rwtable index in this program is already
           # software-bounded by explicit modulo/clamp logic, see AGENTS.md).
-          # RE-VERIFIED live during this pass's crash bisection: removing
-          # -ct 0 alone did NOT stop the crash (identical SIGSEGV, identical
+          # RE-VERIFIED live during a crash bisection: removing -ct 0 alone
+          # did NOT stop the crash (identical SIGSEGV, identical
           # AloopLoopDsp::compute() crash site) -- ruled out as the cause,
           # restored.
-          # -mapp TEMPORARILY REMOVED for live crash bisection (round 2): a
-          # real SIGSEGV (si_addr=0x0, inside AloopLoopDsp::compute)
-          # reproduces 100% of the time on the real Pi 4 the instant real
-          # (non-silent) audio reaches the DSP for the first time -- never
-          # reproduced locally on x86_64 with synthetic input, and removing
-          # -ct 0 alone (round 1) did not fix it. -mapp's floor/ceil/fmod/
-          # remainder approximation was only ever verified byte-identical
-          # against a synthetic 9280-sample cycle on x86_64, never against
-          # real audio content on the real aarch64 target -- this is the
-          # next candidate to rule in or out.
+          # -mapp DELIBERATELY NOT USED: a real SIGSEGV (si_addr=0x0, inside
+          # AloopLoopDsp::compute) reproduced 100% of the time on the real
+          # Pi 4 the instant real (non-silent) audio reached the DSP for the
+          # first time. Removing -ct 0 alone did not fix it; removing -mapp
+          # did (confirmed live, held stable 20+s, zero xruns). -mapp's
+          # floor/ceil/fmod/remainder approximation was only ever verified
+          # byte-identical against a synthetic 9280-sample cycle on x86_64 --
+          # that A/B never caught the real failure mode, which needed real
+          # aarch64 codegen and real audio content to surface. Do not
+          # re-add -mapp without a fresh real-hardware A/B, not just a
+          # synthetic one. See AGENTS.md.
           faust -lang cpp -vec -fun -dfs -vs 32 -nvi -ct 0 -cn AloopLoopDsp -I dsp -I effects/home/faust dsp/aloop.dsp -o build/loop.cpp
           echo "generated $(wc -l < build/loop.cpp) lines of loop C++"
 
