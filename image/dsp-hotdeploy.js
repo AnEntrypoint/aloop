@@ -105,13 +105,15 @@ async function deployToDevice(files) {
       .connect({ host: HOST, port: 22, username: SSH_USER, password: SSH_PASS, readyTimeout: 15000 });
   });
   try {
+    console.log('[dsp-hotdeploy] stopping aloop service before overwriting its binary (musl ETXTBSY guard)');
+    await sshExec(conn, 'rc-service aloop stop');
     for (const f of files) {
       console.log(`[dsp-hotdeploy] pushing ${f.local} -> ${f.remote}`);
       await sftpPut(conn, f.local, f.remote);
       if (f.exec) await sshExec(conn, `chmod +x ${shellQuote(f.remote)}`);
     }
-    console.log('[dsp-hotdeploy] restarting aloop service (not a reboot)');
-    const r = await sshExec(conn, 'rc-service aloop restart');
+    console.log('[dsp-hotdeploy] starting aloop service (not a reboot)');
+    const r = await sshExec(conn, 'rc-service aloop start');
     console.log(r.out || r.errOut);
     const status = await sshExec(conn, 'rc-service aloop status');
     console.log('[dsp-hotdeploy] post-restart status:', status.out.trim());
