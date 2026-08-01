@@ -384,6 +384,7 @@ void Lv2Host::setControl(const std::string& symbol, float value) {
     // match; still applied to every plugin in case more than one loaded
     // bundle happens to share a symbol.
     std::string prefix = mangleFaustLabel(symbol) + "_";
+    bool matched = false;
     for (auto& p : plugins_) {
         for (size_t i = 0; i < p.controlPortIdx.size(); i++) {
             size_t portIdx = p.controlPortIdx[i];
@@ -391,8 +392,15 @@ void Lv2Host::setControl(const std::string& symbol, float value) {
             const std::string& sym = p.ports[portIdx].symbol;
             if (sym.size() > prefix.size() && sym.compare(0, prefix.size(), prefix) == 0) {
                 p.controlValues[portIdx] = value;
+                matched = true;
+                fprintf(stderr, "[lv2-diag] setControl symbol=%s prefix=%s -> port=%s value=%.4f plugin=%s\n",
+                        symbol.c_str(), prefix.c_str(), sym.c_str(), value, p.uri.c_str());
             }
         }
+    }
+    if (!matched) {
+        fprintf(stderr, "[lv2-diag] setControl symbol=%s prefix=%s -> NO MATCH (plugins=%zu)\n",
+                symbol.c_str(), prefix.c_str(), plugins_.size());
     }
 }
 
