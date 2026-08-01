@@ -544,14 +544,25 @@ static const FxKnobTarget kGuitarTargets[kFxKnobCount] = {
     { FxKnobKind::SamplerReleaseMs, nullptr },
     { FxKnobKind::Lv2Control, "fx2/COMPRESSAMT" },
 };
+// "Super music granulator" (LOFI feature, user-requested rework): the
+// LofiFx bank keeps BITCRUSHAMT as its one surviving lofi audio-effect
+// knob (explicit "keep the bitcrusher" decision) and hands every other
+// knob position to the granulator, exposing all 6 of its meaningful
+// runtime parameters directly instead of the previous 3 (grain size/
+// density/scan rate only, with pitch-spray/position-jitter/reverse-
+// probability all fixed at their passthrough defaults). VINYLAMT/
+// FLUTTERAMT/SRRAMT are dropped from the bank's own control surface
+// (guitar_lofi_fx.dsp's Faust zones for them still exist and default to
+// their own passthrough values, so the DSP stages themselves are
+// unaffected -- only the physical knob no longer reaches them).
 static const FxKnobTarget kLofiFxTargets[kFxKnobCount] = {
     { FxKnobKind::Lv2Control, "fx2/BITCRUSHAMT" },
-    { FxKnobKind::Lv2Control, "fx2/VINYLAMT"    },
-    { FxKnobKind::Lv2Control, "fx2/FLUTTERAMT"  },
-    { FxKnobKind::Lv2Control, "fx2/SRRAMT"      },
-    { FxKnobKind::SamplerGrainSizeMs,    nullptr },
-    { FxKnobKind::SamplerGrainDensityHz, nullptr },
-    { FxKnobKind::SamplerScanRate,       nullptr },
+    { FxKnobKind::SamplerGrainSizeMs,       nullptr },
+    { FxKnobKind::SamplerGrainDensityHz,    nullptr },
+    { FxKnobKind::SamplerScanRate,          nullptr },
+    { FxKnobKind::SamplerPitchSprayCents,   nullptr },
+    { FxKnobKind::SamplerPositionJitterMs,  nullptr },
+    { FxKnobKind::SamplerReverseProb,       nullptr },
 };
 
 static void applySamplerFxKnob(FxKnobKind kind, float v01, Sampler* sampler) {
@@ -570,6 +581,18 @@ static void applySamplerFxKnob(FxKnobKind kind, float v01, Sampler* sampler) {
         case FxKnobKind::SamplerScanRate:
             sampler->setGranulatorEnabled(true);
             sampler->setScanRate(v01 * 8.0f);
+            break;
+        case FxKnobKind::SamplerPitchSprayCents:
+            sampler->setGranulatorEnabled(true);
+            sampler->setPitchSprayCents(v01 * 1200.0f);
+            break;
+        case FxKnobKind::SamplerPositionJitterMs:
+            sampler->setGranulatorEnabled(true);
+            sampler->setPositionJitterMs(v01 * 1000.0f);
+            break;
+        case FxKnobKind::SamplerReverseProb:
+            sampler->setGranulatorEnabled(true);
+            sampler->setReverseProbability(v01);
             break;
         default: break;
     }

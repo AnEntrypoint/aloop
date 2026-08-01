@@ -227,6 +227,19 @@ public:
         if (rate > 8.0f) rate = 8.0f;
         m_scanRate = rate;
     }
+    // Per-grain probability [0,1] of spawning in REVERSE (negative playback
+    // rate, grain plays tail-to-head instead of head-to-tail). 0 = every
+    // grain plays forward (matches the plain-read voice's direction exactly).
+    // A reversed grain still spawns/decays with the same raised-cosine
+    // window and lifespan as a forward one, so reversal is purely a read-
+    // direction flip -- it never changes grain timing/density, keeping this
+    // control orthogonal to grain size/rate/scan.
+    void setReverseProbability(float p)
+    {
+        if (p < 0.0f) p = 0.0f;
+        if (p > 1.0f) p = 1.0f;
+        m_reverseProb = p;
+    }
 
     // ---- Consumer side (audio thread) ---------------------------------------
     // Append the DRY input block to the armed record buffer (no-op when not
@@ -408,6 +421,12 @@ private:
         // Pitch spray: random +/- cents around the voice's own note rate.
         float centsOffset = (m_pitchSprayCents > 0.0f) ? (_randBipolar() * m_pitchSprayCents) : 0.0f;
         gr.rate = vo.rate * pow(2.0, (double)centsOffset / 1200.0);
+
+        // Reverse-grain probability: flips this grain's read direction.
+        // _randBipolar() returns [-1,1); mapping to [0,1) via *0.5+0.5 keeps
+        // one RNG draw per grain rather than a second dedicated call.
+        bool reversed = (m_reverseProb > 0.0f) && ((_randBipolar() * 0.5f + 0.5f) < m_reverseProb);
+        if (reversed) gr.rate = -gr.rate;
 
         gr.lifeSamples = (int)((m_grainMs * 0.001f) * (float)SR);
         if (gr.lifeSamples < 2) gr.lifeSamples = 2;   // avoid degenerate 0/1-sample "grain"
@@ -734,6 +753,7 @@ private:
     float    m_pitchSprayCents;
     float    m_posJitterMs;
     float    m_scanRate;
+    float    m_reverseProb = 0.0f;
     uint32_t m_rngState = 2463534242u;   // xorshift32 seed (any nonzero value works; fixed for reproducibility)
 };
 

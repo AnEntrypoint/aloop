@@ -142,19 +142,35 @@ values the physical knobs currently show/edit), never a DSP-routing change:
 | CC | Dub target | Guitar target | LofiFx target |
 |---|---|---|---|
 | 48 | `fx/reverb` (Faust) | `fx2/FLANGEAMT` (LV2) | `fx2/BITCRUSHAMT` (LV2) |
-| 49 | `fx/delay` (Faust) | `fx2/TREMOLOAMT` (LV2) | `fx2/VINYLAMT` (LV2) |
-| 50 | `fx/time` (Faust) | `fx2/BANKSPEED` (LV2) | `fx2/FLUTTERAMT` (LV2) |
-| 51 | `fx/hp` (Faust) | `fx2/PHASERAMT` (LV2) | `fx2/SRRAMT` (LV2) |
-| 54 | `fx/lpres` (Faust) | attack ms (Sampler) | grain size ms (Sampler) |
-| 55 | `fx/lp` (Faust) | release ms (Sampler) | grain density Hz (Sampler) |
-| 57 | `fx/pitch` (Faust) | `fx2/COMPRESSAMT` (LV2) | scan rate (Sampler) |
+| 49 | `fx/delay` (Faust) | `fx2/TREMOLOAMT` (LV2) | grain size ms (Sampler) |
+| 50 | `fx/time` (Faust) | `fx2/BANKSPEED` (LV2) | grain density Hz (Sampler) |
+| 51 | `fx/hp` (Faust) | `fx2/PHASERAMT` (LV2) | scan rate (Sampler) |
+| 54 | `fx/lpres` (Faust) | attack ms (Sampler) | pitch-spray cents (Sampler) |
+| 55 | `fx/lp` (Faust) | release ms (Sampler) | position-jitter ms (Sampler) |
+| 57 | `fx/pitch` (Faust) | `fx2/COMPRESSAMT` (LV2) | reverse-grain probability (Sampler) |
 
 (CC53/formant is handled separately by `onFormantCC`, unaffected by bank
-switching — same as before this feature.) Granulator's pitch-spray and
-position-jitter controls stay fixed at their passthrough defaults — only 7
-physical knobs exist, so lofi-fx's bottom row picked 3 of the sampler's 5
-granulator params (grain size/density/scan rate), matching guitar bank's 4+3
-knob shape exactly (both decisions made explicitly, not silently guessed).
+switching — same as before this feature.)
+
+**"Super music granulator" rework (LOFI feature, superseding the earlier
+3-knob granulator above):** LofiFx keeps `BITCRUSHAMT` as its one surviving
+lofi audio-effect knob (explicit user decision: "keep the bitcrusher") and
+hands every other knob position to the granulator — all 6 of its
+meaningful runtime parameters are now directly controllable (grain size,
+grain density, scan rate, pitch spray, position jitter, and a new
+reverse-grain probability control), instead of the previous 3 (grain
+size/density/scan rate only, with pitch-spray/position-jitter fixed at
+their passthrough defaults and no reverse-probability control existing at
+all). `VINYLAMT`/`FLUTTERAMT`/`SRRAMT` are dropped from the bank's own
+control surface — `guitar_lofi_fx.dsp`'s Faust zones for them still exist
+and default to their own passthrough values, so the DSP stages themselves
+are unaffected, only the physical knob no longer reaches them.
+
+`Sampler::setReverseProbability(float)` (new): per-grain probability
+[0,1] of spawning in reverse (negative playback rate, tail-to-head
+instead of head-to-tail) — a reversed grain keeps the exact same
+raised-cosine window and lifespan as a forward one, so reversal is purely
+a read-direction flip, orthogonal to grain size/rate/scan.
 
 ### guitar-fx's dual gesture
 guitar-fx is the one bank button with a second, independent gesture layered on

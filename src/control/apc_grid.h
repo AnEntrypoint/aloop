@@ -88,7 +88,8 @@ constexpr int kFxKnobCount = 7;
 //            their passthrough defaults, per the confirmed 3-of-5 granulator
 //            knob mapping: only 7 physical knobs exist, no 8th slot)
 enum class FxKnobKind : uint8_t { FaustZone, Lv2Control, SamplerAttackMs, SamplerReleaseMs,
-                                   SamplerGrainSizeMs, SamplerGrainDensityHz, SamplerScanRate };
+                                   SamplerGrainSizeMs, SamplerGrainDensityHz, SamplerScanRate,
+                                   SamplerPitchSprayCents, SamplerPositionJitterMs, SamplerReverseProb };
 struct FxKnobTarget {
     FxKnobKind kind;
     const char* name;   // Faust zone name (FaustZone) or LV2 port symbol (Lv2Control); unused otherwise
