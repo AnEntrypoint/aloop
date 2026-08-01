@@ -26,6 +26,12 @@
 .gm/disciplines/codeinsight-vec/
 .gm/_prompt.json
 .gm/.instructions-shipped-manifest.json
+.gm/prd.yml
+.gm/mutables.yml
+.gm/long-gap-retry-state
+.gm/config-source-cache-default/
+.gm/config-source-cache-default*.sync.json
+.gm/.embed-generation
 
 # build artifacts
 build/
