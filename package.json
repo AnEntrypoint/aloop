@@ -1,0 +1,9 @@
+{
+  "name": "aloop-tooling",
+  "private": true,
+  "description": "Node.js dev-tooling scripts for aloop (netboot serving, SSH deploy, hardware test harnesses) -- not the device firmware itself, which is C++/Faust built via CMake/faust2lv2 in ci/.",
+  "dependencies": {
+    "extract-zip": "^2.0.1",
+    "ssh2": "^1.15.0"
+  }
+}

@@ -50,6 +50,7 @@ tmp/
 .netboot-serve.new.*/
 .netboot-serve.log
 .netboot-serve.err.log
+.netboot-serve-live*.log
 .netboot-update-sha
 .netboot-update-work/
 .netboot-cache/

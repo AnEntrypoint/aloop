@@ -35,6 +35,7 @@ const https = require('https');
 const { execFileSync, execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
+const extractZip = require('extract-zip');
 
 function arg(name, def) { const i = process.argv.indexOf(name); return i > 0 && process.argv[i + 1] ? process.argv[i + 1] : def; }
 
@@ -329,9 +330,13 @@ function ghGet(apiPath) {
     }).on('error', reject);
   });
 }
-// Artifact downloads are a zip; write it, unzip via PowerShell's Expand-Archive
-// (no extra dependency on a bare Windows host, matching looper's use of
-// PowerShell for its own zip extraction in dev-server.js's sibling scripts).
+// Artifact downloads are a zip; write it, unzip via the pure-JS extract-zip
+// package. WITNESSED live: PowerShell's Expand-Archive can hang indefinitely
+// on this host under real system load (multiple unrelated powershell.exe
+// invocations from other tools also observed stuck the same session) --
+// extract-zip has no shell/PowerShell dependency and avoids that failure
+// mode entirely, matching this codebase's own ssh2-over-Windows-ssh.exe
+// precedent for the same "flaky native Windows tooling" reason.
 //
 // GitHub's artifact endpoint answers with a 303 (not 301/302) to a pre-signed
 // Azure Blob Storage URL (the SAS token is IN the query string, e.g.
@@ -378,7 +383,7 @@ async function downloadRunArtifact(runId, artifactName, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
   const zipPath = path.join(destDir, artifactName + '.zip');
   await downloadArtifactZip(art.archive_download_url, zipPath);
-  execFileSync('powershell', ['-NoProfile', '-Command', 'Expand-Archive -Path "' + zipPath + '" -DestinationPath "' + destDir + '" -Force'], { stdio: 'pipe' });
+  await extractZip(zipPath, { dir: destDir });
   return destDir;
 }
 function sendPiReboot() {
