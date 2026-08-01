@@ -439,7 +439,19 @@ with {
     // glitch engagement, or repeat presses (none of which touch masterPhase
     // or any looper's own offset).
     rawRecordStartPhase = wrapAbs(masterPhase - writeIdxForLatch, max(1.0, masterLen));
-    quantizedSliceGrid = max(1.0, finishTargetN);
+    // quantizedSliceGrid MUST be the SHARED master phrase length (masterLen),
+    // never finishTargetN (this looper's OWN recorded/quantized length).
+    // WITNESSED live: for looper 1 finishTargetN==masterLen so the two were
+    // numerically identical and this bug was invisible, but every
+    // consecutive looper's finishTargetN is a power-of-2 MULTIPLE/FRACTION
+    // of masterLen (M/16 .. 8M, see the finish-quantization history above)
+    // -- backdating rawRecordStartPhase (itself already computed modulo
+    // masterLen) against that looper's own finishTargetN instead of
+    // masterLen snaps to the wrong grid, so its record-start anchor lands
+    // at a fractional offset into its own recorded content -- symptom:
+    // "first playback starts at the wrong point / doesn't loop like it was
+    // recorded" for every looper after the first.
+    quantizedSliceGrid = max(1.0, masterLen);
     recordStartGridBackdate = rawRecordStartPhase - floor(rawRecordStartPhase / quantizedSliceGrid) * quantizedSliceGrid;
     recordStartPhaseOffsetStep(prev) = ba.if(finishEdge, masterPhase - latencyBiasN - recordStartGridBackdate, prev);
     recordStartPhaseOffset = recordStartPhaseOffsetStep ~ _;
