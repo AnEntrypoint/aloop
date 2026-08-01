@@ -284,12 +284,15 @@ SSHCFG
   # it APPENDS a second entry, and extraction order then decides which wins
   # (fragile, host-dependent). Prefixing `./` here is what makes -r correctly
   # update the same entry instead of duplicating it.
-  ( cd "$OVL" && tar --mode='+x' -rf "$APKOVL_TAR" \
-      ./opt/aloop/aloop ./opt/aloop/autoap.sh \
+  _exec_paths="./opt/aloop/autoap.sh \
       ./etc/local.d/10-rt-tune.start ./etc/local.d/20-usb-gadget.start \
       ./etc/init.d/aloop ./etc/init.d/autoap \
       $(find usr/sbin -type f 2>/dev/null | sed 's|^|./|') \
-      $(find opt/aloop/test -type f -name '*.sh' 2>/dev/null | sed 's|^|./|') )
+      $(find opt/aloop/test -type f -name '*.sh' 2>/dev/null | sed 's|^|./|')"
+  if [ -f "$OVL/opt/aloop/aloop" ]; then
+    _exec_paths="./opt/aloop/aloop $_exec_paths"
+  fi
+  ( cd "$OVL" && tar --mode='+x' -rf "$APKOVL_TAR" $_exec_paths )
   gzip -f "$APKOVL_TAR"
   # $APKOVL_TAR.gz IS $_work/$APKOVL already (APKOVL_TAR = $_work/aloop.apkovl.tar,
   # APKOVL = aloop.apkovl.tar.gz) — no mv needed; a self-mv errors "same file" on
