@@ -118,6 +118,8 @@ boot_tree_fetch_opi() {
   fi
   echo "[boot-tree] decompressing Armbian image"
   xz -dk -f "$_img_xz" -c > "$_img"
+  echo "[boot-tree] diagnostic: decompressed image size = $(wc -c < "$_img") bytes, xz source size = $(wc -c < "$_img_xz") bytes"
+  echo "[boot-tree] diagnostic: MBR signature (should be 55aa) = $(dd if="$_img" bs=1 skip=510 count=2 2>/dev/null | xxd -p 2>/dev/null || od -An -tx1 <(dd if="$_img" bs=1 skip=510 count=2 2>/dev/null))"
 
   mkdir -p "$_boot/opi-boot" "$_boot/opi-uboot"
 
