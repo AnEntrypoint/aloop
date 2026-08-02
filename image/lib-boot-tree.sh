@@ -126,33 +126,38 @@ boot_tree_fetch_opi() {
 
   # U-Boot: raw sectors before the first partition. Read the first partition's
   # start offset from the image's own partition table (never assume a fixed
-  # value -- Armbian's layout is authoritative, not a guess) and copy everything
-  # from sector 0 up to that offset as one raw U-Boot blob.
+  # value -- Armbian's layout is authoritative, not a guess).
+  #
+  # WITNESSED live on real CI (5 debugging rounds): Armbian's own SPL/u-boot.bin
+  # is written starting at ABSOLUTE SOURCE BYTE 8192 (sector 16), matching sunxi's
+  # standard BootROM read offset -- confirmed via a whole-image grep finding the
+  # real eGON.BT0 magic at source byte 8196 (8192+4). The pre-partition-1 span
+  # from source byte 0 through _part1_start_sector therefore has 8192 bytes of
+  # leading MBR/reserved space BEFORE the real SPL data even starts. Extracting
+  # from source byte 0 (as an earlier version of this function did) and later
+  # writing that blob at OUR OWN image's byte-8192 offset shifted the real eGON
+  # header to byte 8192+8192=16384 in the final image -- nowhere near where
+  # validate-image.sh (correctly, per Armbian's own write_uboot_platform()
+  # convention) checks for it at byte 8192+4=8196. Extracting starting at source
+  # byte 8192 instead makes the extracted blob's OWN byte 0 the real SPL header
+  # start, so writing it at our image's byte 8192 lands the magic at 8192+4=8196
+  # exactly where expected.
   _part1_start_sector=$(sfdisk -d "$_img" 2>/dev/null | awk '/img[0-9]* :/{print $4}' | head -n1 | tr -d ',')
   if [ -z "$_part1_start_sector" ]; then
     echo "[boot-tree] ERROR: could not read Armbian image's first partition start sector -- cannot locate the raw U-Boot region" >&2
     return 1
   fi
-  echo "[boot-tree] diagnostic: sfdisk -d full output ='$(sfdisk -d "$_img" 2>/dev/null)'"
-  echo "[boot-tree] diagnostic: _part1_start_sector value = '[${_part1_start_sector}]' (length $(printf '%s' "$_part1_start_sector" | wc -c))"
-  # The pre-partition-1 span on Armbian's own image ($_part1_start_sector sectors,
-  # often 4MiB+) is mostly empty padding reserved for a later U-Boot environment,
-  # NOT the real SPL+u-boot.bin size (which is typically a few hundred KB). Reading
-  # the whole span as "the U-Boot blob" and writing it at our own image's sector-8
-  # offset would extend past our OWN partition start (sector 2048 = byte 1048576)
-  # and get overwritten by the later ext4 partition splice, corrupting/dropping the
-  # real SPL. Trim to the last non-zero 512-byte sector within the span instead, so
-  # the copied blob is only as large as its actual real content.
-  dd if="$_img" of="$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw" bs=512 count="$_part1_start_sector" status=none
-  echo "[boot-tree] diagnostic: extracted .raw file size = $(wc -c < "$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw") bytes (expect $((_part1_start_sector * 512)))"
-  echo "[boot-tree] diagnostic: raw pre-trim bytes at offset 4-12 = '$(dd if="$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw" bs=1 skip=4 count=8 2>/dev/null)'"
-  echo "[boot-tree] diagnostic: eGON offsets found inside the extracted .raw file = $(grep -abo 'eGON.BT0' "$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw" | head -3 | cut -d: -f1 | tr '\n' ',')"
+  _uboot_span_sectors=$((_part1_start_sector - 16))
+  if [ "$_uboot_span_sectors" -le 0 ]; then
+    echo "[boot-tree] ERROR: partition 1 starts at sector $_part1_start_sector, leaving no room after the sector-16 SPL offset for a U-Boot region" >&2
+    return 1
+  fi
+  dd if="$_img" of="$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw" bs=512 skip=16 count="$_uboot_span_sectors" status=none
   _real_end_sector=$(cmp -l "$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw" /dev/zero 2>/dev/null | tail -n1 | awk '{print int(($1-1)/512)+1}')
-  [ -n "$_real_end_sector" ] || _real_end_sector="$_part1_start_sector"
+  [ -n "$_real_end_sector" ] || _real_end_sector="$_uboot_span_sectors"
   dd if="$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw" of="$_boot/opi-uboot/u-boot-sunxi-with-spl.bin" bs=512 count="$_real_end_sector" status=none
   rm -f "$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw"
-  echo "[boot-tree] diagnostic: post-trim bytes at offset 4-12 = '$(dd if="$_boot/opi-uboot/u-boot-sunxi-with-spl.bin" bs=1 skip=4 count=8 2>/dev/null)'"
-  echo "[boot-tree] extracted real U-Boot blob ($_real_end_sector of $_part1_start_sector sectors were non-zero content)"
+  echo "[boot-tree] extracted real U-Boot blob starting at source sector 16 ($_real_end_sector of $_uboot_span_sectors sectors were non-zero content)"
 
   # Kernel + DTB: inside the first (and on a minimal Armbian image, only) real
   # partition, an ext4 filesystem with /boot at its root (no separate /boot

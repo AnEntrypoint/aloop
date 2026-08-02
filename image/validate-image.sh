@@ -112,12 +112,9 @@ if [ "$BOARD" = "opi-prime" ]; then
   command -v losetup >/dev/null || { echo "losetup required"; exit 2; }
   command -v sfdisk  >/dev/null || { echo "fdisk/sfdisk required"; exit 2; }
 
-  UBOOT_HEAD=$(dd if="$IMG" bs=1 skip=1024 count=4 2>/dev/null | tr -d '\0')
-  # sunxi SPL images begin with the ASCII magic "eGON.BT0" at byte offset 4 within
-  # the 1KiB-aligned SPL header (i.e. absolute offset 4 within the whole image
-  # region since U-Boot is written starting at sector 8/offset 4096... actually at
-  # the raw dd seek=8 (1K blocks) -> byte offset 8192). Check for the eGON magic at
-  # the real write offset instead of guessing a different one.
+  # sunxi SPL images begin with the ASCII magic "eGON.BT0" 4 bytes into the SPL
+  # header (confirmed against U-Boot's own boot_file_head struct and Armbian's
+  # write_uboot_platform(), both dd-writing at byte offset 8192 = sector 16).
   UBOOT_MAGIC=$(dd if="$IMG" bs=1 skip=8196 count=8 2>/dev/null || true)
   if [ "$UBOOT_MAGIC" = "eGON.BT0" ]; then
     ok "U-Boot SPL eGON magic present at the raw sector-8KiB offset"
