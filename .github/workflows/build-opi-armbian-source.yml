@@ -1,0 +1,44 @@
+name: build-opi-armbian-source
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-armbian-opi-prime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - name: Checkout armbian/build pinned to the last pre-6.18 sunxi64 current-branch commit
+        uses: actions/checkout@v4
+        with:
+          repository: armbian/build
+          ref: be0bd46058e23cfdad66e840198dda157b998db5
+          path: armbian-build
+          fetch-depth: 1
+
+      - name: Free up disk space (Armbian's build needs ~50GB, GH-hosted runners are tight)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          df -h
+
+      - name: Build a minimal Orange Pi Prime image via Armbian's own Docker build
+        working-directory: armbian-build
+        run: |
+          ./compile.sh docker BOARD=orangepiprime BRANCH=current RELEASE=trixie \
+            BUILD_MINIMAL=yes BUILD_DESKTOP=no KERNEL_CONFIGURE=no
+
+      - name: Locate the built image
+        id: locate
+        working-directory: armbian-build
+        run: |
+          IMG=$(find output/images -iname 'Armbian*orangepiprime*.img*' | head -n1)
+          echo "img=$IMG" >> "$GITHUB_OUTPUT"
+          ls -la output/images/
+
+      - name: Upload the built image
+        uses: actions/upload-artifact@v4
+        with:
+          name: armbian-opi-prime-pre618-image
+          path: armbian-build/${{ steps.locate.outputs.img }}
+          if-no-files-found: error
+          retention-days: 7
