@@ -276,6 +276,15 @@ boot_tree_config_opi() {
   [ -n "$_kernel" ] || { echo "[boot-tree] ERROR: no kernel image found under $_boot/opi-boot" >&2; return 1; }
   [ -n "$_dtb" ]    || { echo "[boot-tree] ERROR: no sun50i-h5-orangepi-prime.dtb found under $_boot/opi-boot" >&2; return 1; }
   mkdir -p "$_boot/opi-boot/extlinux"
+  # earlycon prints before the normal ttyS0 console driver initializes --
+  # confirmed live on real hardware that U-Boot hands off correctly ("Starting
+  # kernel") but the kernel produces zero output afterward even though
+  # console=ttyS0,115200 is independently verified correct for this exact
+  # board's DTB (serial0 alias -> uart0, chosen stdout-path). earlycon isolates
+  # whether the kernel is crashing before or after its own console comes up.
+  # 0x01c28000 is H5's uart0 MMIO base, same 8250-derived register layout
+  # Allwinner boards use for earlycon.
+  _console="earlycon=uart8250,mmio32,0x01c28000 console=ttyS0,115200"
   {
     echo "DEFAULT aloop"
     echo ""
@@ -283,11 +292,11 @@ boot_tree_config_opi() {
     echo "  KERNEL /boot/$(basename "$_kernel")"
     echo "  FDT /boot/$(basename "$_dtb")"
     [ -n "$_initrd" ] && echo "  INITRD /boot/$(basename "$_initrd")"
-    echo "  APPEND root=LABEL=aloopboot rw console=ttyS0,115200 $_rt"
+    echo "  APPEND root=LABEL=aloopboot rw $_console $_rt"
   } > "$_boot/opi-boot/extlinux/extlinux.conf"
   echo "[boot-tree] wrote extlinux.conf (kernel=$(basename "$_kernel") dtb=$(basename "$_dtb") isolcpus tuning included)"
 
-  boot_tree_write_boot_scr_opi "$_boot" "$(basename "$_kernel")" "$(basename "$_dtb")" "$( [ -n "$_initrd" ] && basename "$_initrd")" "$_rt"
+  boot_tree_write_boot_scr_opi "$_boot" "$(basename "$_kernel")" "$(basename "$_dtb")" "$( [ -n "$_initrd" ] && basename "$_initrd")" "$_rt" "$_console"
 }
 
 # Armbian's own compiled bootcmd sources /boot/boot.scr directly by fixed
@@ -300,14 +309,14 @@ boot_tree_config_opi() {
 # extlinux.conf stays as a defensive fallback (harmless, costs nothing) for
 # any future U-Boot build that does have CONFIG_DISTRO_DEFAULTS compiled in.
 boot_tree_write_boot_scr_opi() {
-  _boot="$1"; _kernel_name="$2"; _dtb_name="$3"; _initrd_name="$4"; _rt="$5"
+  _boot="$1"; _kernel_name="$2"; _dtb_name="$3"; _initrd_name="$4"; _rt="$5"; _console="$6"
   if ! command -v mkimage >/dev/null 2>&1; then
     echo "[boot-tree] ERROR: mkimage unavailable -- cannot compile boot.scr (needs u-boot-tools; works in CI, not this dev host)" >&2
     return 1
   fi
   _cmd="$_boot/opi-boot/boot.cmd"
   {
-    echo "setenv bootargs \"root=LABEL=aloopboot rw console=ttyS0,115200 $_rt\""
+    echo "setenv bootargs \"root=LABEL=aloopboot rw $_console $_rt\""
     echo "load mmc 0:1 \${kernel_addr_r} /boot/$_kernel_name"
     echo "load mmc 0:1 \${fdt_addr_r} /boot/$_dtb_name"
     if [ -n "$_initrd_name" ]; then
