@@ -63,14 +63,9 @@ if [ "$BOARD" = "opi-prime" ]; then
   fi
   IMG="$WORK/img.raw"
   dd if=/dev/zero of="$IMG" bs=1M count="$IMG_MB" status=none
-  # One MBR partition starting at sector 2048 (1 MiB) -- leaves the raw U-Boot
-  # region (well under 1 MiB for sunxi SPL+u-boot.bin) untouched ahead of it.
+  # One MBR partition starting at sector 2048 (1 MiB) -- leaves room for the raw
+  # U-Boot region ahead of it, sized-checked below against the real extracted blob.
   printf 'label: dos\n2048,,83,*\n' | sfdisk "$IMG" >/dev/null
-
-  UBOOT_BIN="$BOOT/opi-uboot/u-boot-sunxi-with-spl.bin"
-  [ -f "$UBOOT_BIN" ] || { echo "[image] ERROR: $UBOOT_BIN missing -- boot_tree_fetch_opi did not produce a U-Boot blob" >&2; exit 1; }
-  dd if="$UBOOT_BIN" of="$IMG" bs=1024 seek=8 conv=notrunc status=none
-  echo "[image] wrote U-Boot to raw sector offset 8KiB"
 
   PART_OFFSET=$((2048 * 512))
   PART="$WORK/part.ext4"
@@ -88,7 +83,27 @@ if [ "$BOARD" = "opi-prime" ]; then
   sudo umount "$MNT"
   sudo losetup -d "$LOOP"
 
+  # Splice the ext4 partition in FIRST, then write U-Boot into the pre-partition
+  # region -- U-Boot must have final say over that span. The order matters: this
+  # image previously wrote U-Boot before the partition splice, and a too-large
+  # extracted U-Boot blob (padding-inclusive, see boot_tree_fetch_opi's trim fix)
+  # silently got overwritten by the later partition write, dropping the real SPL
+  # with no error anywhere -- CI's validate-image.sh caught it as a missing eGON
+  # magic, but only because that check exists; this ordering makes the class of
+  # bug structurally impossible instead of relying on a downstream check to catch it.
   dd if="$PART" of="$IMG" bs=512 seek=2048 conv=notrunc status=none
+
+  UBOOT_BIN="$BOOT/opi-uboot/u-boot-sunxi-with-spl.bin"
+  [ -f "$UBOOT_BIN" ] || { echo "[image] ERROR: $UBOOT_BIN missing -- boot_tree_fetch_opi did not produce a U-Boot blob" >&2; exit 1; }
+  UBOOT_BYTES=$(wc -c < "$UBOOT_BIN")
+  UBOOT_MAX_BYTES=$((PART_OFFSET - 8192))
+  if [ "$UBOOT_BYTES" -gt "$UBOOT_MAX_BYTES" ]; then
+    echo "[image] ERROR: extracted U-Boot blob is ${UBOOT_BYTES} bytes, larger than the ${UBOOT_MAX_BYTES}-byte pre-partition span available -- it would overlap the root partition" >&2
+    exit 1
+  fi
+  dd if="$UBOOT_BIN" of="$IMG" bs=1024 seek=8 conv=notrunc status=none
+  echo "[image] wrote U-Boot ($UBOOT_BYTES bytes) to raw sector offset 8KiB, after the partition splice"
+
   mv "$IMG" "$OUT"
   echo "[image] wrote $OUT ($(du -h "$OUT" | cut -f1))"
   echo "[image] flash with: dd if=$OUT of=/dev/sdX bs=4M conv=fsync"
