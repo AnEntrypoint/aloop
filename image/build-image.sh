@@ -103,6 +103,10 @@ if [ "$BOARD" = "opi-prime" ]; then
   fi
   dd if="$UBOOT_BIN" of="$IMG" bs=1024 seek=8 conv=notrunc status=none
   echo "[image] wrote U-Boot ($UBOOT_BYTES bytes) to raw sector offset 8KiB, after the partition splice"
+  IMMEDIATE_MAGIC=$(dd if="$IMG" bs=1 skip=8196 count=8 2>/dev/null || true)
+  echo "[image] diagnostic: eGON magic immediately after write = '$IMMEDIATE_MAGIC' (expect eGON.BT0)"
+  UBOOT_BIN_MAGIC=$(dd if="$UBOOT_BIN" bs=1 skip=4 count=8 2>/dev/null || true)
+  echo "[image] diagnostic: eGON magic in the source UBOOT_BIN itself = '$UBOOT_BIN_MAGIC' (expect eGON.BT0)"
 
   mv "$IMG" "$OUT"
   echo "[image] wrote $OUT ($(du -h "$OUT" | cut -f1))"
