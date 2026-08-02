@@ -20,13 +20,54 @@
 ALPINE_VERSION="${ALPINE_VERSION:-3.20.3}"
 ALPINE_BRANCH="${ALPINE_BRANCH:-v3.20}"
 ARCH="${ARCH:-aarch64}"
+BOARD="${BOARD:-pi4}"
 
-# --- 1. Fetch + extract the Alpine RPi tarball (firmware + kernel + DTBs) -------
+# --- Board capability matrix ----------------------------------------------------
+# USB-audio-gadget (f_uac2) needs a USB-OTG controller running in PERIPHERAL mode.
+# Pi 4/CM4/Zero2 route their USB-C/OTG port to dwc2 and support dr_mode=peripheral.
+# Pi 3 has no OTG-capable controller (its USB is host-only via an onboard hub) and
+# Pi 5's RP1 southbridge USB is host-only — neither can run f_uac2 gadget mode, so
+# the dwc2 overlay must never be written into their boot config (a dtoverlay for a
+# controller the board doesn't have is silently ignored by the Pi firmware, but
+# shipping it as if it worked would be a real, wrong claim about device behavior).
+board_supports_usb_gadget() {
+  case "$1" in
+    pi4|pi-cm4|pi-zero2) return 0 ;;
+    pi3|pi5) return 1 ;;
+    *) return 1 ;;
+  esac
+}
+
+# WiFi IRQ name to steer off the audio cores (kernel/rt-tune.sh greps this by name).
+# Empty means "no board-specific WiFi chip to steer" (board has none, or it's a
+# different chip rt-tune.sh's generic wlan/eth pattern already covers).
+board_wifi_irq_name() {
+  case "$1" in
+    pi3|pi4) echo "brcmfmac" ;;
+    pi5) echo "brcmfmac" ;;
+    *) echo "" ;;
+  esac
+}
+
+# --- 1. Fetch + extract the board's firmware/kernel/DTB boot tree ---------------
+# Dispatches per BOARD: the Pi family shares one Alpine-published tarball (identical
+# fetch, identical tree shape) since Alpine bundles every Pi model's firmware+DTBs
+# together; Orange Pi Prime has no such tarball (see boot_tree_fetch_opi) and needs
+# its own fetch shape entirely.
+boot_tree_fetch() {
+  case "$BOARD" in
+    opi-prime) boot_tree_fetch_opi "$1" "$2" ;;
+    *)         boot_tree_fetch_rpi "$1" "$2" ;;
+  esac
+}
+
 # The tarball's contents ARE the boot tree: start4.elf/fixup4.dat/bootcode.bin
 # (Pi 4 firmware chain — the SAME files the TFTP bootloader fetches), the bcm2711
 # DTBs, boot/vmlinuz-rpi + boot/initramfs-rpi + boot/modloop-rpi, config.txt,
-# cmdline.txt, overlays/, and apks/. Extracting it is identical for SD and netboot.
-boot_tree_fetch() {
+# cmdline.txt, overlays/, and apks/. Extracting it is identical for SD and netboot,
+# and identical for pi3/pi4/pi5 -- one tarball bundles every Pi model's DTB, and the
+# real Pi firmware auto-selects the correct one for its own hardware ID at boot.
+boot_tree_fetch_rpi() {
   _work="$1"; _boot="$2"
   _tarball="alpine-rpi-${ALPINE_VERSION}-${ARCH}.tar.gz"
   _url="https://dl-cdn.alpinelinux.org/alpine/${ALPINE_BRANCH}/releases/${ARCH}/${_tarball}"
@@ -40,6 +81,83 @@ boot_tree_fetch() {
   mkdir -p "$_boot"
   tar -xzf "$_work/$_tarball" -C "$_boot"
   echo "[boot-tree] extracted boot files:"; ls "$_boot" | head
+}
+
+# --- 1b. Orange Pi Prime (Allwinner H5, sun50i-h5-orangepi-prime) boot tree -----
+# There is no Alpine-published sunxi tarball (unlike alpine-rpi-*.tar.gz), and
+# Allwinner's boot chain is structurally different from the Pi's FAT-partition
+# firmware model: BootROM reads a raw SPL/U-Boot image at a FIXED RAW SD SECTOR
+# OFFSET (dd seek=8, 1K blocks), before any filesystem exists -- there is no
+# config.txt-style firmware file to drop into a boot tree. Real, verified source
+# (researched this session, not guessed): Armbian's official Orange Pi Prime
+# "Trixie minimal" build is the most turnkey donor for a working U-Boot + kernel +
+# sun50i-h5-orangepi-prime.dtb triple. dl.armbian.com/orangepiprime/Trixie_current
+# _minimal is a STABLE redirect URL Armbian maintains across their rolling trunk
+# builds -- the resolved github.com/armbian/community/releases/.../*.img.xz asset
+# URL it 302s to is NOT stable (its version string moves every trunk build), so
+# only the dl.armbian.com redirect path is fetched here, never a pinned asset URL.
+# Extracted pieces: the raw image's first-8KiB-to-first-partition span (U-Boot,
+# already correctly positioned by Armbian's own partition layout) is copied
+# byte-for-byte onto the target media at the same offset; /boot inside the root
+# partition (ext4) holds the kernel + dtb, mounted read-only via a loop device to
+# pull just those two files out. The Alpine diskless philosophy is kept for the
+# USERSPACE (see boot_tree_apkovl, unchanged/shared) -- only the boot chain itself
+# is Armbian-sourced, since Alpine has no sunxi boot tarball to offer instead
+# (opi-alpine-image-source-decision).
+OPI_ARMBIAN_URL="${OPI_ARMBIAN_URL:-https://dl.armbian.com/orangepiprime/Trixie_current_minimal}"
+boot_tree_fetch_opi() {
+  _work="$1"; _boot="$2"
+  _img_xz="$_work/armbian-opi-prime.img.xz"
+  _img="$_work/armbian-opi-prime.img"
+  if [ -n "${ARMBIAN_IMAGE:-}" ] && [ -f "${ARMBIAN_IMAGE}" ]; then
+    echo "[boot-tree] using provided Armbian image ${ARMBIAN_IMAGE}"
+    cp "${ARMBIAN_IMAGE}" "$_img_xz"
+  else
+    echo "[boot-tree] downloading $OPI_ARMBIAN_URL (stable redirect -- resolved asset version moves every Armbian trunk build)"
+    curl -fsSL "$OPI_ARMBIAN_URL" -o "$_img_xz"
+  fi
+  echo "[boot-tree] decompressing Armbian image"
+  xz -dk -f "$_img_xz" -c > "$_img"
+
+  mkdir -p "$_boot/opi-boot" "$_boot/opi-uboot"
+
+  # U-Boot: raw sectors before the first partition. Read the first partition's
+  # start offset from the image's own partition table (never assume a fixed
+  # value -- Armbian's layout is authoritative, not a guess) and copy everything
+  # from sector 0 up to that offset as one raw U-Boot blob.
+  _part1_start_sector=$(sfdisk -d "$_img" 2>/dev/null | awk '/img[0-9]* :/{print $4}' | head -n1 | tr -d ',')
+  if [ -z "$_part1_start_sector" ]; then
+    echo "[boot-tree] ERROR: could not read Armbian image's first partition start sector -- cannot locate the raw U-Boot region" >&2
+    return 1
+  fi
+  dd if="$_img" of="$_boot/opi-uboot/u-boot-sunxi-with-spl.bin" bs=512 count="$_part1_start_sector" status=none
+  echo "[boot-tree] extracted raw U-Boot region ($_part1_start_sector sectors from image offset 0)"
+
+  # Kernel + DTB: inside the first (and on a minimal Armbian image, only) real
+  # partition, an ext4 filesystem with /boot at its root (no separate /boot
+  # partition on Armbian's minimal layout). mtools cannot read ext4, so this
+  # needs a real loop mount -- CI (Linux) has one; a non-Linux dev host does not,
+  # and is expected to fail loudly here rather than silently ship an empty tree.
+  _part_offset=$((_part1_start_sector * 512))
+  _mnt="$_work/opi-root-mnt"
+  mkdir -p "$_mnt"
+  if ! command -v losetup >/dev/null 2>&1; then
+    echo "[boot-tree] ERROR: losetup unavailable on this host -- Orange Pi Prime boot-tree extraction needs a real Linux loop-mount (works in CI; not on this dev host)" >&2
+    return 1
+  fi
+  _loop=$(sudo losetup --show -fP -o "$_part_offset" "$_img")
+  sudo mount -o ro "$_loop" "$_mnt"
+  cp "$_mnt"/boot/vmlinuz-* "$_boot/opi-boot/" 2>/dev/null || cp "$_mnt"/boot/Image* "$_boot/opi-boot/" 2>/dev/null || true
+  find "$_mnt/boot" -iname 'sun50i-h5-orangepi-prime.dtb' -exec cp {} "$_boot/opi-boot/" \; 2>/dev/null || true
+  find "$_mnt/boot" -iname 'initrd.img-*' -exec cp {} "$_boot/opi-boot/" \; 2>/dev/null || true
+  sudo umount "$_mnt"
+  sudo losetup -d "$_loop"
+
+  if [ -z "$(find "$_boot/opi-boot" -iname 'sun50i-h5-orangepi-prime.dtb' 2>/dev/null)" ]; then
+    echo "[boot-tree] ERROR: sun50i-h5-orangepi-prime.dtb not found in the extracted Armbian /boot -- Armbian's dtb file naming may have changed, check $_mnt/boot manually" >&2
+    return 1
+  fi
+  echo "[boot-tree] extracted Orange Pi Prime boot tree:"; ls "$_boot/opi-boot" "$_boot/opi-uboot"
 }
 
 # --- 2. Assemble the apkovl overlay (the device's identity) --------------------
@@ -320,7 +438,16 @@ SSHCFG
 # boot medium is a FAT partition or a TFTP directory.
 boot_tree_config() {
   _boot="$1"
-  cat "$ROOT/image/config/usercfg.txt" >> "$_boot/usercfg.txt"
+  if [ "$BOARD" = "opi-prime" ]; then
+    boot_tree_config_opi "$_boot"
+    return
+  fi
+  if board_supports_usb_gadget "$BOARD"; then
+    cat "$ROOT/image/config/usercfg.txt" >> "$_boot/usercfg.txt"
+  else
+    grep -v 'dtoverlay=dwc2' "$ROOT/image/config/usercfg.txt" >> "$_boot/usercfg.txt"
+    echo "[boot-tree] BOARD=$BOARD has no USB-OTG peripheral controller -- dwc2/f_uac2 gadget overlay omitted"
+  fi
   if [ -f "$_boot/config.txt" ] && ! grep -q 'include usercfg.txt' "$_boot/config.txt"; then
     echo "include usercfg.txt" >> "$_boot/config.txt"
   fi
@@ -338,4 +465,30 @@ boot_tree_config() {
   printf '%s\n' "$(printf '%s %s' "$_existing" "$_rt" | tr -s ' ' | sed 's/^ //;s/ $//')" \
     > "$_boot/cmdline.txt"
   echo "[boot-tree] boot config merged, cmdline.txt collapsed to a single line (dwc2 + serial + isolcpus)"
+}
+
+# --- 3b. Orange Pi Prime boot config: U-Boot extlinux, not config.txt/cmdline.txt -
+# U-Boot's generic distro-boot mechanism reads /boot/extlinux/extlinux.conf (the
+# same file syslinux/grub2-style bootloaders use) to find the kernel/dtb/initrd and
+# the kernel command line -- there is no config.txt/cmdline.txt on this boot chain
+# at all (those are Pi-firmware-specific files, meaningless to U-Boot). isolcpus/RT
+# tuning still applies (a real kernel parameter, board-independent) but travels via
+# extlinux.conf's APPEND line instead.
+boot_tree_config_opi() {
+  _boot="$1"
+  _rt="$(tr '\n' ' ' < "$ROOT/kernel/cmdline.txt" | tr -s ' ' | sed 's/^ //;s/ $//')"
+  _kernel=$(find "$_boot/opi-boot" -iname 'vmlinuz-*' -o -iname 'Image*' 2>/dev/null | head -n1)
+  _dtb=$(find "$_boot/opi-boot" -iname 'sun50i-h5-orangepi-prime.dtb' 2>/dev/null | head -n1)
+  _initrd=$(find "$_boot/opi-boot" -iname 'initrd.img-*' 2>/dev/null | head -n1)
+  [ -n "$_kernel" ] || { echo "[boot-tree] ERROR: no kernel image found under $_boot/opi-boot" >&2; return 1; }
+  [ -n "$_dtb" ]    || { echo "[boot-tree] ERROR: no sun50i-h5-orangepi-prime.dtb found under $_boot/opi-boot" >&2; return 1; }
+  mkdir -p "$_boot/opi-boot/extlinux"
+  {
+    echo "LABEL aloop"
+    echo "  KERNEL /boot/$(basename "$_kernel")"
+    echo "  FDT /boot/$(basename "$_dtb")"
+    [ -n "$_initrd" ] && echo "  INITRD /boot/$(basename "$_initrd")"
+    echo "  APPEND root=LABEL=aloopboot rw console=ttyS0,115200 $_rt"
+  } > "$_boot/opi-boot/extlinux/extlinux.conf"
+  echo "[boot-tree] wrote extlinux.conf (kernel=$(basename "$_kernel") dtb=$(basename "$_dtb") isolcpus tuning included)"
 }

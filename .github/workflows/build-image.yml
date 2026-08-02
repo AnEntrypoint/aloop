@@ -1,9 +1,11 @@
-# Assemble the flashable Alpine SD image for the Pi 4.
+# Assemble the flashable Alpine SD image for every supported Raspberry Pi board.
 #
 # WHY in CI: the device image must be reproducible — a fresh checkout produces the
 # same image. This job pulls the aloop binary + the home-FX LV2 bundle from the
 # other workflows and runs image/build-image.sh (the SINGLE source of the device
-# layout) to emit a real, bootable aloop-pi4.img, then validates it without a Pi.
+# layout, now BOARD-parameterized) once per board in a build matrix, then validates
+# each image without a Pi, and a final job publishes every board's artifacts to one
+# shared rolling "latest" GitHub Release.
 name: build-image
 
 on:
@@ -26,18 +28,28 @@ permissions:
 jobs:
   alpine-image:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [pi3, pi4, pi5, opi-prime]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Tools (mtools, dosfstools, fdisk, file — unprivileged FAT assembly)
-        run: sudo apt-get update && sudo apt-get install -y mtools dosfstools fdisk curl gzip file zip
+      # mtools/dosfstools/fdisk cover the Pi boards' unprivileged FAT assembly;
+      # e2fsprogs (mkfs.ext4) + xz-utils + util-linux (losetup) cover Orange Pi
+      # Prime's Armbian-sourced raw-U-Boot + ext4-root image assembly, which needs
+      # real root (sudo losetup/mount) unlike the Pi boards' mtools path.
+      - name: Tools (mtools, dosfstools, fdisk, e2fsprogs, xz, file — image assembly)
+        run: sudo apt-get update && sudo apt-get install -y mtools dosfstools fdisk e2fsprogs xz-utils util-linux curl gzip file zip
 
       # Pull the aloop binary + LV2 bundle produced by build-binary / build-lv2.
       # They live in DIFFERENT workflows' runs, so fetch each from the latest
       # SUCCESSFUL run of its workflow via gh (a workflow_run trigger only carries
       # its own run's artifacts). Missing artifacts don't fail the image build — it
       # still produces a valid bootable layout — but the validate step WARNS, and a
-      # release build requires them.
+      # release build requires them. Same binary/LV2 for every board — the aloop
+      # payload itself is architecture-independent aarch64 userspace content; only
+      # the boot firmware/DTB/USB-gadget config differs per board.
       - name: Download aloop binary + LV2 bundles from their latest green runs
         continue-on-error: true
         env:
@@ -77,39 +89,49 @@ jobs:
         env:
           ALOOP_BIN: ${{ steps.payload.outputs.bin }}
           LV2_DIR: ${{ steps.payload.outputs.lv2dir }}
-          OUT: aloop-pi4.img
+          BOARD: ${{ matrix.board }}
+          OUT: aloop-${{ matrix.board }}.img
         run: |
           chmod +x image/build-image.sh
           image/build-image.sh
-          gzip -9 -k aloop-pi4.img
-          ls -la aloop-pi4.img aloop-pi4.img.gz
+          gzip -9 -k aloop-${{ matrix.board }}.img
+          ls -la aloop-${{ matrix.board }}.img aloop-${{ matrix.board }}.img.gz
 
       - name: Validate the image without a Pi (partition + boot files + overlay)
+        env:
+          BOARD: ${{ matrix.board }}
         run: |
           chmod +x image/validate-image.sh
-          image/validate-image.sh aloop-pi4.img
+          image/validate-image.sh aloop-${{ matrix.board }}.img
 
       # The netboot root is the SAME diskless tree (shared image/lib-boot-tree.sh),
       # laid into a plain TFTP directory instead of a FAT image — the pre-SD dry-run
       # path (docs/NETBOOT.md). Build + structurally validate it in CI so it can
       # never drift from the SD image or silently rot.
+      # SKIPPED for opi-prime: Allwinner's BootROM has no equivalent of the Pi's
+      # native TFTP+HTTP netboot firmware -- U-Boot must already be resident on
+      # local media (SD/eMMC/SPI) before PXE/TFTP can even be reached, so there is
+      # no "drop-in" netboot root to build the way there is for the Pi family
+      # (opi-netboot-feasibility). OPi Prime is SD-card-flash-only for now.
       - name: Build + validate the TFTP netboot root
+        if: matrix.board != 'opi-prime'
         env:
           ALOOP_BIN: ${{ steps.payload.outputs.bin }}
           LV2_DIR: ${{ steps.payload.outputs.lv2dir }}
-          OUT: aloop-netboot
+          BOARD: ${{ matrix.board }}
+          OUT: aloop-netboot-${{ matrix.board }}
         run: |
           chmod +x image/build-netboot.sh image/validate-netboot.sh
           image/build-netboot.sh
-          image/validate-netboot.sh aloop-netboot
-          tar -czf aloop-netboot.tar.gz aloop-netboot
-          ls -la aloop-netboot.tar.gz
+          image/validate-netboot.sh aloop-netboot-${{ matrix.board }}
+          tar -czf aloop-netboot-${{ matrix.board }}.tar.gz aloop-netboot-${{ matrix.board }}
+          ls -la aloop-netboot-${{ matrix.board }}.tar.gz
 
       - name: Upload flashable image
         uses: actions/upload-artifact@v4
         with:
-          name: aloop-pi4-image
-          path: aloop-pi4.img.gz
+          name: aloop-${{ matrix.board }}-image
+          path: aloop-${{ matrix.board }}.img.gz
           if-no-files-found: error
           # WITNESSED: this workflow re-runs on nearly every push (build-binary
           # completion + any image/kernel/src/dsp/config push), and these two
@@ -124,32 +146,47 @@ jobs:
           retention-days: 3
 
       - name: Upload netboot root
+        if: matrix.board != 'opi-prime'
         uses: actions/upload-artifact@v4
         with:
-          name: aloop-netboot-root
-          path: aloop-netboot.tar.gz
+          name: aloop-${{ matrix.board }}-netboot-root
+          path: aloop-netboot-${{ matrix.board }}.tar.gz
           if-no-files-found: error
           retention-days: 3
 
       # Zip of the SAME validated FAT partition contents (firmware + kernel +
       # DTBs + apkovl + SD-flavored config, no ip=dhcp) for direct extraction
       # onto a freshly-formatted FAT32 SD card -- the format-in-place flow
-      # (format E: FAT32, unzip onto it) rather than the raw-dd aloop-pi4.img.gz
+      # (format E: FAT32, unzip onto it) rather than the raw-dd aloop-<board>.img.gz
       # path above. Extracted straight out of the already-built+validated
-      # aloop-pi4.img via the same mtools offset-view validate-image.sh uses,
+      # image via the same mtools offset-view validate-image.sh uses,
       # so this can never independently drift from what was actually validated.
+      # SKIPPED for opi-prime: its image is a raw-U-Boot-sector + ext4 layout, not
+      # a single FAT partition mtools can read -- flashing is dd-only for this
+      # board (the .img.gz artifact already covers that; there is no separate
+      # "format+extract zip" flow to offer since there's no FAT partition to zip).
       - name: Extract SD boot tree from the validated image and zip it
+        if: matrix.board != 'opi-prime'
         run: |
           OFF=$((2048 * 512))
           MT=$(mktemp)
-          printf 'drive z: file="%s/aloop-pi4.img" offset=%s\n' "$PWD" "$OFF" > "$MT"
+          printf 'drive z: file="%s/aloop-%s.img" offset=%s\n' "$PWD" "${{ matrix.board }}" "$OFF" > "$MT"
           export MTOOLSRC="$MT"
           rm -rf sd-boot-tree
           mkdir -p sd-boot-tree
           mcopy -s z:/ sd-boot-tree/
           ls -la sd-boot-tree | head -20
-          (cd sd-boot-tree && zip -r -9 -q ../aloop-sdcard.zip .)
-          ls -la aloop-sdcard.zip
+          (cd sd-boot-tree && zip -r -9 -q ../aloop-${{ matrix.board }}-sdcard.zip .)
+          ls -la aloop-${{ matrix.board }}-sdcard.zip
+
+      - name: Upload SD card zip
+        if: matrix.board != 'opi-prime'
+        uses: actions/upload-artifact@v4
+        with:
+          name: aloop-${{ matrix.board }}-sdcard
+          path: aloop-${{ matrix.board }}-sdcard.zip
+          if-no-files-found: error
+          retention-days: 3
 
       # A release must never publish a payload-less "layout only" build as
       # "latest" -- image/validate-image.sh deliberately WARNS (not FAILS) on a
@@ -166,30 +203,62 @@ jobs:
             echo "has_payload=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish rolling "latest" GitHub Release with the SD card zip
-        if: |
-          steps.payload_check.outputs.has_payload == 'true' &&
-          github.ref == 'refs/heads/main' &&
-          (github.event_name == 'push' ||
-           (github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success') ||
-           github.event_name == 'workflow_dispatch')
+    outputs:
+      has_payload: ${{ steps.payload_check.outputs.has_payload }}
+
+  release:
+    needs: alpine-image
+    if: |
+      needs.alpine-image.outputs.has_payload == 'true' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success') ||
+       github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      # Matrix jobs cannot share files directly -- each board's image/sdcard-zip
+      # artifacts from the alpine-image matrix round-trip through actions/upload
+      # -artifact, so this job downloads all of them by their per-board names
+      # before publishing one shared release carrying every board's assets.
+      - name: Download every board's image + SD card zip
+        uses: actions/download-artifact@v4
+        with:
+          pattern: aloop-*-image
+          path: dl
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: aloop-*-sdcard
+          path: dl
+          merge-multiple: true
+      - name: List gathered release assets
+        run: ls -la dl/
+
+      - name: Publish rolling "latest" GitHub Release with every board's images
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: aloop latest (auto-updated on every green main build)
           body: |
-            Automatically rebuilt SD card image on every successful push to `main`.
+            Automatically rebuilt SD card images on every successful push to `main`.
             Commit: ${{ github.sha }}
 
-            **aloop-sdcard.zip** — extract onto a freshly-formatted FAT32 SD card
-            (firmware + kernel + DTBs + apkovl + config, ready to boot a Pi 4).
+            One image per supported board — flash the one matching your hardware.
 
-            **aloop-pi4.img.gz** — raw dd-able image (`dd if=aloop-pi4.img of=/dev/sdX bs=4M conv=fsync`
-            after `gunzip`, or Raspberry Pi Imager).
+            **aloop-<board>-sdcard.zip** — extract onto a freshly-formatted FAT32 SD card
+            (firmware + kernel + DTBs + apkovl + config, ready to boot).
+
+            **aloop-<board>.img.gz** — raw dd-able image (`dd if=aloop-<board>.img of=/dev/sdX bs=4M conv=fsync`
+            after `gunzip`, or Raspberry Pi Imager / balenaEtcher).
+
+            Supported boards this release: pi3, pi4, pi5 (SD card zip + raw image),
+            opi-prime (Orange Pi Prime, Allwinner H5 — raw `dd`-able image only,
+            no SD card zip: its boot layout is raw U-Boot sectors + an ext4 root
+            partition, not a single FAT partition, so there's no "format+extract"
+            flow to offer for it).
           prerelease: true
           make_latest: true
           files: |
-            aloop-sdcard.zip
-            aloop-pi4.img.gz
+            dl/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

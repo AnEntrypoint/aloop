@@ -11,9 +11,13 @@
 
 set -eu
 G=/sys/kernel/config/usb_gadget/aloop
-UDC=$(ls /sys/class/udc | head -n1)   # the dwc2 device controller
 
 modprobe libcomposite || true
+UDC=$(ls /sys/class/udc 2>/dev/null | head -n1)   # the OTG peripheral-mode controller
+if [ -z "$UDC" ]; then
+  echo "[f_uac2] no USB device controller present (board has no OTG peripheral mode) -- skipping gadget setup"
+  exit 0
+fi
 mkdir -p "$G"; cd "$G"
 
 echo 0x1d6b > idVendor          # Linux Foundation

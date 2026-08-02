@@ -1,27 +1,38 @@
 # Flashing aloop to an SD card and testing from it
 
-> **Testing before you commit to a card?** You can boot the *same* aloop tree over
-> the network (TFTP/DHCP) with zero reflashing — see **[docs/NETBOOT.md](NETBOOT.md)**.
-> That's the fastest way to shake out boot issues; come back here to burn a card.
+> **Testing before you commit to a card?** Pi boards can boot the *same* aloop tree
+> over the network (TFTP/DHCP) with zero reflashing — see
+> **[docs/NETBOOT.md](NETBOOT.md)**. That's the fastest way to shake out boot
+> issues on a Pi; come back here to burn a card. Orange Pi Prime has no netboot
+> path (see `docs/BOOT.md`'s board matrix) — it's SD-card-flash-only.
 
-This is the card-test procedure. The CI `build-image` workflow produces
-`aloop-pi4.img.gz` (a real, bootable Alpine diskless image for the Pi 4); flash it,
-boot it, and the Pi comes up as the aloop appliance.
+This is the card-test procedure, worked through for the Pi 4 (the best-supported,
+gadget-capable board) — the same steps apply to pi3/pi5/opi-prime with the board's
+own image filename substituted; see `docs/BOOT.md`'s board matrix for what differs
+per board (USB-audio gadget availability, WiFi chip). The CI `build-image` workflow
+builds one image PER BOARD (`aloop-<board>-image` artifacts: pi3, pi4, pi5,
+opi-prime); flash the one matching your hardware and it comes up as the aloop
+appliance.
 
 ## 1. Get the image
 
 - **From CI:** open the latest green `build-image` run on `AnEntrypoint/aloop` and
-  download the **`aloop-pi4-image`** artifact (`aloop-pi4.img.gz`).
-- **Locally** (on a Linux/Alpine host with `mtools dosfstools fdisk curl`):
+  download the **`aloop-<board>-image`** artifact for your board (e.g.
+  `aloop-pi4-image` → `aloop-pi4.img.gz`) — or grab it straight from the
+  auto-updated `latest` GitHub Release, which carries every board's image.
+- **Locally** (on a Linux/Alpine host with `mtools dosfstools fdisk curl`; Orange Pi
+  Prime additionally needs `e2fsprogs xz-utils util-linux` and real root for
+  `losetup`/`mount`):
   ```sh
-  ALOOP_BIN=build/aloop LV2_DIR=effects/home image/build-image.sh   # -> aloop-pi4.img
-  image/validate-image.sh aloop-pi4.img                             # structural check
+  ALOOP_BIN=build/aloop LV2_DIR=effects/home BOARD=pi4 image/build-image.sh   # -> aloop-pi4.img
+  BOARD=pi4 image/validate-image.sh aloop-pi4.img                            # structural check
   ```
+  (`BOARD` defaults to `pi4` if omitted — set it explicitly for any other board.)
 
 Verify the download:
 ```sh
 gunzip aloop-pi4.img.gz
-image/validate-image.sh aloop-pi4.img     # must print "IMAGE VALID"
+BOARD=pi4 image/validate-image.sh aloop-pi4.img     # must print "IMAGE VALID"
 ```
 
 ## 2. Flash it
@@ -39,12 +50,15 @@ Pick one:
 
 ## 3. Wire it up
 
-- **SD card** → Pi 4 slot.
-- **USB audio to the host:** connect the Pi 4's **USB-C power/OTG port** to the
-  computer you want it to be a soundcard for. The port is in peripheral mode
+- **SD card** → the board's SD slot.
+- **USB audio to the host (pi4/CM4/Zero2 only — see `docs/BOOT.md`'s board
+  matrix):** connect the Pi 4's **USB-C power/OTG port** to the computer you want
+  it to be a soundcard for. The port is in peripheral mode
   (`dtoverlay=dwc2,dr_mode=peripheral`), so the host sees a **UAC2 mono 48 kHz
   soundcard** named `aloop`. (Power the Pi from the 5 V GPIO pins or a powered hub
-  if the OTG port is busy being the gadget.)
+  if the OTG port is busy being the gadget.) pi3/pi5/opi-prime have no working
+  USB-audio gadget path — they run the full DSP/Link stack but do not present as
+  a USB soundcard to a host computer.
 - **MIDI controller** (optional): a class-compliant USB MIDI controller on a
   USB-A port drives the loopers/effects per `config/controls.conf` (remappable).
 - **Serial console (recommended for the first boot):** a 3.3 V USB-UART on the

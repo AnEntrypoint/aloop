@@ -32,6 +32,7 @@
 
 set -eu
 
+BOARD="${BOARD:-pi4}"
 OUT="${OUT:-aloop-netboot}"
 ALPINE_VERSION="${ALPINE_VERSION:-3.20.3}"
 ARCH="${ARCH:-aarch64}"

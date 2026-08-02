@@ -3,6 +3,24 @@
 The whole runtime, in order, so the device is legible. Configured by
 `config/aloop.conf` and the overlay laid down by `.github/workflows/build-image.yml`.
 
+## Board support matrix
+
+`build-image.yml` builds one image per board via `image/build-image.sh BOARD=<x>`
+(see `image/lib-boot-tree.sh`'s `board_supports_usb_gadget`/`board_wifi_irq_name`
+for the authoritative capability table):
+
+| Board | Boot chain | USB-audio gadget (step 3 below) | WiFi |
+|-------|-----------|----------------------------------|------|
+| pi4 (+ CM4, Zero2) | Pi firmware (FAT partition) | dwc2 peripheral mode — real UAC2 gadget | Broadcom brcmfmac |
+| pi3 | Pi firmware (FAT partition) | none — Pi 3 has no OTG-capable controller | Broadcom brcmfmac |
+| pi5 | Pi firmware (FAT partition) | none — RP1 southbridge USB is host-only | Broadcom brcmfmac |
+| opi-prime (Orange Pi Prime, Allwinner H5) | Armbian-sourced U-Boot (raw SD sectors) + ext4 root + extlinux.conf | unproven (MUSB dual-role controller exists on the micro-USB OTG port; no confirmed f_uac2 report for this SoC) | Realtek RTL8723BS |
+
+Boards without a working USB-audio gadget still run the full aloop DSP/effects
+stack and Ableton Link — they just cannot present themselves as a USB soundcard
+to a host computer the way pi4 does; see `docs/CLONE-PARITY.md`/AGENTS.md for the
+audio-I/O implications on those boards.
+
 ```
 power on
   │

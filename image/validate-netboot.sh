@@ -14,17 +14,32 @@
 
 set -eu
 DIR="${1:?usage: validate-netboot.sh <netboot-root-dir>}"
+BOARD="${BOARD:-pi4}"
 FAIL=0
+board_supports_usb_gadget() {
+  case "$1" in
+    pi4|pi-cm4|pi-zero2) return 0 ;;
+    pi3|pi5) return 1 ;;
+    *) return 1 ;;
+  esac
+}
 note() { echo "[validate-netboot] $*"; }
 ok()   { echo "  OK   $*"; }
 bad()  { echo "  FAIL $*"; FAIL=1; }
 
 [ -d "$DIR" ] || { echo "not a directory: $DIR"; exit 2; }
+if [ "$BOARD" = "opi-prime" ]; then
+  echo "[validate-netboot] BOARD=opi-prime has no netboot path (opi-netboot-feasibility: Allwinner's BootROM has no Pi-style native TFTP/HTTP netboot firmware) -- nothing to validate here"
+  exit 0
+fi
 note "netboot root: $DIR ($(du -sh "$DIR" | cut -f1))"
 
-# --- Pi 4 TFTP firmware chain (what the bootloader fetches first) --------------
+# --- Pi TFTP firmware chain (what the bootloader fetches first) ----------------
+# Alpine's alpine-rpi-*.tar.gz bundles every Pi model's DTB + firmware in one tree;
+# the Pi's own on-device firmware auto-selects the right DTB for its real hardware
+# ID at boot, so this existence check is the same for every Pi3/Pi4/Pi5 build.
 for f in bootcode.bin start4.elf fixup4.dat bcm2711-rpi-4-b.dtb; do
-  [ -f "$DIR/$f" ] && ok "firmware: $f" || bad "missing Pi4 firmware file: $f"
+  [ -f "$DIR/$f" ] && ok "firmware: $f" || bad "missing Pi firmware file: $f"
 done
 
 # --- kernel + initramfs + modloop (mounted by the diskless initramfs) ----------
@@ -42,9 +57,15 @@ else bad "missing config.txt"; fi
 # usercfg.txt: dwc2 gadget + serial console parity with the SD path.
 if [ -f "$DIR/usercfg.txt" ]; then
   CFG=$(cat "$DIR/usercfg.txt")
-  echo "$CFG" | grep -q 'dwc2' && echo "$CFG" | grep -q 'peripheral' \
-    && ok "usercfg.txt sets dwc2 peripheral (f_uac2 gadget)" \
-    || bad "usercfg.txt missing dwc2 dr_mode=peripheral"
+  if board_supports_usb_gadget "$BOARD"; then
+    echo "$CFG" | grep -q 'dwc2' && echo "$CFG" | grep -q 'peripheral' \
+      && ok "usercfg.txt sets dwc2 peripheral (f_uac2 gadget)" \
+      || bad "usercfg.txt missing dwc2 dr_mode=peripheral"
+  else
+    echo "$CFG" | grep -q 'dwc2' \
+      && bad "BOARD=$BOARD has no USB-OTG peripheral controller but usercfg.txt still sets dwc2" \
+      || ok "usercfg.txt correctly omits dwc2 (BOARD=$BOARD has no USB-OTG peripheral controller)"
+  fi
   echo "$CFG" | grep -q 'enable_uart=1' && ok "usercfg.txt keeps serial console (enable_uart=1)" \
     || bad "usercfg.txt missing enable_uart=1 (serial debug parity)"
 else bad "missing usercfg.txt"; fi

@@ -4,6 +4,91 @@ Hard-won gotchas from live debugging on the real Pi 4 hardware (192.168.137.100,
 root/aloop). Read this before touching the device or its build/deploy pipeline —
 every entry here cost real time to discover once; don't rediscover it.
 
+## Multi-board release architecture: BOARD-parameterized lib-boot-tree.sh
+
+`image/lib-boot-tree.sh` is the one source of truth for every board's boot tree,
+dispatched by a `BOARD` env var (`pi3`/`pi4`/`pi5`/`opi-prime`, default `pi4`).
+`boot_tree_apkovl` (the aloop payload — binary, LV2, services, vendored libs) is
+100% shared and unconditional: it is architecture-independent aarch64 userspace
+content regardless of board. Only `boot_tree_fetch` (firmware/kernel/DTB) and
+`boot_tree_config` (boot cmdline/USB-gadget config) dispatch per board, since
+those are the genuinely board-specific pieces.
+
+**Capability matrix** (`board_supports_usb_gadget`/`board_wifi_irq_name` in
+`lib-boot-tree.sh` are the authoritative source, not this table — check the code
+if either ever needs to change):
+
+| Board | SoC | Boot chain | USB-audio gadget | WiFi chip |
+|---|---|---|---|---|
+| pi4 (+CM4, Zero2) | BCM2711, quad Cortex-A72 aarch64 | Pi firmware, FAT partition | dwc2 peripheral — real UAC2 gadget | Broadcom brcmfmac |
+| pi3 | BCM2837, quad Cortex-A53 aarch64 | Pi firmware, FAT partition | none — no OTG-capable controller | Broadcom brcmfmac |
+| pi5 | BCM2712, quad Cortex-A76 aarch64 | Pi firmware, FAT partition | none — RP1 southbridge USB is host-only | Broadcom brcmfmac |
+| opi-prime | Allwinner H5, quad Cortex-A53 aarch64 | Armbian-sourced U-Boot (raw SD sectors) + ext4 root + extlinux.conf | unproven | Realtek RTL8723BS |
+
+**Orange Pi Prime uses Allwinner H5, not H3** — an easy premise error (H3 powers
+the cheaper Orange Pi PC/One/Zero/Lite boards; the Prime specifically is H5,
+confirmed via the mainline kernel's own `sun50i-h5-orangepi-prime.dts`). This
+matters: H5 is 64-bit Cortex-A53 aarch64, architecturally much closer to the Pi
+4's aarch64 toolchain than the 32-bit ARMv7 Cortex-A7 H3 would have been — no
+32-bit userland detour needed, Alpine's existing aarch64 packages apply directly.
+
+**USB-audio-gadget mode is UNPROVEN on Orange Pi Prime, not confirmed working.**
+The Allwinner H5 uses a MUSB dual-role controller (`sunxi-musb` glue,
+`drivers/usb/musb/sunxi.c`) on the micro-USB OTG port (the 3 full-size USB-A ports
+are host-only EHCI/OHCI, wired to a separate controller — they can never do
+gadget mode). Generic Linux `libcomposite`/`f_uac2` gadget audio is
+architecture-independent so nothing in principle blocks UAC2 once peripheral mode
+is confirmed working, but no source found this session directly confirms `f_uac2`
+has ever been run on H3/H5 — this is a real, open feasibility gap. Until proven,
+`board_supports_usb_gadget` returns false for `opi-prime` and the fallback audio
+path is the board's built-in analog codec (3.5mm line-in/mic-in,
+line/headphone-out) run as a normal ALSA HOST device — a materially different,
+lower-risk architecture than gadget-mode UAC2, but abandons the "looks like a USB
+soundcard to a laptop" design. If a future session proves gadget-mode UAC2 works
+on real Orange Pi Prime hardware, update `board_supports_usb_gadget` to add
+`opi-prime` to the true case and this note.
+
+**Orange Pi Prime's boot chain is structurally incompatible with the Pi's
+FAT-partition firmware model** — Allwinner's BootROM reads a raw SPL/U-Boot image
+at a FIXED RAW SD SECTOR OFFSET (`dd ... seek=8`, 1K blocks) before any partition
+table exists; there is no `config.txt`-equivalent firmware file. `lib-boot-tree.sh`
+handles this via `boot_tree_fetch_opi`/`boot_tree_config_opi`: it downloads
+Armbian's official `dl.armbian.com/orangepiprime/Trixie_current_minimal` **stable
+redirect URL** (verified real this session) — never a resolved
+`github.com/armbian/community/releases/...` asset URL, since Armbian's rolling
+trunk builds move that version string on every build — decompresses it, reads the
+image's own real partition table via `sfdisk` (never assumes a fixed offset),
+extracts the raw pre-partition-1 region as the U-Boot blob, and real-loop-mounts
+the ext4 root partition to pull the kernel/`sun50i-h5-orangepi-prime.dtb`/initrd
+out of `/boot`. `boot_tree_config_opi` writes a U-Boot-style
+`/boot/extlinux/extlinux.conf` (the same distro-boot mechanism syslinux/grub2
+bootloaders use) carrying the SAME isolcpus/RT kernel-cmdline tuning as the Pi
+boards' `cmdline.txt`, since that's a real, board-independent kernel parameter —
+only the delivery mechanism differs. `image/build-image.sh`'s `opi-prime` branch
+assembles a raw-U-Boot-at-sector-8KiB + ext4-root-partition image instead of the
+Pi boards' FAT32/mtools image; this needs real root (`sudo losetup`/`mount`) and
+only runs in CI (or any real Linux host with root), never on this Windows dev
+host. `image/validate-image.sh` mirrors this split: checks the `eGON.BT0` SPL
+magic at the real write offset + an MBR type-83 partition + loop-mounts the ext4
+root to check `extlinux.conf`/dtb/apkovl content, instead of the Pi boards'
+mtools/FAT32 checks.
+
+**Orange Pi Prime has no netboot path — SD-card-flash-only.** Unlike the Pi's
+native TFTP+HTTP netboot firmware (VideoCore EEPROM, boot-order NETWORK),
+Allwinner's BootROM requires U-Boot to already be resident on local media
+(SD/eMMC/SPI) before PXE/TFTP can even be reached — a bespoke DIY setup, not a
+drop-in equivalent. `build-image.yml`'s netboot-build/validate/SD-zip steps are
+all conditionally skipped for `BOARD=opi-prime`; only its raw `.img.gz` is
+produced and released.
+
+**Orange Pi Prime's WiFi is Realtek RTL8723BS, not Broadcom brcmfmac.**
+`kernel/rt-tune.sh`'s IRQ-steering (which keeps WiFi/network interrupts off the
+isolated audio cores) matches by driver-name substring, not fixed IRQ numbers, so
+it needed `rtl8723bs` added to its grep pattern alongside the existing `brcmfmac`
+— any Ableton Link multicast behavior tuned against Broadcom's driver on the Pi
+boards should be re-validated against this different driver/chip if Link sync
+accuracy is ever questioned on Orange Pi Prime specifically.
+
 ## No comments in code, ever — self-explanatory code replaces them
 
 Same absolute policy as `../gm`'s own AGENTS.md. A name, a function boundary,

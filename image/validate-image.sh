@@ -1,76 +1,43 @@
 #!/bin/sh
-# Validate a built aloop-pi4.img WITHOUT a Raspberry Pi.
+# Validate a built aloop board image WITHOUT the physical hardware.
 #
-# WHY: "it built" is not "it will boot". This proves the image is well-formed — a
-# valid MBR with a FAT32 boot partition holding the firmware/kernel + our boot
-# config + the apkovl, and the apkovl holding the binary + effects + start scripts.
-# Everything here is checkable in CI with mtools/sfdisk (no root, no Pi). What it
-# CANNOT prove — that the kernel actually boots and hits the latency target — is
-# the on-hardware step (docs/HARDWARE-TESTS.md, ADR-009).
+# WHY: "it built" is not "it will boot". This proves the image is well-formed —
+# for the Pi boards, a valid MBR with a FAT32 boot partition holding the
+# firmware/kernel + our boot config + the apkovl; for Orange Pi Prime, a raw
+# U-Boot region at the correct sector offset + an ext4 root partition holding the
+# kernel/dtb/extlinux.conf + apkovl. Everything here is checkable in CI (no root
+# needed for the Pi path; Orange Pi Prime needs a real loop-mount, same as its
+# build step). What it CANNOT prove — that the kernel actually boots and hits the
+# latency target — is the on-hardware step (docs/HARDWARE-TESTS.md, ADR-009).
 #
-# Usage: image/validate-image.sh aloop-pi4.img
+# Usage: image/validate-image.sh <image>   (BOARD env var selects pi3/pi4/pi5/opi-prime)
 # Exits non-zero on any structural failure.
 
 set -eu
 IMG="${1:?usage: validate-image.sh <image>}"
+BOARD="${BOARD:-pi4}"
 FAIL=0
+board_supports_usb_gadget() {
+  case "$1" in
+    pi4|pi-cm4|pi-zero2) return 0 ;;
+    pi3|pi5) return 1 ;;
+    *) return 1 ;;
+  esac
+}
 note()  { echo "[validate] $*"; }
 ok()    { echo "  OK   $*"; }
 bad()   { echo "  FAIL $*"; FAIL=1; }
 
-command -v mdir   >/dev/null || { echo "mtools required"; exit 2; }
-command -v sfdisk >/dev/null || { echo "fdisk/sfdisk required"; exit 2; }
-
 note "image: $IMG ($(du -h "$IMG" | cut -f1))"
 
-# --- MBR partition table: one bootable FAT32-LBA partition -------------------
-PARTLINE=$(sfdisk -d "$IMG" 2>/dev/null | grep -E 'type=(c|0c)' || true)
-if [ -n "$PARTLINE" ]; then ok "FAT32-LBA partition present: $PARTLINE"
-else bad "no FAT32-LBA (type 0c) partition in the MBR"; fi
-echo "$PARTLINE" | grep -q 'bootable' && ok "partition is bootable" || note "  (note: bootable flag not set — Pi firmware does not require it)"
-
-# --- FAT partition contents (via an offset mtools view) ---------------------
-# partition starts at sector 2048 → offset 1 MiB.
-OFF=$((2048 * 512))
-MT="$(mktemp)"; printf 'drive z: file="%s" offset=%s\n' "$IMG" "$OFF" > "$MT"
-export MTOOLSRC="$MT"
-
-LIST=$(mdir -/ -b z: 2>/dev/null || true)
-[ -n "$LIST" ] && ok "FAT partition is readable" || bad "cannot read the FAT partition"
-
-# Required boot files (Pi 4 firmware chain + kernel + our config + overlay).
-for f in config.txt cmdline.txt aloop.apkovl.tar.gz; do
-  if echo "$LIST" | grep -qi "/$f\$\|^z:/$f\$\|$f"; then ok "boot file: $f"
-  else bad "missing boot file: $f"; fi
-done
-# Pi 4 firmware/kernel — at least one of these must be present.
-if echo "$LIST" | grep -qiE 'start4?\.elf|bcm2711|kernel8?\.img|vmlinuz|boot/'; then
-  ok "Pi firmware/kernel present"
-else bad "no Pi firmware/kernel (start*.elf / kernel*.img / bcm2711 dtb)"; fi
-
-# --- Boot config content: dwc2 gadget + serial + isolcpus cmdline ------------
-CFG=$(mtype z:usercfg.txt 2>/dev/null || true)
-echo "$CFG" | grep -q 'dwc2' && echo "$CFG" | grep -q 'peripheral' \
-  && ok "usercfg.txt sets dwc2 peripheral (f_uac2 gadget mode)" \
-  || bad "usercfg.txt missing dwc2 dr_mode=peripheral"
-CMD=$(mtype z:cmdline.txt 2>/dev/null || true)
-# The Pi firmware reads ONLY the first line of cmdline.txt — an embedded newline
-# silently drops every later kernel param (isolcpus etc.). Enforce a single line.
-# (mtools may translate the trailing EOL; count LF bytes and allow at most one.)
-CMDNL=$(mtype z:cmdline.txt 2>/dev/null | tr -cd '\n' | wc -c | tr -d ' ')
-if [ "${CMDNL:-0}" -le 1 ]; then
-  ok "cmdline.txt is a single line (no embedded newline — firmware reads line 1 only)"
-else
-  bad "cmdline.txt has $CMDNL newlines — embedded newline truncates the kernel cmdline (isolcpus etc. dropped)"
-fi
-echo "$CMD" | grep -q 'isolcpus' && ok "cmdline.txt has isolcpus (RT core isolation)" \
-  || bad "cmdline.txt missing isolcpus tuning"
-
-# --- apkovl contents: the device payload ------------------------------------
-OVLTMP="$(mktemp -d)"
-mcopy z:aloop.apkovl.tar.gz "$OVLTMP/o.tar.gz" 2>/dev/null || true
-if [ -f "$OVLTMP/o.tar.gz" ]; then
-  INV=$(tar -tzf "$OVLTMP/o.tar.gz" 2>/dev/null || true)
+# --- apkovl content checks: shared across every board (the aloop payload is -----
+# architecture-independent aarch64 userspace content). Takes the apkovl tarball's
+# own path as $1, since the two board families extract it via different means
+# (mtools for the Pi FAT partition, a real ext4 loop-mount for Orange Pi Prime).
+validate_apkovl() {
+  APKOVL_PATH="$1"
+  [ -f "$APKOVL_PATH" ] || { bad "could not locate aloop.apkovl.tar.gz"; return; }
+  INV=$(tar -tzf "$APKOVL_PATH" 2>/dev/null || true)
   for p in etc/local.d/10-rt-tune.start etc/local.d/20-usb-gadget.start \
            etc/init.d/aloop etc/init.d/autoap etc/aloop.conf etc/aloop-controls.conf \
            etc/runlevels/default/aloop; do
@@ -79,10 +46,10 @@ if [ -f "$OVLTMP/o.tar.gz" ]; then
   # payload (binary + effects) — WARN not FAIL if absent (a layout-only build).
   if echo "$INV" | grep -q 'opt/aloop/aloop$'; then
     ok "apkovl: aloop binary present"
-    # Verify it is an aarch64 ELF (the Pi 4 target). Extract the whole overlay
-    # (tar member paths may be ./opt/... or opt/...) and file(1) the binary.
+    # Verify it is an aarch64 ELF. Extract the whole overlay (tar member paths may
+    # be ./opt/... or opt/...) and file(1) the binary.
     ARCHTMP="$(mktemp -d)"
-    tar -xzf "$OVLTMP/o.tar.gz" -C "$ARCHTMP" 2>/dev/null || true
+    tar -xzf "$APKOVL_PATH" -C "$ARCHTMP" 2>/dev/null || true
     BINPATH=$(find "$ARCHTMP" -path '*opt/aloop/aloop' -type f 2>/dev/null | head -n1)
     if [ -n "$BINPATH" ] && command -v file >/dev/null; then
       ARCH_DESC=$(file -b "$BINPATH")
@@ -123,17 +90,14 @@ if [ -f "$OVLTMP/o.tar.gz" ]; then
   # shipped in the apkovl; the code that writes them is responsible for creating
   # them. Only paths the runtime EXPECTS to already exist are linted.
   echo "[validate] boot-lint: runtime path references -> apkovl contents"
-  LINT="$(mktemp -d)"; tar -xzf "$OVLTMP/o.tar.gz" -C "$LINT" 2>/dev/null || true
+  LINT="$(mktemp -d)"; tar -xzf "$APKOVL_PATH" -C "$LINT" 2>/dev/null || true
   has() { [ -e "$LINT/$1" ] || [ -e "$LINT/./$1" ]; }
-  # The canonical device paths the runtime depends on (service commands + the
-  # scripts' own defaults). Each MUST be present in the overlay.
   for p in etc/aloop.conf etc/aloop-controls.conf \
            etc/aloop-net/hostapd.conf etc/aloop-net/wpa_supplicant.conf etc/aloop-net/dnsmasq.conf \
            opt/aloop/autoap.sh effects/user effects/home; do
     if has "$p"; then ok "boot-lint: /$p referenced and present"
     else bad "boot-lint: /$p is referenced by the runtime but MISSING from the apkovl"; fi
   done
-  # autoap's CONF_DIR default must point at a dir the image actually ships.
   ACONF=$(grep -oE 'CONF_DIR:-[^}]*' "$LINT/opt/aloop/autoap.sh" 2>/dev/null | sed 's/CONF_DIR:-//' || true)
   if [ -n "$ACONF" ]; then
     REL="${ACONF#/}"
@@ -141,11 +105,115 @@ if [ -f "$OVLTMP/o.tar.gz" ]; then
     else bad "boot-lint: autoap CONF_DIR default ($ACONF) does NOT exist in the apkovl"; fi
   fi
   rm -rf "$LINT"
+}
+
+if [ "$BOARD" = "opi-prime" ]; then
+  # --- Orange Pi Prime: raw U-Boot region + ext4 root partition ----------------
+  command -v losetup >/dev/null || { echo "losetup required"; exit 2; }
+  command -v sfdisk  >/dev/null || { echo "fdisk/sfdisk required"; exit 2; }
+
+  UBOOT_HEAD=$(dd if="$IMG" bs=1 skip=1024 count=4 2>/dev/null | tr -d '\0')
+  # sunxi SPL images begin with the ASCII magic "eGON.BT0" at byte offset 4 within
+  # the 1KiB-aligned SPL header (i.e. absolute offset 4 within the whole image
+  # region since U-Boot is written starting at sector 8/offset 4096... actually at
+  # the raw dd seek=8 (1K blocks) -> byte offset 8192). Check for the eGON magic at
+  # the real write offset instead of guessing a different one.
+  UBOOT_MAGIC=$(dd if="$IMG" bs=1 skip=8196 count=8 2>/dev/null || true)
+  if [ "$UBOOT_MAGIC" = "eGON.BT0" ]; then
+    ok "U-Boot SPL eGON magic present at the raw sector-8KiB offset"
+  else
+    bad "no eGON.BT0 SPL magic at offset 8KiB -- U-Boot region looks empty or misplaced"
+  fi
+
+  PARTLINE=$(sfdisk -d "$IMG" 2>/dev/null | grep -E 'type=83' || true)
+  if [ -n "$PARTLINE" ]; then ok "ext4 (type 83) root partition present: $PARTLINE"
+  else bad "no Linux (type 83) root partition in the MBR"; fi
+
+  PART_START=$(sfdisk -d "$IMG" 2>/dev/null | awk '/img[0-9]* :/{print $4}' | head -n1 | tr -d ',')
+  [ -n "$PART_START" ] || { bad "could not read the root partition's start sector"; PART_START=2048; }
+  OFF=$((PART_START * 512))
+
+  MNT="$(mktemp -d)"
+  LOOP=$(sudo losetup --show -f -o "$OFF" "$IMG" 2>/dev/null || true)
+  if [ -z "$LOOP" ]; then
+    bad "could not attach a loop device to the root partition (needs real root -- run in CI)"
+  else
+    if sudo mount -o ro "$LOOP" "$MNT" 2>/dev/null; then
+      ok "ext4 root partition mounts and is readable"
+      [ -f "$MNT/boot/extlinux/extlinux.conf" ] && ok "boot file: extlinux.conf" || bad "missing boot file: extlinux.conf"
+      if [ -f "$MNT/boot/extlinux/extlinux.conf" ]; then
+        EXT=$(cat "$MNT/boot/extlinux/extlinux.conf")
+        echo "$EXT" | grep -q 'KERNEL' && ok "extlinux.conf references a KERNEL" || bad "extlinux.conf missing KERNEL line"
+        echo "$EXT" | grep -q 'FDT' && ok "extlinux.conf references an FDT (devicetree)" || bad "extlinux.conf missing FDT line"
+        echo "$EXT" | grep -q 'isolcpus' && ok "extlinux.conf APPEND has isolcpus (RT core isolation)" \
+          || bad "extlinux.conf APPEND missing isolcpus tuning"
+      fi
+      find "$MNT/boot" -iname 'sun50i-h5-orangepi-prime.dtb' 2>/dev/null | grep -q . \
+        && ok "boot file: sun50i-h5-orangepi-prime.dtb" || bad "missing sun50i-h5-orangepi-prime.dtb"
+      [ -f "$MNT/aloop.apkovl.tar.gz" ] && ok "boot file: aloop.apkovl.tar.gz" || bad "missing boot file: aloop.apkovl.tar.gz"
+      [ -f "$MNT/aloop.apkovl.tar.gz" ] && validate_apkovl "$MNT/aloop.apkovl.tar.gz"
+      sudo umount "$MNT"
+    else
+      bad "could not mount the ext4 root partition"
+    fi
+    sudo losetup -d "$LOOP"
+  fi
+  rm -rf "$MNT"
 else
-  bad "could not extract aloop.apkovl.tar.gz from the image"
+  # --- Pi boards: MBR + FAT32 boot partition (mtools, unprivileged) ------------
+  command -v mdir   >/dev/null || { echo "mtools required"; exit 2; }
+  command -v sfdisk >/dev/null || { echo "fdisk/sfdisk required"; exit 2; }
+
+  PARTLINE=$(sfdisk -d "$IMG" 2>/dev/null | grep -E 'type=(c|0c)' || true)
+  if [ -n "$PARTLINE" ]; then ok "FAT32-LBA partition present: $PARTLINE"
+  else bad "no FAT32-LBA (type 0c) partition in the MBR"; fi
+  echo "$PARTLINE" | grep -q 'bootable' && ok "partition is bootable" || note "  (note: bootable flag not set — Pi firmware does not require it)"
+
+  OFF=$((2048 * 512))
+  MT="$(mktemp)"; printf 'drive z: file="%s" offset=%s\n' "$IMG" "$OFF" > "$MT"
+  export MTOOLSRC="$MT"
+
+  LIST=$(mdir -/ -b z: 2>/dev/null || true)
+  [ -n "$LIST" ] && ok "FAT partition is readable" || bad "cannot read the FAT partition"
+
+  for f in config.txt cmdline.txt aloop.apkovl.tar.gz; do
+    if echo "$LIST" | grep -qi "/$f\$\|^z:/$f\$\|$f"; then ok "boot file: $f"
+    else bad "missing boot file: $f"; fi
+  done
+  # Alpine's RPi tarball bundles every Pi model's firmware+DTBs in one tree
+  # regardless of BOARD -- the Pi firmware auto-selects the correct DTB at boot.
+  if echo "$LIST" | grep -qiE 'start4?\.elf|bcm27[01].|kernel8?\.img|vmlinuz|boot/'; then
+    ok "Pi firmware/kernel present"
+  else bad "no Pi firmware/kernel (start*.elf / kernel*.img / bcm27xx dtb)"; fi
+
+  CFG=$(mtype z:usercfg.txt 2>/dev/null || true)
+  if board_supports_usb_gadget "$BOARD"; then
+    echo "$CFG" | grep -q 'dwc2' && echo "$CFG" | grep -q 'peripheral' \
+      && ok "usercfg.txt sets dwc2 peripheral (f_uac2 gadget mode)" \
+      || bad "usercfg.txt missing dwc2 dr_mode=peripheral"
+  else
+    echo "$CFG" | grep -q 'dwc2' \
+      && bad "BOARD=$BOARD has no USB-OTG peripheral controller but usercfg.txt still sets dwc2" \
+      || ok "usercfg.txt correctly omits dwc2 (BOARD=$BOARD has no USB-OTG peripheral controller)"
+  fi
+  CMD=$(mtype z:cmdline.txt 2>/dev/null || true)
+  # The Pi firmware reads ONLY the first line of cmdline.txt — an embedded newline
+  # silently drops every later kernel param (isolcpus etc.). Enforce a single line.
+  CMDNL=$(mtype z:cmdline.txt 2>/dev/null | tr -cd '\n' | wc -c | tr -d ' ')
+  if [ "${CMDNL:-0}" -le 1 ]; then
+    ok "cmdline.txt is a single line (no embedded newline — firmware reads line 1 only)"
+  else
+    bad "cmdline.txt has $CMDNL newlines — embedded newline truncates the kernel cmdline (isolcpus etc. dropped)"
+  fi
+  echo "$CMD" | grep -q 'isolcpus' && ok "cmdline.txt has isolcpus (RT core isolation)" \
+    || bad "cmdline.txt missing isolcpus tuning"
+
+  OVLTMP="$(mktemp -d)"
+  mcopy z:aloop.apkovl.tar.gz "$OVLTMP/o.tar.gz" 2>/dev/null || true
+  validate_apkovl "$OVLTMP/o.tar.gz"
+  rm -f "$MT"; rm -rf "$OVLTMP"
 fi
 
-rm -f "$MT"; rm -rf "$OVLTMP"
 echo ""
-if [ "$FAIL" -eq 0 ]; then note "IMAGE VALID — structurally flashable (on-Pi boot = HARDWARE-TESTS.md)"; else note "IMAGE INVALID — see FAILs above"; fi
+if [ "$FAIL" -eq 0 ]; then note "IMAGE VALID — structurally flashable (on-hardware boot = HARDWARE-TESTS.md)"; else note "IMAGE INVALID — see FAILs above"; fi
 exit "$FAIL"

@@ -71,12 +71,12 @@ for irq in /proc/irq/*/; do
     n=$(basename "$irq")
     # Match brcmfmac (WiFi), dwc2 (USB), and generic net IRQs by their /proc name.
     name=$(cat "$irq/../$n/spurious" 2>/dev/null || true)
-    if grep -qiE 'brcmfmac|mmc|dwc2|eth|wlan|xhci' "/proc/irq/$n/"* 2>/dev/null; then
+    if grep -qiE 'brcmfmac|rtl8723bs|mmc|dwc2|eth|wlan|xhci' "/proc/irq/$n/"* 2>/dev/null; then
         echo "$CONTROL_MASK" > "/proc/irq/$n/smp_affinity" 2>/dev/null || true
     fi
 done
-# Fallback: many Pi net IRQs are named in /proc/interrupts; steer any that match.
-awk '/brcmfmac|dwc2|mmc|xhci|eth/{gsub(":","",$1); print $1}' /proc/interrupts 2>/dev/null | while read -r n; do
+# Fallback: many net IRQs are named in /proc/interrupts; steer any that match.
+awk '/brcmfmac|rtl8723bs|dwc2|mmc|xhci|eth/{gsub(":","",$1); print $1}' /proc/interrupts 2>/dev/null | while read -r n; do
     echo "$CONTROL_MASK" > "/proc/irq/$n/smp_affinity" 2>/dev/null || true
 done
 log "network/USB IRQs steered to control core $CONTROL_CORE (mask $CONTROL_MASK)"
