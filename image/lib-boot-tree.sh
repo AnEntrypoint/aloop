@@ -139,10 +139,12 @@ boot_tree_fetch_opi() {
   # real SPL. Trim to the last non-zero 512-byte sector within the span instead, so
   # the copied blob is only as large as its actual real content.
   dd if="$_img" of="$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw" bs=512 count="$_part1_start_sector" status=none
+  echo "[boot-tree] diagnostic: raw pre-trim bytes at offset 4-12 = '$(dd if="$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw" bs=1 skip=4 count=8 2>/dev/null)'"
   _real_end_sector=$(cmp -l "$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw" /dev/zero 2>/dev/null | tail -n1 | awk '{print int(($1-1)/512)+1}')
   [ -n "$_real_end_sector" ] || _real_end_sector="$_part1_start_sector"
   dd if="$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw" of="$_boot/opi-uboot/u-boot-sunxi-with-spl.bin" bs=512 count="$_real_end_sector" status=none
   rm -f "$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw"
+  echo "[boot-tree] diagnostic: post-trim bytes at offset 4-12 = '$(dd if="$_boot/opi-uboot/u-boot-sunxi-with-spl.bin" bs=1 skip=4 count=8 2>/dev/null)'"
   echo "[boot-tree] extracted real U-Boot blob ($_real_end_sector of $_part1_start_sector sectors were non-zero content)"
 
   # Kernel + DTB: inside the first (and on a minimal Armbian image, only) real
