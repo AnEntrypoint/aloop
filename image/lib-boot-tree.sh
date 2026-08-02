@@ -120,6 +120,7 @@ boot_tree_fetch_opi() {
   xz -dk -f "$_img_xz" -c > "$_img"
   echo "[boot-tree] diagnostic: decompressed image size = $(wc -c < "$_img") bytes, xz source size = $(wc -c < "$_img_xz") bytes"
   echo "[boot-tree] diagnostic: MBR signature (should be 55aa) = $(dd if="$_img" bs=1 skip=510 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+  echo "[boot-tree] diagnostic: eGON.BT0 real byte offsets in the decompressed image = $(grep -abo 'eGON.BT0' "$_img" | head -5 | cut -d: -f1 | tr '\n' ',')"
 
   mkdir -p "$_boot/opi-boot" "$_boot/opi-uboot"
 
