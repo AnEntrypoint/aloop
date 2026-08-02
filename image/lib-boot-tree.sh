@@ -314,14 +314,31 @@ boot_tree_write_boot_scr_opi() {
     echo "[boot-tree] ERROR: mkimage unavailable -- cannot compile boot.scr (needs u-boot-tools; works in CI, not this dev host)" >&2
     return 1
   fi
+  # DIAGNOSTIC ROUND: real hardware reached 'Starting kernel' (booti's own
+  # handoff message) with fully normal U-Boot output before it -- version
+  # banner, DRAM/MMC detection, correct load byte-counts for every file --
+  # then total silence, including zero earlycon output, then a reset. U-Boot's
+  # own bootm/booti validation path has no check that its own runtime
+  # relocation target doesn't overlap the sunxi-common.h default load
+  # addresses (kernel_addr_r=0x42000000 etc) -- a real overlap would silently
+  # corrupt loaded data with no error text, matching this exact symptom. Moved
+  # to addresses well clear of low-DRAM defaults as a cheap, reversible test.
+  # Also explicitly stops the watchdog before booti: sunxi silicon has a
+  # documented (linux-sunxi) watchdog reset-reliability quirk across the
+  # U-Boot-to-kernel handoff.
   _cmd="$_boot/opi-boot/boot.cmd"
   {
     echo "setenv bootargs \"root=LABEL=aloopboot rw $_console $_rt\""
+    echo "setenv kernel_addr_r 0x44000000"
+    echo "setenv fdt_addr_r 0x4a000000"
+    echo "setenv ramdisk_addr_r 0x4c000000"
+    echo "wdt stop || true"
     echo "load mmc 0:1 \${kernel_addr_r} /boot/$_kernel_name"
     echo "load mmc 0:1 \${fdt_addr_r} /boot/$_dtb_name"
     if [ -n "$_initrd_name" ]; then
       echo "load mmc 0:1 \${ramdisk_addr_r} /boot/$_initrd_name"
-      echo "booti \${kernel_addr_r} \${ramdisk_addr_r}:\${filesize} \${fdt_addr_r}"
+      echo "setenv ramdisk_size \${filesize}"
+      echo "booti \${kernel_addr_r} \${ramdisk_addr_r}:\${ramdisk_size} \${fdt_addr_r}"
     else
       echo "booti \${kernel_addr_r} - \${fdt_addr_r}"
     fi
