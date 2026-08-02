@@ -109,6 +109,18 @@ if [ "$BOARD" = "opi-prime" ]; then
         echo "$EXT" | grep -q 'isolcpus' && ok "extlinux.conf APPEND has isolcpus (RT core isolation)" \
           || bad "extlinux.conf APPEND missing isolcpus tuning"
       fi
+      # Armbian's own compiled U-Boot bootcmd sources /boot/boot.scr directly by
+      # fixed filename and never touches extlinux.conf -- this is the real,
+      # hardware-witnessed boot path for this project's Armbian-sourced U-Boot
+      # binary, so boot.scr presence is a hard requirement, not optional.
+      if [ -f "$MNT/boot/boot.scr" ]; then
+        ok "boot file: boot.scr (mkimage-compiled, the real Armbian bootcmd entry point)"
+        BOOTSCR_MAGIC=$(dd if="$MNT/boot/boot.scr" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' ')
+        [ "$BOOTSCR_MAGIC" = "27051956" ] && ok "boot.scr has a valid mkimage magic header" \
+          || bad "boot.scr magic is '$BOOTSCR_MAGIC', expected 27051956 (mkimage header) -- not a real compiled script"
+      else
+        bad "missing boot file: boot.scr -- Armbian's compiled bootcmd will find nothing to source and reset (the real root cause of the live pre-boot cycling bug this session diagnosed)"
+      fi
       find "$MNT/boot" -iname 'sun50i-h5-orangepi-prime.dtb' 2>/dev/null | grep -q . \
         && ok "boot file: sun50i-h5-orangepi-prime.dtb" || bad "missing sun50i-h5-orangepi-prime.dtb"
       [ -f "$MNT/aloop.apkovl.tar.gz" ] && ok "boot file: aloop.apkovl.tar.gz" || bad "missing boot file: aloop.apkovl.tar.gz"

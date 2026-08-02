@@ -277,6 +277,8 @@ boot_tree_config_opi() {
   [ -n "$_dtb" ]    || { echo "[boot-tree] ERROR: no sun50i-h5-orangepi-prime.dtb found under $_boot/opi-boot" >&2; return 1; }
   mkdir -p "$_boot/opi-boot/extlinux"
   {
+    echo "DEFAULT aloop"
+    echo ""
     echo "LABEL aloop"
     echo "  KERNEL /boot/$(basename "$_kernel")"
     echo "  FDT /boot/$(basename "$_dtb")"
@@ -284,4 +286,37 @@ boot_tree_config_opi() {
     echo "  APPEND root=LABEL=aloopboot rw console=ttyS0,115200 $_rt"
   } > "$_boot/opi-boot/extlinux/extlinux.conf"
   echo "[boot-tree] wrote extlinux.conf (kernel=$(basename "$_kernel") dtb=$(basename "$_dtb") isolcpus tuning included)"
+
+  boot_tree_write_boot_scr_opi "$_boot" "$(basename "$_kernel")" "$(basename "$_dtb")" "$( [ -n "$_initrd" ] && basename "$_initrd")" "$_rt"
+}
+
+# Armbian's own compiled bootcmd sources /boot/boot.scr directly by fixed
+# filename and calls booti itself -- it never touches extlinux.conf. Since
+# this project's U-Boot binary is sourced from Armbian's real build (see
+# opi-alpine-image-source-decision), extlinux.conf ALONE is not reachable:
+# real hardware confirmed this live (SPL+U-Boot proper both genuinely
+# complete their multi-second load each cycle, then reset -- consistent
+# with bootcmd finding no boot.scr and having nothing else to fall back to).
+# extlinux.conf stays as a defensive fallback (harmless, costs nothing) for
+# any future U-Boot build that does have CONFIG_DISTRO_DEFAULTS compiled in.
+boot_tree_write_boot_scr_opi() {
+  _boot="$1"; _kernel_name="$2"; _dtb_name="$3"; _initrd_name="$4"; _rt="$5"
+  if ! command -v mkimage >/dev/null 2>&1; then
+    echo "[boot-tree] ERROR: mkimage unavailable -- cannot compile boot.scr (needs u-boot-tools; works in CI, not this dev host)" >&2
+    return 1
+  fi
+  _cmd="$_boot/opi-boot/boot.cmd"
+  {
+    echo "setenv bootargs \"root=LABEL=aloopboot rw console=ttyS0,115200 $_rt\""
+    echo "load mmc 0:1 \${kernel_addr_r} /boot/$_kernel_name"
+    echo "load mmc 0:1 \${fdt_addr_r} /boot/$_dtb_name"
+    if [ -n "$_initrd_name" ]; then
+      echo "load mmc 0:1 \${ramdisk_addr_r} /boot/$_initrd_name"
+      echo "booti \${kernel_addr_r} \${ramdisk_addr_r}:\${filesize} \${fdt_addr_r}"
+    else
+      echo "booti \${kernel_addr_r} - \${fdt_addr_r}"
+    fi
+  } > "$_cmd"
+  mkimage -A arm64 -O linux -T script -C none -a 0 -e 0 -n aloop-boot -d "$_cmd" "$_boot/opi-boot/boot.scr" >/dev/null
+  echo "[boot-tree] compiled boot.scr from boot.cmd ($(wc -c < "$_boot/opi-boot/boot.scr") bytes)"
 }

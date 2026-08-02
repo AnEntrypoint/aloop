@@ -39,8 +39,11 @@ jobs:
       # e2fsprogs (mkfs.ext4) + xz-utils + util-linux (losetup) cover Orange Pi
       # Prime's Armbian-sourced raw-U-Boot + ext4-root image assembly, which needs
       # real root (sudo losetup/mount) unlike the Pi boards' mtools path.
-      - name: Tools (mtools, dosfstools, fdisk, e2fsprogs, xz, file — image assembly)
-        run: sudo apt-get update && sudo apt-get install -y mtools dosfstools fdisk e2fsprogs xz-utils util-linux curl gzip file zip
+      # u-boot-tools (mkimage) compiles boot.scr -- Armbian's compiled U-Boot
+      # bootcmd sources this file directly by fixed filename and never touches
+      # extlinux.conf, confirmed via real hardware debugging this session.
+      - name: Tools (mtools, dosfstools, fdisk, e2fsprogs, xz, u-boot-tools, file — image assembly)
+        run: sudo apt-get update && sudo apt-get install -y mtools dosfstools fdisk e2fsprogs xz-utils util-linux u-boot-tools curl gzip file zip
 
       # Pull the aloop binary + LV2 bundle produced by build-binary / build-lv2.
       # They live in DIFFERENT workflows' runs, so fetch each from the latest
