@@ -133,6 +133,8 @@ boot_tree_fetch_opi() {
     echo "[boot-tree] ERROR: could not read Armbian image's first partition start sector -- cannot locate the raw U-Boot region" >&2
     return 1
   fi
+  echo "[boot-tree] diagnostic: sfdisk -d full output ='$(sfdisk -d "$_img" 2>/dev/null)'"
+  echo "[boot-tree] diagnostic: _part1_start_sector value = '[${_part1_start_sector}]' (length $(printf '%s' "$_part1_start_sector" | wc -c))"
   # The pre-partition-1 span on Armbian's own image ($_part1_start_sector sectors,
   # often 4MiB+) is mostly empty padding reserved for a later U-Boot environment,
   # NOT the real SPL+u-boot.bin size (which is typically a few hundred KB). Reading
