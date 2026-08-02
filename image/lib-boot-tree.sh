@@ -144,7 +144,9 @@ boot_tree_fetch_opi() {
   # real SPL. Trim to the last non-zero 512-byte sector within the span instead, so
   # the copied blob is only as large as its actual real content.
   dd if="$_img" of="$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw" bs=512 count="$_part1_start_sector" status=none
+  echo "[boot-tree] diagnostic: extracted .raw file size = $(wc -c < "$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw") bytes (expect $((_part1_start_sector * 512)))"
   echo "[boot-tree] diagnostic: raw pre-trim bytes at offset 4-12 = '$(dd if="$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw" bs=1 skip=4 count=8 2>/dev/null)'"
+  echo "[boot-tree] diagnostic: eGON offsets found inside the extracted .raw file = $(grep -abo 'eGON.BT0' "$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw" | head -3 | cut -d: -f1 | tr '\n' ',')"
   _real_end_sector=$(cmp -l "$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw" /dev/zero 2>/dev/null | tail -n1 | awk '{print int(($1-1)/512)+1}')
   [ -n "$_real_end_sector" ] || _real_end_sector="$_part1_start_sector"
   dd if="$_boot/opi-uboot/u-boot-sunxi-with-spl.bin.raw" of="$_boot/opi-uboot/u-boot-sunxi-with-spl.bin" bs=512 count="$_real_end_sector" status=none
