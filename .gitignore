@@ -32,7 +32,7 @@
 .gm/long-gap-retry-state
 .gm/config-source-cache-default/
 .gm/config-source-cache-default*.sync.json
-.gm/.embed-generation
+.gm/.embed-generation*
 
 # build artifacts
 build/
