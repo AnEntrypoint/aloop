@@ -316,16 +316,21 @@ boot_tree_write_boot_scr_opi() {
   fi
   # DIAGNOSTIC ROUND: real hardware reached 'Starting kernel' (booti's own
   # handoff message) with fully normal U-Boot output before it -- version
-  # banner, DRAM/MMC detection, correct load byte-counts for every file --
-  # then total silence, including zero earlycon output, then a reset. U-Boot's
-  # own bootm/booti validation path has no check that its own runtime
-  # relocation target doesn't overlap the sunxi-common.h default load
-  # addresses (kernel_addr_r=0x42000000 etc) -- a real overlap would silently
-  # corrupt loaded data with no error text, matching this exact symptom. Moved
-  # to addresses well clear of low-DRAM defaults as a cheap, reversible test.
-  # Also explicitly stops the watchdog before booti: sunxi silicon has a
-  # documented (linux-sunxi) watchdog reset-reliability quirk across the
-  # U-Boot-to-kernel handoff.
+  # banner, DRAM/MMC detection, correct load byte-counts for every file, even
+  # a real HDMI graphical U-Boot logo -- then total silence, including zero
+  # earlycon output, then a reset. Relocated load addresses (kernel_addr_r
+  # etc, moved off the sunxi-common.h defaults in case of an overlap with
+  # U-Boot's own runtime relocation target) and an explicit watchdog stop
+  # were both tested live and ruled out -- the symptom persisted unchanged.
+  # Real fix candidate found in Armbian's own reference config/bootscripts/
+  # boot-sunxi.cmd: it runs 'fdt addr'/'fdt resize 65536' on the loaded DTB
+  # before booti, which this hand-written script never did. Without a resize,
+  # U-Boot's own in-place FDT edits during handoff (inserting /chosen
+  # properties for bootargs/initrd bounds, PSCI/memory nodes) have zero
+  # headroom in a DTB blob sized to exactly its on-disk bytes, and can
+  # silently corrupt/truncate the buffer with no error text -- a structurally
+  # plausible match for booti completing its own print then the kernel
+  # receiving a devicetree it cannot even locate its own UART in.
   _cmd="$_boot/opi-boot/boot.cmd"
   {
     echo "setenv bootargs \"root=LABEL=aloopboot rw $_console $_rt\""
@@ -335,6 +340,8 @@ boot_tree_write_boot_scr_opi() {
     echo "wdt stop || true"
     echo "load mmc 0:1 \${kernel_addr_r} /boot/$_kernel_name"
     echo "load mmc 0:1 \${fdt_addr_r} /boot/$_dtb_name"
+    echo "fdt addr \${fdt_addr_r}"
+    echo "fdt resize 65536"
     if [ -n "$_initrd_name" ]; then
       echo "load mmc 0:1 \${ramdisk_addr_r} /boot/$_initrd_name"
       echo "setenv ramdisk_size \${filesize}"
