@@ -89,6 +89,118 @@ it needed `rtl8723bs` added to its grep pattern alongside the existing `brcmfmac
 boards should be re-validated against this different driver/chip if Link sync
 accuracy is ever questioned on Orange Pi Prime specifically.
 
+## `lib-boot-tree.sh`/`build-netboot.sh` boot-tree assembly: durable facts behind the shared apkovl/cmdline/gadget code
+
+**`boot_tree_apkovl` must stamp `.default_boot_services`.** WITNESSED live on a
+real Pi 4: shipping our own apkovl with runlevels already populated silently
+opts OUT of Alpine's own `rc_add modloop sysinit` gate (which also enables
+devfs/dmesg/mdev/hwdrivers — the whole hardware-bring-up layer), because that
+gate is conditioned on `[ -f "$sysroot/etc/.default_boot_services" -o ! -f
+"$ovl" ]` — i.e. it only fires for a fresh/no-apkovl boot unless the apkovl
+itself carries this marker asking init to still enable them (init removes the
+marker after reading it, a documented one-shot Alpine mechanism). Without it,
+`/lib/modules` stayed empty, `/proc/asound` never existed, and
+`/sys/kernel/config/usb_gadget/` could not be created, even though
+`modloop-rpi` was fetched successfully.
+
+**`aloop`'s OpenRC service needs `rc_ulimit="-l unlimited -r 95"`, not a
+`local.d` `ulimit` call.** `kernel/rt-tune.sh` sets `ulimit -l unlimited`
+(memlock, needed for `mlockall(MCL_FUTURE)`), but that runs inside a
+`local.d/*.start` script which OpenRC's `local` service `eval`s in a
+transient subshell that exits once `local`'s own `start()` returns — the
+ulimit change never reaches the separately-started `aloop` process
+(WITNESSED: `ulimit -l` on a booted device showed the 8192 KB default, not
+unlimited). `rc_ulimit` is OpenRC's own per-service ulimit mechanism, read by
+`openrc-run.sh` itself immediately before it execs `command` — the correct
+place for a limit the service's own process needs.
+
+**`aloop`'s `depend()` needs `after autoap`, matching esp-idf-link's own
+interface-settle defenses.** `aloop` constructs `ableton::Link` (and its UDP
+multicast socket) during startup. With both services declaring only `after
+local`, OpenRC was free to start them in either order or in parallel, so Link
+could open its socket before `autoap` had brought `wlan0` up. `../esp-idf-link`
+treats this exact race as real and defends against it twice (a 500ms
+interface-settle before constructing Link, plus re-asserting IGMP membership
+for ~10s after every connection). Ordering `aloop` after `autoap` is the cheap
+half of the same defense; `src/main.cpp` additionally waits for the interface
+to carry an address before starting Link.
+
+**The apkovl must vendor alsa-lib + the whole lilv stack as real `.so` files,
+never rely on `apk add` at boot.** WITNESSED live: the device's only reachable
+apk repo is the ~100-package minimal set bundled in the Alpine RPi tarball
+(no CDN fallback) — none of `alsa-lib`/`lilv-libs`/`serd-libs`/`sord-libs`/
+`sratom`/`zix-libs` are in it, so the aloop binary could never dynamically
+link (telemetry never came up after a full successful boot). Fixed by
+bundling the real musl-aarch64 `.so` files directly under `usr/lib/`
+(`vendor/lib-aarch64/`, fetched from the exact Alpine 3.20 CDN versions CI
+builds against).
+
+**alsa-lib also needs its own DATA tree (`/usr/share/alsa/alsa.conf`), not
+just `libasound.so`.** WITNESSED live: with `libasound.so.2` vendored but no
+`alsa.conf`, calling `snd_pcm_open("default", ...)` segfaults deep inside
+alsa-lib's config parser — `"default"` is an ALIAS defined in `alsa.conf`,
+with nothing to resolve it against otherwise (confirmed via alsa-lib's own
+stderr: `Cannot access file /usr/share/alsa/alsa.conf`). The whole
+`vendor/share-alsa/` data tree (~340K) is vendored rather than guessing which
+of `alsa.conf`'s `@hooks`/includes are load-bearing.
+
+**Every `cmdline.txt`/`extlinux.conf` APPEND write must stay a single line —
+the Pi firmware and U-Boot both read only line 1.** An embedded newline
+silently truncates every kernel param after it. WITNESSED: an early version
+appended the RT cmdline fragment raw, leaving an embedded newline between the
+stock Alpine `cmdline.txt` (which already ends `\n`) and the appended RT
+fragment — this dropped `isolcpus` and, for netboot, `ip=dhcp`/
+`alpine_repo`/`modloop`/`apkovl` entirely, and the Pi never ran the
+initramfs DHCP, dropping to an emergency shell. Every writer collapses both
+halves via `tr '\n' ' '` + `tr -s ' '` before re-emitting one line with a
+single trailing newline — this discipline is repeated in
+`boot_tree_config`/`boot_tree_config_opi`/`build-netboot.sh`'s netboot-cmdline
+and `NETBOOT_DEBUG` steps, and both `validate-image.sh`/`validate-netboot.sh`
+assert it by counting newlines.
+
+**`build-netboot.sh`'s netboot-root publish is a staged-directory atomic
+`mv`, never `rm -rf` + populate-in-place.** `image/serve-netboot-win.js` can
+rebuild the netboot root while a Pi is actively TFTP/HTTP-fetching from it
+(WITNESSED: a real Pi 4's boot-chain fetch was served concurrently with a
+live rebuild) — an in-place `rm -rf`/`cp -a` leaves a window where the served
+tree is empty or half-copied, and an in-flight read can get a spurious
+"not found" or a truncated file. `mv` between two directories on the SAME
+filesystem is a single atomic `rename(2)` (POSIX-guaranteed), so the staging
+directory is built as a SIBLING of the real output dir (same parent, same
+filesystem) — never under `mktemp -d`'s `$WORK`, which typically lands on a
+different mount and would silently degrade the swap to a non-atomic
+copy+delete.
+
+**The netboot root must be `chmod -R a+rX`'d after copy.** The Alpine tarball
+ships `boot/initramfs-rpi` as mode 600 (root-only), and `cp -a` preserves
+that. A TFTP server runs unprivileged (dnsmasq drops to `nobody`), so without
+this fix it gets "Permission denied" on the initramfs and the Pi boots a
+kernel with no initramfs, panicking "unable to mount root fs".
+
+## `src/usb/f_uac2-gadget.sh`: configfs UAC2 setup facts
+
+Replaces looper's hand-rolled UAC2 bring-up (ADR-008) — the kernel's `f_uac2`
+function lays out isochronous USB microframes correctly by construction,
+eliminating the buzz/crackle/-4608 corruption class the bare-metal looper had
+to find and fix by hand. Runs at boot from `/etc/local.d` after `libcomposite`
+loads.
+
+The gadget presents a STEREO wire (`c_chmask`/`p_chmask = 0x3`, L+R) matching
+looper's own UAC2 exactly — `audio_thread.cpp`'s `wireCh` handling averages
+capture L/R down to mono for the Faust DSP and duplicates the mono result
+onto both channels on playback, so the host sees a normal stereo soundcard
+while the DSP itself stays mono internally.
+
+**`req_number` (the f_uac2 driver's own isochronous USB request queue depth,
+separate from ALSA's `buffer_size`/`period_size`) must be raised from the
+kernel default of 2 to 4.** WITNESSED live: the default of 2 silently capped
+ALSA's negotiated `buffer_size` at 256 frames no matter what
+`audio_thread.cpp`'s `hw_params` requested, producing hundreds of xruns/sec
+once the ALSA period was tightened to match `block_size` (the `aloop.conf`
+`audio_device` fix). Raising `req_number` to 4 gives the gadget's own USB
+transfer queue the same headroom the ALSA-side fix intended, so the two
+actually compound instead of one silently overriding the other.
+
 ## No comments in code, ever — self-explanatory code replaces them
 
 Same absolute policy as `../gm`'s own AGENTS.md. A name, a function boundary,

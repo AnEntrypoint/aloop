@@ -1,27 +1,17 @@
 #!/bin/sh
-# aloop USB audio gadget — configfs f_uac2 setup (ADR-008, docs/ARCHITECTURE.md).
-#
-# WHY this replaces looper's hand-rolled UAC2: the kernel's f_uac2 function lays
-# out the isochronous USB microframes correctly by construction, deleting the
-# entire class of buzz/crackle/-4608 corruption bugs the bare-metal looper had to
-# find and fix by hand. The Pi presents itself to a host as a UAC2 soundcard.
-#
-# Runs at boot (from /etc/local.d) after libcomposite is loaded. Mono 48k s16 to
-# match the looper's format exactly.
-
 set -eu
 G=/sys/kernel/config/usb_gadget/aloop
 
 modprobe libcomposite || true
-UDC=$(ls /sys/class/udc 2>/dev/null | head -n1)   # the OTG peripheral-mode controller
+UDC=$(ls /sys/class/udc 2>/dev/null | head -n1)
 if [ -z "$UDC" ]; then
   echo "[f_uac2] no USB device controller present (board has no OTG peripheral mode) -- skipping gadget setup"
   exit 0
 fi
 mkdir -p "$G"; cd "$G"
 
-echo 0x1d6b > idVendor          # Linux Foundation
-echo 0x0104 > idProduct         # Multifunction Composite Gadget
+echo 0x1d6b > idVendor
+echo 0x0104 > idProduct
 echo 0x0100 > bcdDevice
 echo 0x0200 > bcdUSB
 
@@ -30,28 +20,13 @@ echo "aloop"        > strings/0x409/manufacturer
 echo "aloop looper" > strings/0x409/product
 echo "0001"         > strings/0x409/serialnumber
 
-# --- the UAC2 audio function: mono, 48000, s16 ---
 mkdir -p functions/uac2.0
-echo 48000 > functions/uac2.0/c_srate    # capture (host -> Pi) sample rate
-echo 48000 > functions/uac2.0/p_srate    # playback (Pi -> host) sample rate
-# Stereo WIRE (0x3 = L+R), the same as the looper's UAC2. aloop's audio thread
-# opens ALSA with this stereo wire, averages capture L/R -> mono for the Faust DSP,
-# and duplicates the mono result onto both channels on playback (audio_thread.cpp
-# wireCh handling). So the host sees a normal stereo soundcard; internally it is
-# mono, matching the looper exactly.
-echo 0x3   > functions/uac2.0/c_chmask   # capture channel mask (stereo wire)
-echo 0x3   > functions/uac2.0/p_chmask   # playback channel mask (stereo wire)
-echo 2     > functions/uac2.0/c_ssize    # sample size bytes (s16 = 2)
+echo 48000 > functions/uac2.0/c_srate
+echo 48000 > functions/uac2.0/p_srate
+echo 0x3   > functions/uac2.0/c_chmask
+echo 0x3   > functions/uac2.0/p_chmask
+echo 2     > functions/uac2.0/c_ssize
 echo 2     > functions/uac2.0/p_ssize
-# req_number = the f_uac2 driver's own isochronous USB request queue depth
-# (separate from ALSA's PCM buffer_size/period_size). WITNESSED live: the
-# kernel default of 2 silently capped ALSA's negotiated buffer_size at 256
-# frames no matter what audio_thread.cpp's hw_params asked for, which meant
-# hundreds of xruns/sec once the ALSA period was tightened to match
-# block_size (aloop.conf audio_device fix). Raising it to 4 gives the
-# gadget's own USB transfer queue the same headroom the ALSA-side buffer_size
-# fix intended, so the two actually add up instead of one silently
-# overriding the other.
 if [ -e functions/uac2.0/req_number ]; then
   echo 4   > functions/uac2.0/req_number
 fi
@@ -60,6 +35,5 @@ mkdir -p configs/c.1/strings/0x409
 echo "aloop UAC2" > configs/c.1/strings/0x409/configuration
 ln -s functions/uac2.0 configs/c.1/
 
-# Bind to the UDC — the gadget goes live.
 echo "$UDC" > UDC
 echo "[f_uac2] gadget bound to $UDC (mono/48k, presenting as a UAC2 soundcard)"

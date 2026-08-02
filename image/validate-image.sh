@@ -1,17 +1,4 @@
 #!/bin/sh
-# Validate a built aloop board image WITHOUT the physical hardware.
-#
-# WHY: "it built" is not "it will boot". This proves the image is well-formed —
-# for the Pi boards, a valid MBR with a FAT32 boot partition holding the
-# firmware/kernel + our boot config + the apkovl; for Orange Pi Prime, a raw
-# U-Boot region at the correct sector offset + an ext4 root partition holding the
-# kernel/dtb/extlinux.conf + apkovl. Everything here is checkable in CI (no root
-# needed for the Pi path; Orange Pi Prime needs a real loop-mount, same as its
-# build step). What it CANNOT prove — that the kernel actually boots and hits the
-# latency target — is the on-hardware step (docs/HARDWARE-TESTS.md, ADR-009).
-#
-# Usage: image/validate-image.sh <image>   (BOARD env var selects pi3/pi4/pi5/opi-prime)
-# Exits non-zero on any structural failure.
 
 set -eu
 IMG="${1:?usage: validate-image.sh <image>}"
@@ -30,10 +17,6 @@ bad()   { echo "  FAIL $*"; FAIL=1; }
 
 note "image: $IMG ($(du -h "$IMG" | cut -f1))"
 
-# --- apkovl content checks: shared across every board (the aloop payload is -----
-# architecture-independent aarch64 userspace content). Takes the apkovl tarball's
-# own path as $1, since the two board families extract it via different means
-# (mtools for the Pi FAT partition, a real ext4 loop-mount for Orange Pi Prime).
 validate_apkovl() {
   APKOVL_PATH="$1"
   [ -f "$APKOVL_PATH" ] || { bad "could not locate aloop.apkovl.tar.gz"; return; }
@@ -43,11 +26,8 @@ validate_apkovl() {
            etc/runlevels/default/aloop; do
     echo "$INV" | grep -q "$p" && ok "apkovl: $p" || bad "apkovl missing: $p"
   done
-  # payload (binary + effects) — WARN not FAIL if absent (a layout-only build).
   if echo "$INV" | grep -q 'opt/aloop/aloop$'; then
     ok "apkovl: aloop binary present"
-    # Verify it is an aarch64 ELF. Extract the whole overlay (tar member paths may
-    # be ./opt/... or opt/...) and file(1) the binary.
     ARCHTMP="$(mktemp -d)"
     tar -xzf "$APKOVL_PATH" -C "$ARCHTMP" 2>/dev/null || true
     BINPATH=$(find "$ARCHTMP" -path '*opt/aloop/aloop' -type f 2>/dev/null | head -n1)
@@ -62,11 +42,6 @@ validate_apkovl() {
     else
       note "  (arch check skipped: file(1) unavailable)"
     fi
-    # Unlike the binary/LV2 (legitimately optional for a layout-only build), the
-    # vendored runtime libs (usr/lib/*.so — alsa-lib + the lilv stack) are ALWAYS
-    # required once the binary is bundled. WITNESSED live on a real Pi 4: aloop
-    # fails to start without them (telemetry never came up) because the device's
-    # only reachable apk repo has no alsa-lib/lilv packages. Hard FAIL, not WARN.
     for lib in usr/lib/libasound.so.2 usr/lib/liblilv-0.so.0 usr/lib/libserd-0.so.0 \
                usr/lib/libsord-0.so.0 usr/lib/libsratom-0.so.0 usr/lib/libzix-0.so.0 \
                usr/lib/libstdc++.so.6 usr/lib/libgcc_s.so.1; do
@@ -82,13 +57,6 @@ validate_apkovl() {
   echo "$INV" | grep -q 'effects/user' && ok "apkovl: /effects/user dir present" \
     || bad "apkovl missing /effects/user (user LV2 drop dir)"
 
-  # --- BOOT-LINT: every runtime path a shipped script/service references MUST
-  # exist in the apkovl. This catches the recurring "path doesn't resolve on the
-  # device" class (autoap CONF_DIR, LV2 dir, config locations) before a card-test.
-  # NOTE: runtime-CREATED paths under tmpfs (e.g. /run/aloop, made by
-  # Telemetry::start() via mkdir) are intentionally NOT checked here — they are not
-  # shipped in the apkovl; the code that writes them is responsible for creating
-  # them. Only paths the runtime EXPECTS to already exist are linted.
   echo "[validate] boot-lint: runtime path references -> apkovl contents"
   LINT="$(mktemp -d)"; tar -xzf "$APKOVL_PATH" -C "$LINT" 2>/dev/null || true
   has() { [ -e "$LINT/$1" ] || [ -e "$LINT/./$1" ]; }
@@ -108,13 +76,9 @@ validate_apkovl() {
 }
 
 if [ "$BOARD" = "opi-prime" ]; then
-  # --- Orange Pi Prime: raw U-Boot region + ext4 root partition ----------------
   command -v losetup >/dev/null || { echo "losetup required"; exit 2; }
   command -v sfdisk  >/dev/null || { echo "fdisk/sfdisk required"; exit 2; }
 
-  # sunxi SPL images begin with the ASCII magic "eGON.BT0" 4 bytes into the SPL
-  # header (confirmed against U-Boot's own boot_file_head struct and Armbian's
-  # write_uboot_platform(), both dd-writing at byte offset 8192 = sector 16).
   UBOOT_MAGIC=$(dd if="$IMG" bs=1 skip=8196 count=8 2>/dev/null || true)
   if [ "$UBOOT_MAGIC" = "eGON.BT0" ]; then
     ok "U-Boot SPL eGON magic present at the raw sector-8KiB offset"
@@ -157,7 +121,6 @@ if [ "$BOARD" = "opi-prime" ]; then
   fi
   rm -rf "$MNT"
 else
-  # --- Pi boards: MBR + FAT32 boot partition (mtools, unprivileged) ------------
   command -v mdir   >/dev/null || { echo "mtools required"; exit 2; }
   command -v sfdisk >/dev/null || { echo "fdisk/sfdisk required"; exit 2; }
 
@@ -177,8 +140,6 @@ else
     if echo "$LIST" | grep -qi "/$f\$\|^z:/$f\$\|$f"; then ok "boot file: $f"
     else bad "missing boot file: $f"; fi
   done
-  # Alpine's RPi tarball bundles every Pi model's firmware+DTBs in one tree
-  # regardless of BOARD -- the Pi firmware auto-selects the correct DTB at boot.
   if echo "$LIST" | grep -qiE 'start4?\.elf|bcm27[01].|kernel8?\.img|vmlinuz|boot/'; then
     ok "Pi firmware/kernel present"
   else bad "no Pi firmware/kernel (start*.elf / kernel*.img / bcm27xx dtb)"; fi
@@ -194,8 +155,6 @@ else
       || ok "usercfg.txt correctly omits dwc2 (BOARD=$BOARD has no USB-OTG peripheral controller)"
   fi
   CMD=$(mtype z:cmdline.txt 2>/dev/null || true)
-  # The Pi firmware reads ONLY the first line of cmdline.txt — an embedded newline
-  # silently drops every later kernel param (isolcpus etc.). Enforce a single line.
   CMDNL=$(mtype z:cmdline.txt 2>/dev/null | tr -cd '\n' | wc -c | tr -d ' ')
   if [ "${CMDNL:-0}" -le 1 ]; then
     ok "cmdline.txt is a single line (no embedded newline — firmware reads line 1 only)"

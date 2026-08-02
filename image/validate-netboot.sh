@@ -1,16 +1,4 @@
 #!/bin/sh
-# Validate a built netboot root (image/build-netboot.sh output) WITHOUT a Pi.
-#
-# WHY: "it assembled" is not "the Pi will TFTP-boot it". This proves the netboot
-# root is structurally serviceable — the Pi 4 firmware chain the bootloader fetches
-# over TFTP, the kernel + initramfs + modloop, our boot config (dwc2/serial/isolcpus
-# + ip=dhcp), and the apkovl with the device payload inside. Everything here is
-# checkable on any host (plain files, no FAT/mtools, no root). What it CANNOT prove
-# — that the Pi firmware actually DHCPs, TFTP-fetches, and boots into RAM — is the
-# on-hardware step (docs/NETBOOT.md, ADR-009-style honest hardware gate).
-#
-# Usage: image/validate-netboot.sh aloop-netboot/
-# Exits non-zero on any structural failure.
 
 set -eu
 DIR="${1:?usage: validate-netboot.sh <netboot-root-dir>}"
@@ -34,27 +22,20 @@ if [ "$BOARD" = "opi-prime" ]; then
 fi
 note "netboot root: $DIR ($(du -sh "$DIR" | cut -f1))"
 
-# --- Pi TFTP firmware chain (what the bootloader fetches first) ----------------
-# Alpine's alpine-rpi-*.tar.gz bundles every Pi model's DTB + firmware in one tree;
-# the Pi's own on-device firmware auto-selects the right DTB for its real hardware
-# ID at boot, so this existence check is the same for every Pi3/Pi4/Pi5 build.
 for f in bootcode.bin start4.elf fixup4.dat bcm2711-rpi-4-b.dtb; do
   [ -f "$DIR/$f" ] && ok "firmware: $f" || bad "missing Pi firmware file: $f"
 done
 
-# --- kernel + initramfs + modloop (mounted by the diskless initramfs) ----------
 for f in boot/vmlinuz-rpi boot/initramfs-rpi boot/modloop-rpi; do
   [ -f "$DIR/$f" ] && ok "kernel payload: $f" || bad "missing kernel payload: $f"
 done
 
-# --- boot config: config.txt references kernel/initramfs + includes usercfg -----
 if [ -f "$DIR/config.txt" ]; then
   ok "config.txt present"
   grep -q 'include usercfg.txt' "$DIR/config.txt" && ok "config.txt includes usercfg.txt" \
     || bad "config.txt does not include usercfg.txt"
 else bad "missing config.txt"; fi
 
-# usercfg.txt: dwc2 gadget + serial console parity with the SD path.
 if [ -f "$DIR/usercfg.txt" ]; then
   CFG=$(cat "$DIR/usercfg.txt")
   if board_supports_usb_gadget "$BOARD"; then
@@ -70,13 +51,8 @@ if [ -f "$DIR/usercfg.txt" ]; then
     || bad "usercfg.txt missing enable_uart=1 (serial debug parity)"
 else bad "missing usercfg.txt"; fi
 
-# cmdline.txt: isolcpus tuning AND ip=dhcp (the netboot-specific NIC bring-up).
 if [ -f "$DIR/cmdline.txt" ]; then
   CMD=$(cat "$DIR/cmdline.txt")
-  # The Pi firmware reads ONLY the first line of cmdline.txt. An embedded newline
-  # silently drops every param after it (this is what stopped the initramfs DHCP and
-  # dropped the Pi to an emergency shell). Enforce a single line: at most one newline,
-  # and it must be the trailing EOF one.
   NL=$(tr -cd '\n' < "$DIR/cmdline.txt" | wc -c | tr -d ' ')
   if [ "$NL" -le 1 ]; then
     ok "cmdline.txt is a single line (no embedded newline — Pi firmware reads line 1 only)"
@@ -89,7 +65,6 @@ if [ -f "$DIR/cmdline.txt" ]; then
     || bad "cmdline.txt missing ip=dhcp — diskless initramfs will not reach the network"
 else bad "missing cmdline.txt"; fi
 
-# --- apkovl: present in the served root + carries the device payload -----------
 if [ -f "$DIR/aloop.apkovl.tar.gz" ]; then
   ok "apkovl present in netboot root (fetchable over TFTP)"
   INV=$(tar -tzf "$DIR/aloop.apkovl.tar.gz" 2>/dev/null || true)
@@ -105,12 +80,6 @@ if [ -f "$DIR/aloop.apkovl.tar.gz" ]; then
   echo "$INV" | grep -q 'effects/home/.*\.lv2' \
     && ok "apkovl: home-FX LV2 present" \
     || echo "  WARN apkovl has NO home-FX LV2 (layout-only build — set LV2_DIR)"
-  # Unlike the binary/LV2 (legitimately optional for a layout-only build), the
-  # vendored runtime libs are ALWAYS required if the binary is present — WITNESSED
-  # live on a real Pi 4 that aloop fails to start without them (telemetry never
-  # came up after a full successful boot) because the device's only reachable apk
-  # repo has no alsa-lib/lilv packages to `apk add` at boot. A hard FAIL, not a
-  # WARN, when the binary is bundled but the libs aren't.
   if echo "$INV" | grep -q 'opt/aloop/aloop$'; then
     for lib in usr/lib/libasound.so.2 usr/lib/liblilv-0.so.0 usr/lib/libserd-0.so.0 \
                usr/lib/libsord-0.so.0 usr/lib/libsratom-0.so.0 usr/lib/libzix-0.so.0 \
