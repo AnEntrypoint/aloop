@@ -12,7 +12,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: armbian/build
-          ref: be0bd46058e23cfdad66e840198dda157b998db5
+          ref: bb5a5777cf6ea99e54e67a28f4243170777eb2b2
           path: armbian-build
           fetch-depth: 1
 
