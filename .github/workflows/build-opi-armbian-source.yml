@@ -29,16 +29,16 @@ jobs:
           grep -A2 'current)' config/sources/families/include/sunxi64_common.inc
           grep -A2 'current)' config/sources/families/include/sunxi64_common.inc | grep -q '"6.12"'
 
-      - name: Disable known-broken unrelated-hardware patches at this pin (Rockchip SPI, Cedrus)
+      - name: Disable known-broken unrelated-hardware patch entries in series.conf (Rockchip SPI, Cedrus)
         working-directory: armbian-build
         run: |
-          for p in \
-            patch/kernel/archive/sunxi-6.12/patches.megous/spi-rockchip-Fix-runtime-PM-and-other-issues.patch \
-            patch/kernel/archive/sunxi-6.12/patches.megous/spi-fixes.patch \
-            patch/kernel/archive/sunxi-6.12/patches.megous/media-cedrus-Fix-failure-to-clean-up-hardware-on-probe-failure.patch \
-          ; do
-            if [ -f "$p" ]; then mv "$p" "$p.disabled"; echo "disabled: $p"; else echo "not found (already absent, fine): $p"; fi
-          done
+          SERIES=patch/kernel/archive/sunxi-6.12/series.conf
+          sed -i -E \
+            -e 's#^([[:space:]]*)(patches\.megous/spi-rockchip-Fix-runtime-PM-and-other-issues\.patch)$#\1-\2#' \
+            -e 's#^([[:space:]]*)(patches\.megous/spi-fixes\.patch)$#\1-\2#' \
+            -e 's#^([[:space:]]*)(patches\.megous/media-cedrus-Fix-failure-to-clean-up-hardware-on-probe-failure\.patch)$#\1-\2#' \
+            "$SERIES"
+          grep -E 'spi-rockchip-Fix-runtime-PM|spi-fixes\.patch|media-cedrus-Fix-failure' "$SERIES"
 
       - name: Build a minimal Orange Pi Prime image via Armbian's own build script
         working-directory: armbian-build
