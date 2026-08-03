@@ -12,7 +12,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: armbian/build
-          ref: bb5a5777cf6ea99e54e67a28f4243170777eb2b2
+          ref: be0bd46058e23cfdad66e840198dda157b998db5
           path: armbian-build
           fetch-depth: 1
 
@@ -22,6 +22,23 @@ jobs:
           df -h
 
       - uses: docker/setup-qemu-action@v3
+
+      - name: Verify this checkout genuinely resolves to kernel 6.12, not 6.18
+        working-directory: armbian-build
+        run: |
+          grep -A2 'current)' config/sources/families/include/sunxi64_common.inc
+          grep -A2 'current)' config/sources/families/include/sunxi64_common.inc | grep -q '"6.12"'
+
+      - name: Disable known-broken unrelated-hardware patches at this pin (Rockchip SPI, Cedrus)
+        working-directory: armbian-build
+        run: |
+          for p in \
+            patch/kernel/archive/sunxi-6.12/patches.megous/spi-rockchip-Fix-runtime-PM-and-other-issues.patch \
+            patch/kernel/archive/sunxi-6.12/patches.megous/spi-fixes.patch \
+            patch/kernel/archive/sunxi-6.12/patches.megous/media-cedrus-Fix-failure-to-clean-up-hardware-on-probe-failure.patch \
+          ; do
+            if [ -f "$p" ]; then mv "$p" "$p.disabled"; echo "disabled: $p"; else echo "not found (already absent, fine): $p"; fi
+          done
 
       - name: Build a minimal Orange Pi Prime image via Armbian's own build script
         working-directory: armbian-build
