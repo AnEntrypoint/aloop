@@ -21,10 +21,10 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
           df -h
 
-      - name: Build a minimal Orange Pi Prime image via Armbian's own Docker build
+      - name: Build a minimal Orange Pi Prime image via Armbian's own build script
         working-directory: armbian-build
         run: |
-          ./compile.sh docker BOARD=orangepiprime BRANCH=current RELEASE=trixie \
+          ./compile.sh build BOARD=orangepiprime BRANCH=current RELEASE=trixie \
             BUILD_MINIMAL=yes BUILD_DESKTOP=no KERNEL_CONFIGURE=no
 
       - name: Locate the built image
