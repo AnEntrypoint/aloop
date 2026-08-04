@@ -815,6 +815,38 @@ different toolchain that may not hit this at all). Needs either a
 Linux-side build of the same harness or genuine on-device verification
 before it can be shipped with the same rigor `-mapp` now has.
 
+**Update: the Linux-side harness this entry called for now exists**
+(`test/faust-flags/`, using [DawDreamer](https://github.com/DBraun/DawDreamer)'s
+`FaustProcessor` — a real Linux `libfaust` LLVM JIT backend with a
+`compile_flags` passthrough) and the verdict is a hard NO, worse than
+suspected: `-fm def` doesn't diverge numerically, it **segfaults on every
+real-usage case** (87/87: `filters.dsp`'s `tan()`/`pow()` swept across its
+real `HPCUT`/`LPCUT`/`LPRES` hslider ranges, `compressor.dsp`'s
+`exp()`/`log10()`/`pow()` swept across `COMPRESSAMT`, `pitch.dsp`'s
+`pow(2,SEMIS/12)` formula swept across `SEMIS`). Root cause: `-fm def`
+generates calls to `fast_tanf`/`fast_powf`/etc. from `faust/dsp/fastmath.cpp`
+— an architecture file meant to be compiled alongside `-lang cpp` text
+output, not baked into `libfaust` itself (confirmed via
+`nm thirdparty/libfaust/.../libfaustwithllvm.a`: zero `fast_*` symbols). The
+LLVM JIT backend emits calls to symbols nothing resolves; `compile()` reports
+success and the crash only happens once `render()` actually executes the
+generated code — the same "compiling clean proves nothing about runtime
+safety" trap as the `-mapp` SIGSEGV above, except this one reproduces on any
+input, no real hardware or real audio content needed. A first pass of this
+harness swept `HPCUT`/`LPCUT`/`SEMIS` as literal Faust constants (matching
+how the standalone files pin them) and got 0/87 differences — which turned
+out to mean `-fm def` never even ran: Faust constant-folds
+`tan()`/`pow()`-of-a-literal away entirely at compile time. Only after
+switching to real runtime `hslider`s (matching how `effects_runtime.dsp`
+actually wires these controls in production) did every case crash. This does
+not by itself prove the real `-lang cpp` → musl/aarch64 pipeline would crash
+too (JIT symbol resolution and static linking are different failure modes,
+and nothing currently compiles `fastmath.cpp` into the aloop binary either
+way), but it closes off "verify it here first" as a safe path and confirms
+`-fm def` needs its own real link-time proof, not just a numeric diff,
+before ever being added to a real invocation site. See
+`test/faust-flags/README.md` for the full writeup.
+
 Resolved (parameter-smoothing order): **no change made, confirmed
 deliberate.** `effects_runtime.dsp`'s `filterStage`/`delayStage`/
 `reverbStage`/`pitchStage` take raw `hslider` values straight into
