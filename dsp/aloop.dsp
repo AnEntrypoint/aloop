@@ -123,24 +123,34 @@ monitorFold = hslider("MONITORFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
 glitchFold = hslider("GLITCHFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
 
 // `loop`'s two outputs (dry, loopSum) are consumed by `mixAndFx`:
-//   - `fxOuts = dry : fx` -- fx's input (and therefore the glitch tap fed
-//     back as glitchIn) is `dry` ALONE, so loop content is never
-//     automatically recordable except via the native SHIFT-fold's or
-//     GLITCH-fold's one-block-lag re-entry into `dry`
-//     (audio_thread.cpp's prevLoopSum, combined-and-clamped there).
+//   - `fxBus = (dry, loopSum, ...) : fx` -- fx (effects_runtime.dsp) returns
+//     two outputs, split here into `fxOuts` (the fx-chained signal; the
+//     glitch tap fed back as glitchIn is derived from `dry` alone, so loop
+//     content is never automatically recordable except via the native
+//     SHIFT-fold's or GLITCH-fold's one-block-lag re-entry into `dry` --
+//     audio_thread.cpp's prevLoopSum, combined-and-clamped there) and
+//     `loopHarmonyWet` (multitranspose.dsp's loop-routed wet bus -- see its
+//     own header for the SHIFT-held polyphonic-keyplay-locks-the-loop
+//     design; zero whenever no voice is gated or SHIFT isn't held).
 //   - `filtOut` sums fxOuts' filtered output with `loopSum` GATED by
-//     `(1-monitorFold)*(1-glitchFold)` -- normal playback (neither SHIFT
-//     nor glitch held) hears loops directly/unprocessed by fx, exactly
-//     matching looper's real monitor path; while EITHER SHIFT or glitch is
-//     held, this direct raw term fades OUT (its own gate -> 1) as the
-//     matching native one-block-lag fold fades loop content IN through
-//     `dry`/`fx` instead (audio_thread.cpp's foldGain/glitchFoldGain
-//     ramps), so the audible signal crossfades from raw to fx-processed
-//     loop content rather than ever summing both at once -- REGRESSION
-//     FOUND AND FIXED (SHIFT case): WITNESSED live as "no loops play back"
-//     when a prior fix removed loopSum from the mix entirely instead of
-//     just re-gating it; the glitch case reuses the identical gating shape
-//     to avoid repeating that mistake.
+//     `(1-monitorFold)*(1-glitchFold)*loopDirectGate` (`loopDirectGate`
+//     additionally fades the raw term OUT while SHIFT is held AND a voice
+//     is gated, since `loopHarmonyWet` replaces it in that case -- same
+//     "fade raw out as the fx-routed copy fades in" shape as monitorFold/
+//     glitchFold, just with `freeXpose` instead of the native one-block-lag
+//     fold ramp, since the harmony bus is computed same-block) plus
+//     `loopHarmonyWet` itself -- normal playback (neither SHIFT nor glitch
+//     held, no voice locking the loop) hears loops directly/unprocessed by
+//     fx, exactly matching looper's real monitor path; while EITHER SHIFT
+//     or glitch is held, this direct raw term fades OUT (its own gate -> 1)
+//     as the matching native one-block-lag fold fades loop content IN
+//     through `dry`/`fx` instead (audio_thread.cpp's foldGain/
+//     glitchFoldGain ramps), so the audible signal crossfades from raw to
+//     fx-processed loop content rather than ever summing both at once --
+//     REGRESSION FOUND AND FIXED (SHIFT case): WITNESSED live as "no loops
+//     play back" when a prior fix removed loopSum from the mix entirely
+//     instead of just re-gating it; the glitch case reuses the identical
+//     gating shape to avoid repeating that mistake.
 //     Three total program outputs, in this order:
 //   1. finalOut  -- the real audible/wire signal (fouts[0] in audio_thread.cpp)
 //   2. rawLoopSum -- the loop engine's own output (fouts[1]), so the native
@@ -206,9 +216,13 @@ glitchFold = hslider("GLITCHFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
 // that must stay audible-only, never automatically recordable.
 mixAndFx(dry, loopSum, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5) = filtOut, loopSum, recordTap
 with {
-    fxOuts = (dry, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5) : fx;
+    fxBus = (dry, loopSum, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5) : fx;
+    fxOuts         = fxBus : _,!;
+    loopHarmonyWet = fxBus : !,_;
+    anyVoiceGated  = min(1.0, g0+g1+g2+g3+g4+g5);
+    loopDirectGate = (1.0 - anyVoiceGated*freeXpose) : si.smoo;
     directFoldSuppress = (1.0-monitorFold) * (1.0-glitchFold);
-    filtOut = fxOuts + loopSum*directFoldSuppress;
+    filtOut = fxOuts + loopSum*directFoldSuppress*loopDirectGate + loopHarmonyWet;
     recordTap = fxOuts;
 };
 // prevFiltIn: previous block's fully-effected mix output (audio_thread.cpp's

@@ -1,7 +1,7 @@
 declare name "MultiKeyTranspose";
 declare author "aloop";
 declare license "GPLv3";
-declare description "Polyphonic pitch-LOCK harmonizer: an.pitchTracker detects the live input's own fundamental once per sample, and each held voice's shift is (targetNote - detectedNote), so the wet output always lands on the exact pressed key regardless of what pitch is actually being played -- Infected Mushroom Manipulator style, not a fixed-interval transpose. The shift window is pitch-synchronous (sized from the detected period, like davemollen/dm-Whammy and DawDreamer's own dt_whammy.dsp auto_window), since a fixed window measurably detunes ef.transpose at large shift ratios -- confirmed via DawDreamer: a fixed 10ms window put a +22-semitone lock ~114 cents flat, while pitch-synchronous sizing holds every tested shift within a few cents.";
+declare description "Polyphonic pitch-LOCK harmonizer: an.pitchTracker detects the tracked signal's own fundamental once per sample, and each held voice's shift is (targetNote - detectedNote), so the wet output always lands on the exact pressed key regardless of what pitch is actually being played -- Infected Mushroom Manipulator style, not a fixed-interval transpose. The shift window is pitch-synchronous (sized from the detected period, like davemollen/dm-Whammy and DawDreamer's own dt_whammy.dsp auto_window), since a fixed window measurably detunes ef.transpose at large shift ratios -- confirmed via DawDreamer: a fixed 10ms window put a +22-semitone lock ~114 cents flat, while pitch-synchronous sizing holds every tested shift within a few cents. free crossfades the tracked/shifted source between dry (free=0) and loopSum (free=1), and routes the single shared wet bus to the matching output (dryWet/loopWet) -- so SHIFT-held polyphonic keyplay locks the loops instead of the live input, with no second pitch-tracker/voice bank.";
 
 import("stdfaust.lib");
 
@@ -35,13 +35,17 @@ harmonySum(sig, detNote, winSamples, xfSamples, n0,g0, n1,g1, n2,g2, n3,g3, n4,g
   + voiceOut(sig,detNote,winSamples,xfSamples,n2,g2) + voiceOut(sig,detNote,winSamples,xfSamples,n3,g3)
   + voiceOut(sig,detNote,winSamples,xfSamples,n4,g4) + voiceOut(sig,detNote,winSamples,xfSamples,n5,g5);
 
-process(sig, free, n0,g0, n1,g1, n2,g2, n3,g3, n4,g4, n5,g5) = harmonySum(
-    sig, ba.hz2midikey(freqDet), winSamples, xfSamples,
-    n0,g0, n1,g1, n2,g2, n3,g3, n4,g4, n5,g5
-) * freeGate : ma.tanh
+process(dry, loopSum, free, n0,g0, n1,g1, n2,g2, n3,g3, n4,g4, n5,g5) = dryWet, loopWet
 with {
-    freqDet     = detectedFreq(sig);
-    winSamples  = windowFor(freqDet);
-    xfSamples   = int(winSamples * 0.5) : max(32);
-    freeGate    = (1.0 - free) : si.smoo;
+    freeSmooth = free : si.smoo;
+    sigIn      = dry*(1.0-freeSmooth) + loopSum*freeSmooth;
+    freqDet    = detectedFreq(sigIn);
+    winSamples = windowFor(freqDet);
+    xfSamples  = int(winSamples * 0.5) : max(32);
+    wet = harmonySum(
+        sigIn, ba.hz2midikey(freqDet), winSamples, xfSamples,
+        n0,g0, n1,g1, n2,g2, n3,g3, n4,g4, n5,g5
+    ) : ma.tanh;
+    dryWet  = wet * (1.0-freeSmooth);
+    loopWet = wet * freeSmooth;
 };
