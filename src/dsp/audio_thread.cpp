@@ -196,20 +196,20 @@ static void* worker(void*) {
     std::vector<float> masterPhaseBuf((size_t)N, 0.0f);
     std::vector<float> masterLenBuf((size_t)N, 0.0f);
     std::vector<float> sidechainEnvBuf((size_t)N, 0.0f);
-    std::vector<float> xposeSemisBuf[kTransposeVoices];
+    std::vector<float> xposeNoteBuf[kTransposeVoices];
     std::vector<float> xposeGateBuf[kTransposeVoices];
     for (int v = 0; v < kTransposeVoices; v++) {
-        xposeSemisBuf[v].assign((size_t)N, 0.0f);
+        xposeNoteBuf[v].assign((size_t)N, 0.0f);
         xposeGateBuf[v].assign((size_t)N, 0.0f);
     }
     float* fins[19] = {
         fin.data(), prevFiltOut.data(), clearBuf.data(), speedBuf.data(), masterPhaseBuf.data(), masterLenBuf.data(), sidechainEnvBuf.data(),
-        xposeSemisBuf[0].data(), xposeGateBuf[0].data(),
-        xposeSemisBuf[1].data(), xposeGateBuf[1].data(),
-        xposeSemisBuf[2].data(), xposeGateBuf[2].data(),
-        xposeSemisBuf[3].data(), xposeGateBuf[3].data(),
-        xposeSemisBuf[4].data(), xposeGateBuf[4].data(),
-        xposeSemisBuf[5].data(), xposeGateBuf[5].data(),
+        xposeNoteBuf[0].data(), xposeGateBuf[0].data(),
+        xposeNoteBuf[1].data(), xposeGateBuf[1].data(),
+        xposeNoteBuf[2].data(), xposeGateBuf[2].data(),
+        xposeNoteBuf[3].data(), xposeGateBuf[3].data(),
+        xposeNoteBuf[4].data(), xposeGateBuf[4].data(),
+        xposeNoteBuf[5].data(), xposeGateBuf[5].data(),
     };
     int sidechainSrcSlot[AudioThread::Telemetry::kLoopers];
     for (int lp = 0; lp < AudioThread::Telemetry::kLoopers; lp++) sidechainSrcSlot[lp] = -1;
@@ -241,13 +241,13 @@ static void* worker(void*) {
             snprintf(z, sizeof z, "looper%2d/readposdiag2", lp); tz.readpos  = resolveZone();
         }
     }
-    int xposeSemisSlot[kTransposeVoices];
+    int xposeNoteSlot[kTransposeVoices];
     int xposeGateSlot[kTransposeVoices];
     {
         char z[32];
         for (int v = 0; v < kTransposeVoices; v++) {
-            snprintf(z, sizeof z, "fx/xpose%d/semis", v);
-            xposeSemisSlot[v] = g_params ? g_params->getSlot(z) : -1;
+            snprintf(z, sizeof z, "fx/xpose%d/note", v);
+            xposeNoteSlot[v] = g_params ? g_params->getSlot(z) : -1;
             snprintf(z, sizeof z, "fx/xpose%d/gate", v);
             xposeGateSlot[v] = g_params ? g_params->getSlot(z) : -1;
         }
@@ -421,7 +421,7 @@ static void* worker(void*) {
                     }
                 }
                 for (int v = 0; v < kTransposeVoices; v++) {
-                    std::fill(xposeSemisBuf[v].begin(), xposeSemisBuf[v].end(), g_params->getBySlot(xposeSemisSlot[v]));
+                    std::fill(xposeNoteBuf[v].begin(), xposeNoteBuf[v].end(), g_params->getBySlot(xposeNoteSlot[v]));
                     std::fill(xposeGateBuf[v].begin(), xposeGateBuf[v].end(), g_params->getBySlot(xposeGateSlot[v]));
                 }
                 float staticSemis = g_params->get("fx/pitch");

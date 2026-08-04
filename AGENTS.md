@@ -2133,3 +2133,113 @@ compile this code gets, and CPU/`core_busy`/xrun impact of 6 new always-on
 `ef.transpose` voices, plus genuine audible click-free-ness under real
 playing, both still need live Pi 4 verification per this file's own
 "compiles clean proves nothing about runtime safety" discipline.
+
+## `multitranspose.dsp` v2: fixed-interval harmonizer replaced with real pitch-LOCK (Infected Mushroom Manipulator style)
+
+Direct user correction after testing the v1 feature above: the shipped
+design (`harmonyShift = hz2midikey(freq) - root_note`, ported faithfully
+from `lanmower/DawDreamer`'s `dt_whammy.dsp` `harmony_mode`) was never
+actually a pitch LOCK -- `freq` there is the Faust-poly-bound MIDI note's
+OWN pitch (`mtof(note)`), not a measurement of the live input signal, so
+the shift is a fixed interval from whichever key is held. Playing a
+different note on the instrument while holding the same key moves the
+harmony note right along with it, instead of holding still on the pressed
+key the way Digitech Whammy-style "poly harmony" pedals and Infected
+Mushroom's Manipulator plugin do. `apc_grid.cpp`'s `onKeybedNoteOn` made
+this concrete: `ps.setByName(semisName, (float)(note - 60))` -- a relative
+semitone offset from middle C, not an absolute lock target. Confirmed via
+a real DawDreamer render (dry input on a full-scale sine, single voice
+gated) that this v1 design WAS reaching the output audibly (dry+harmony
+both present in the spectrum, ~32% of total energy on the shifted band) --
+"didn't hear it" was a semantic mismatch (harmonizer vs lock), not a
+wiring/silence bug.
+
+**Fix**: `multitranspose.dsp` now runs `an.pitchTracker` (Faust's own
+zero-crossing-rate/adaptive-lowpass detector, the exact function
+`dt_whammy.dsp`'s `auto_window` feature already used for window-sizing but
+never for the shift itself) on the live input ONCE per sample, converts to
+a MIDI note via `ba.hz2midikey`, and each voice's shift is
+`(targetNote - detectedNote)` instead of a value handed in directly -- so
+the output always lands on the exact held key regardless of what pitch is
+actually being played. `apc_grid.cpp`/`.h` and `audio_thread.cpp` renamed
+`semis`/`xposeSemisBuf`/`xposeSemisSlot`/`fx/xpose%d/semis` to
+`note`/`xposeNoteBuf`/`xposeNoteSlot`/`fx/xpose%d/note` throughout (the
+wire's meaning changed from a relative interval to an absolute MIDI note
+target, so the old name would be actively misleading) and
+`onKeybedNoteOn` now passes the raw MIDI note number, not `note - 60`.
+`dsp/aloop.dsp`/`dsp/effects_runtime.dsp` needed NO changes -- their
+`process()` signatures already just thread 13 generic `s0,g0,...,s5,g5`-
+shaped signals through unchanged; only what those values MEAN changed,
+entirely inside `multitranspose.dsp`.
+
+**Fixed-window pitch inaccuracy found and fixed in the same pass**: a
+first version of the lock kept the v1 file's fixed 10ms `ef.transpose`
+window. DawDreamer verification (`detectedNote`/`shiftAmount` exposed as
+extra outputs, isolated from the final `ma.tanh`) showed the pitch
+DETECTION and the shift MATH were both correct to within 0.02-0.05
+semitones at every tested input pitch -- but the actual `ef.transpose`
+OUTPUT for a +22-semitone lock (110Hz input locked to G4) landed 366.67Hz
+instead of 392.32Hz, ~114 cents flat, worsening as the shift ratio grew
+(220Hz->G4: -0.68 semis; 440Hz->G4, barely more than unity ratio: only
++0.18 semis). This is `ef.transpose`'s own known limitation at large
+shift ratios (a cheap crossfaded-delay-line shifter, not the sophisticated
+period-locked-splice SNAC engine `pitch_ffi.h` uses) -- and it is not new
+to this file: `dt_whammy.dsp`'s own preset modes reach +-24 semitones
+through the identical `ef.transpose` primitive, so any design using it for
+large jumps inherits this. Fixed by making the window pitch-synchronous
+(sized from the detected period, `dt_whammy.dsp`'s own `auto_window` idea,
+borrowed here as the ALWAYS-ON default rather than an optional toggle,
+since it is strictly more accurate and the detected pitch is already being
+computed for the lock target anyway) instead of a fixed 10ms value, capped
+at 20ms (not `dt_whammy`'s 40ms ceiling, to keep this feature's own worst-
+case wet-path latency tighter, matching the "even more digitech, smooth
+AND fast" spec the original v1 feature was built to). Re-verified after
+the fix: every one of the same test cases lands within 0.00-0.02 semitones
+(effectively exact), including a fresh note-on-after-silence worst case
+that previously mistracked by -4.69 semitones. `windowFor`'s
+`si.smooth(...) : max(64)` double-clamp (smooth BEFORE truncating to int,
+then re-floor after) is copied deliberately from `dt_whammy.dsp`'s own
+documented fix for the same hazard: the smoother's ramp-up from a
+zero-initialized register can pass through a near-zero window value, and
+`ef.transpose`'s internal `fmod(_, w)` on a near-zero `w` poisons its
+recursive delay state with NaN forever after.
+
+**Verified via DawDreamer, real render + FFT + stability checks** (all
+numbers reproducible, no hardware needed since this is pure Faust with no
+`ffunction` dependency, unlike `pitch_ffi.h`): pitch-lock accuracy across
+110-440Hz input for a fixed G4 target (0.00 semis error, every case,
+post-fix); 3-voice chord lock (C4/E4/G4) from a single unrelated input
+note, all three voices landing with balanced, correctly-placed spectral
+energy; silence-input stability (zero output, no NaN/Inf -- the tracker's
+own `max(minTrackHz)` floor keeps `ba.hz2midikey` away from `log2(0)`);
+note-on-immediately-after-silence (the tracker's worst-case settling
+scenario); real (non-sine) audio through the full effects_runtime.dsp
+chain (`Music Delta - Disco/bass.wav`, 4-voice chord held throughout, no
+NaN/Inf); 6-voice rapid retrigger stress test (every 150ms, deliberately
+harsher than real playing) -- max sample-to-sample jump 0.23 with the new
+pitch-synchronous window, versus 1.58 (a near-full-scale discontinuity)
+for the OLD fixed-window v1 file under the IDENTICAL stress test, so this
+fix is a click-safety improvement as well as an accuracy one, not a
+tradeoff between them; extreme low/high lock targets (MIDI 24 and 108,
+~3.5 octaves from the 220Hz test input in each direction) both stable;
+voice-steal/reallocation stress (single slot cycling through 10 different
+targets) stable. Full chain re-verified end-to-end through the real
+`dsp/effects_runtime.dsp` (filters/delay/reverb/microrepeat at their
+default-passthrough settings, `pitch.dsp` stubbed to a bare passthrough
+for the harness only, matching this project's own established
+JIT-vs-`ffunction` workaround) -- dry input and the pitch-locked harmony
+voice both present in the output spectrum at the correct frequencies.
+
+**Still needs live Pi 4 verification, same as the v1 entry above and for
+the same underlying reason (no hardware this session)**: real playing
+CPU/`core_busy` cost of `an.pitchTracker` running every sample (one
+instance now, shared across all 6 voices -- computed once in `process`'s
+own `with{}` block and threaded down as a parameter, not re-instantiated
+per voice), and genuine audible lock feel/latency under a real
+performance. The `src/control/apc_grid.cpp`/`.h` and
+`src/dsp/audio_thread.cpp` renames were syntax-checked via a real local
+`g++ -std=c++17 -fsyntax-only` (clean) but that check does not exercise
+the `ALOOP_HAVE_FAUST_LOOP`/`ALOOP_HAVE_ALSA`-gated code paths the actual
+renamed lines live inside (no Docker daemon, no `libasound2-dev`, no
+`faust` CLI in this sandbox, same gap as the v1 entry) -- real coverage is
+the next CI run on push, not this session.

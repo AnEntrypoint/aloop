@@ -27,7 +27,7 @@ void ApcGrid::bindAll(ParamStore& ps) {
     ps.bind("fx/pitchbend_engaged");
     char xposeName[24];
     for (int v = 0; v < kTransposeVoices; v++) {
-        snprintf(xposeName, sizeof xposeName, "fx/xpose%d/semis", v);
+        snprintf(xposeName, sizeof xposeName, "fx/xpose%d/note", v);
         ps.bind(xposeName, 0.0f);
         snprintf(xposeName, sizeof xposeName, "fx/xpose%d/gate", v);
         ps.bind(xposeName, 0.0f);
@@ -512,10 +512,10 @@ void ApcGrid::onKeybedNoteOn(int note, ParamStore& ps, Sampler* sampler) {
     }
     m_liveEngaged = true;
     int v = allocateTransposeVoice(note);
-    char semisName[24], gateName[24];
-    snprintf(semisName, sizeof semisName, "fx/xpose%d/semis", v);
+    char noteName[24], gateName[24];
+    snprintf(noteName, sizeof noteName, "fx/xpose%d/note", v);
     snprintf(gateName, sizeof gateName, "fx/xpose%d/gate", v);
-    ps.setByName(semisName, (float)(note - 60));
+    ps.setByName(noteName, (float)note);
     ps.setByName(gateName, 1.0f);
 }
 void ApcGrid::onKeybedNoteOff(int note, ParamStore& ps, Sampler* sampler) {
