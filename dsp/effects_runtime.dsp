@@ -48,14 +48,8 @@ pitchStage  = component("effects/home/faust/pitch.dsp")[ SEMIS=SEMIS; FORMANT=FO
 // Previous (now superseded) order was pitch->filter->delay->reverb->micro;
 // original (pre-session) order was pitch->delay->reverb->micro->filter.
 //
-// Second output: aloop.dsp's mixAndFx unpacks this as `rawGlitchTap`, a
-// leftover tap from an EARLIER design (the old separate glitchIn/
-// prevGlitchTap record-path mechanism, since replaced by prevFiltOut --
-// see aloop.dsp's own top-of-file history and audio_thread.cpp's
-// "REPLACES the old glitch-only prevGlitchTap wiring" comment). Confirmed
-// dead: audio_thread.cpp's fouts[1] (rawGlitchTap) is populated every
-// block but never read again anywhere in that file -- so this second
-// output has no live consumer today, and simply mirrors the same
-// (filtered) signal as output 1 rather than needing a separate pre-filter
-// tap.
-process = pitchStage : microStage : filterStage : delayStage : reverbStage <: (_, _);
+// Single output (was a duplicated <: (_, _) fanout feeding a second
+// `rawGlitchTap` program output on aloop.dsp's mixAndFx -- confirmed dead
+// there, see AGENTS.md's "confirmed-dead rawGlitchTap output" entry, and
+// removed from both files together).
+process = pitchStage : microStage : filterStage : delayStage : reverbStage;
