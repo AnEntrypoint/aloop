@@ -41,6 +41,7 @@ set(DSP_SOURCES
   control/apc_grid.cpp    # APC Key25 grid/tap-hold/preset/live-pitch/microrepeat engine
   control/apc_leds.cpp    # APC Key25 LED output (grid/preset/transport/live-pitch colors)
   control/remote_control.cpp  # remote reboot + log-tail (udp/4446, token-authenticated)
+  storage/usb_recorder.cpp    # continuous USB-drive ring recorder (lock-free handoff from the RT thread)
   main.cpp                # the wiring
 )
 

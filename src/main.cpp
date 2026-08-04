@@ -13,6 +13,7 @@
 #include "control/telemetry.h"
 #include "control/midi.h"
 #include "control/remote_control.h"
+#include "storage/usb_recorder.h"
 
 #include <sys/mman.h>
 #include <ifaddrs.h>
@@ -173,6 +174,14 @@ aloop::AudioConfig loadConfig(const char* path) {
         // on, and the bounded startup wait for it to carry an address.
         else if (sscanf(line, " iface = %199s", s) == 1) cfg.linkIface = s;
         else if (sscanf(line, " iface_wait_sec = %d", &v) == 1) cfg.linkIfaceWaitSec = v;
+        // [storage] usb_record / usb_mount_point / usb_chunk_minutes / usb_chunk_count.
+        else if (sscanf(line, " usb_record = %199s", s) == 1) {
+            cfg.usbRecordEnabled = (strcmp(s, "true") == 0 || strcmp(s, "1") == 0 ||
+                                     strcmp(s, "yes") == 0  || strcmp(s, "on") == 0);
+        }
+        else if (sscanf(line, " usb_mount_point = %199s", s) == 1) cfg.usbMountPoint = s;
+        else if (sscanf(line, " usb_chunk_minutes = %d", &v) == 1) cfg.usbChunkMinutes = v;
+        else if (sscanf(line, " usb_chunk_count = %d", &v) == 1) cfg.usbChunkCount = v;
     }
     fclose(f);
     return cfg;
@@ -272,6 +281,7 @@ int main(int argc, char** argv) {
         link.controlTick();
         telem.publish();
         remote.poll();
+        if (audio.usbRecorder()) audio.usbRecorder()->poll();
         usleep(200 * 1000);   // 5 Hz
     }
 

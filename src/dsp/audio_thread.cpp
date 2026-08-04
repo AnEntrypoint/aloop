@@ -3,6 +3,7 @@
 #include "../control/midi.h"
 #include "../link/link_bridge.h"
 #include "sampler/sampler.h"
+#include "../storage/usb_recorder.h"
 
 #include <pthread.h>
 #include <sched.h>
@@ -117,6 +118,7 @@ ParamStore* g_params = nullptr;
 LinkBridge* g_link = nullptr;
 aloop::Sampler* g_sampler = nullptr;
 aloop::Lv2Host* g_homeFx = nullptr;
+aloop::UsbRecorder* g_usbRecorder = nullptr;
 
 float g_manualSpeedMul = 1.0f;
 constexpr int kTransposeVoices = 6;   // apc_grid.h kTransposeVoices / multitranspose.dsp NVOICES -- keep in sync
@@ -196,14 +198,16 @@ static void* worker(void*) {
     std::vector<float> masterPhaseBuf((size_t)N, 0.0f);
     std::vector<float> masterLenBuf((size_t)N, 0.0f);
     std::vector<float> sidechainEnvBuf((size_t)N, 0.0f);
+    std::vector<float> freeXposeBuf((size_t)N, 0.0f);
     std::vector<float> xposeNoteBuf[kTransposeVoices];
     std::vector<float> xposeGateBuf[kTransposeVoices];
     for (int v = 0; v < kTransposeVoices; v++) {
         xposeNoteBuf[v].assign((size_t)N, 0.0f);
         xposeGateBuf[v].assign((size_t)N, 0.0f);
     }
-    float* fins[19] = {
+    float* fins[20] = {
         fin.data(), prevFiltOut.data(), clearBuf.data(), speedBuf.data(), masterPhaseBuf.data(), masterLenBuf.data(), sidechainEnvBuf.data(),
+        freeXposeBuf.data(),
         xposeNoteBuf[0].data(), xposeGateBuf[0].data(),
         xposeNoteBuf[1].data(), xposeGateBuf[1].data(),
         xposeNoteBuf[2].data(), xposeGateBuf[2].data(),
@@ -271,6 +275,9 @@ static void* worker(void*) {
     Lv2Host userFx;
     userFx.loadDir(g_cfg.userDir, g_cfg.userFxCore);
     userFx.connect(N, ch);
+
+    UsbRecorder usbRecorder(g_cfg.usbMountPoint, g_cfg.sampleRate, g_cfg.usbChunkMinutes, g_cfg.usbChunkCount);
+    if (g_cfg.usbRecordEnabled) g_usbRecorder = &usbRecorder;
 
 #ifdef ALOOP_HAVE_ALSA
     snd_pcm_t *cap = nullptr, *play = nullptr;
@@ -424,6 +431,7 @@ static void* worker(void*) {
                     std::fill(xposeNoteBuf[v].begin(), xposeNoteBuf[v].end(), g_params->getBySlot(xposeNoteSlot[v]));
                     std::fill(xposeGateBuf[v].begin(), xposeGateBuf[v].end(), g_params->getBySlot(xposeGateSlot[v]));
                 }
+                std::fill(freeXposeBuf.begin(), freeXposeBuf.end(), g_params->get("fx/monitorfold") > 0.5f ? 1.0f : 0.0f);
                 float staticSemis = g_params->get("fx/pitch");
                 if (g_params->get("fx/pitchbend_engaged") > 0.5f) {
                     fui.set("SEMIS", staticSemis + g_params->get("fx/pitchbend"));
@@ -567,6 +575,9 @@ static void* worker(void*) {
             }
             for (int i = 0; i < N; i++) samplerBuf[(size_t)i] = (int32_t)(prevFiltOut[i] * 32768.0f);
             g_sampler->captureBlock(samplerBuf.data(), N);
+            if (g_usbRecorder) g_usbRecorder->pushBlock(prevFiltOut.data(), N);
+            g_telem.usbRecording = g_usbRecorder && g_usbRecorder->recording();
+            g_telem.usbRecOverruns = g_usbRecorder ? g_usbRecorder->overruns() : 0;
             {
                 float sidechainEnv = 0.0f;
                 if (g_params) {
@@ -660,6 +671,7 @@ void AudioThread::stop() {
 AudioThread::Telemetry AudioThread::snapshotTelemetry() const { return g_telem; }
 Sampler* AudioThread::sampler() const { return g_sampler; }
 Lv2Host* AudioThread::homeFx() const { return g_homeFx; }
+UsbRecorder* AudioThread::usbRecorder() const { return g_usbRecorder; }
 bool AudioThread::setRealtime(int core, int prio) { return setRealtimeSelf(core, prio); }
 void AudioThread::workerLoop() {}
 

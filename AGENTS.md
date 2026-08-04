@@ -2243,3 +2243,197 @@ the `ALOOP_HAVE_FAUST_LOOP`/`ALOOP_HAVE_ALSA`-gated code paths the actual
 renamed lines live inside (no Docker daemon, no `libasound2-dev`, no
 `faust` CLI in this sandbox, same gap as the v1 entry) -- real coverage is
 the next CI run on push, not this session.
+
+## SHIFT engaging free (unlocked) transpose: `multitranspose.dsp` gets a `free`
+signal input, gating the wet harmony bus rather than touching the pitch-lock math
+
+User request: holding SHIFT (the same `fx/monitorfold` gesture as the
+SHIFT-fold/latency-compensation entries above) should let the instrument be
+played at its natural pitch -- the polyphonic pitch-lock engine
+(`multitranspose.dsp`, see its own "v2: fixed-interval harmonizer replaced
+with real pitch-LOCK" entry above) must stop pulling played notes onto the
+locked target while SHIFT is held, without touching the lock behavior at all
+once SHIFT releases. Implemented as a `free` signal input threaded through
+`effects/home/faust/multitranspose.dsp` -> `dsp/effects_runtime.dsp` ->
+`dsp/aloop.dsp`'s `mixAndFx`/top-level `process()`, following this file's own
+established "momentary/held UI state is a plain signal input, not a
+`hslider`/`button`" discipline (the `masterPhase`/`clearAll`/`effSpeed`
+precedent) even though `multitranspose.dsp` itself is imported once, not
+`par()`-replicated, so it isn't directly exposed to that bug class -- kept
+for consistency with every other cross-block control in these files.
+`audio_thread.cpp` fills the new `freeXposeBuf` (now `fins[20]`, was
+`fins[19]`) every block from `g_params->get("fx/monitorfold")`, the exact
+same ParamStore read `onShiftPress`/`onShiftRelease` already drive.
+
+Implementation: `multitranspose.dsp`'s `process()` multiplies the summed
+`harmonySum` (all 6 voices) by `freeGate = (1.0 - free) : si.smoo` BEFORE
+the final `ma.tanh`, muting the wet pitch-shifted bus smoothly while SHIFT is
+held and leaving the dry signal (passed through elsewhere in
+`effects_runtime.dsp`'s `pitchStage(dry) + harmonize(...)` sum) untouched --
+the pitch TRACKING/lock math itself keeps running unconditionally (cheap
+relative to muting-and-restarting it, and avoids any settle-time cost when
+SHIFT releases), only the audible wet output is gated.
+
+Verified via DawDreamer (`pip install dawdreamer`, real Faust JIT,
+`multitranspose.dsp` compiles standalone with no `ffunction` dependency so
+this needed no `pitch.dsp` stub workaround): `free=0` reproduces the
+existing pitch-lock behavior (wet content present, matching the file's own
+prior verified behavior); `free=1` mutes the wet bus to below `1e-4` while
+locked to the same target note/gate inputs; a mid-render `free` toggle from
+0->1 produces no discontinuity beyond what the pre-existing ADSR attack
+transient already produces elsewhere in the same render (isolated a 200-
+sample window around the toggle instant vs. the rest of the render and
+confirmed the toggle-local max sample-to-sample jump does not exceed the
+render's own baseline max jump) -- `si.smoo`'s ramp is the same mechanism
+`MONITORFOLD`/`GLITCHFOLD` already use for this exact gesture elsewhere in
+`dsp/aloop.dsp`, so this carries no new click risk.
+`src/dsp/audio_thread.cpp`'s new `fins[20]`/`freeXposeBuf` code is
+`ALOOP_HAVE_FAUST_LOOP`-gated like the rest of the per-block worker loop, so
+(same as every other native-side change in this file) it could not be
+compiled in this sandbox (no Faust CLI, no generated `loop.cpp`) -- reviewed
+by hand against the immediately adjacent `xposeNoteBuf`/`xposeGateBuf` fill
+pattern it copies, real coverage is the next CI run.
+
+## Continuous USB-drive ring recording: new `src/storage/usb_recorder.{h,cpp}`
+subsystem, lock-free handoff from the RT thread to a control-thread poll, no
+prior USB-storage detection existed anywhere in this tree
+
+Researched first (per this session's own instruction to check before
+building): grepped the whole tree for `mdev`/`hotplug`/`usb.*storage`/
+`automount` -- zero hits. Nothing in `image/lib-boot-tree.sh` or `src/`
+handled USB mass-storage detection or mounting at all before this session;
+the only existing USB-related code was `src/usb/f_uac2-gadget.sh` (OTG
+peripheral-mode gadget setup, a completely different USB role -- gadget
+mode on the micro-USB/USB-C port vs. host mode on the 3 USB-A ports a flash
+drive actually plugs into).
+
+**Design, matching this project's established RT-safety discipline (the
+same class of constraint documented throughout this file for
+`AloopLoopDsp`/`Sampler`/the SHIFT-fold ramp)**: `UsbRecorder` owns a fixed,
+heap-allocated `int16_t` ring buffer (5 seconds of capacity) that
+`audio_thread.cpp`'s RT worker writes into every block
+(`pushBlock(prevFiltOut.data(), N)`, called right next to `g_sampler->
+captureBlock(...)` -- the SAME post-fx tap point the sampler/looper record
+paths already use, per this file's own "Recording must tap a dedicated
+post-fx Faust input"/"Sampler capture must tap the fully-effected post-fx
+signal" entries). The producer side is a single atomic-counter SPSC ring
+(`std::atomic<uint64_t>` write/read counters, not raw indices, so
+full-vs-empty is unambiguous) that NEVER blocks or allocates: if the
+consumer has fallen behind, `pushBlock` advances the read counter itself to
+make room (dropping the oldest not-yet-written samples) and increments an
+overrun counter instead of stalling the audio callback -- the same
+"drop, never block" contract the rest of this file's RT-thread rules
+describe for cases where the RT thread cannot wait.
+
+The actual file I/O (mount detection, WAV chunk writing/rotation, deleting
+nothing explicitly -- chunks are fixed-size and cyclically
+`O_TRUNC`-reopened, so the ring bounds disk usage by construction rather
+than needing an explicit eviction pass) all happens in `UsbRecorder::poll()`,
+called from `main.cpp`'s existing 5 Hz control loop right alongside
+`telem.publish()`/`remote.poll()` -- deliberately NOT a dedicated pthread.
+This matches `Telemetry`/`RemoteControl`'s existing "own `poll()` called from
+the control loop" shape rather than `Sampler`'s dedicated-worker-thread
+shape, since the control loop's existing ~200ms cadence is already slow
+enough that a blocking USB write (tens of ms, per this session's own
+instruction) fits comfortably inside one iteration without needing its own
+thread, and the 5-second ring absorbs any single slow iteration or a missed
+mount-detection edge without dropping audio.
+
+**Mount detection is a plain `stat()`-device-id comparison** (`isMounted()`:
+the configured mount point's `st_dev` differs from its parent directory's
+`st_dev` exactly when something is mounted there -- the same technique the
+real `mountpoint` command uses), not `/proc/mounts` parsing -- avoids a
+dependency on `/proc/mounts` line format and works identically regardless of
+filesystem type. New `[storage]` section in `config/aloop.conf`
+(`usb_record`, `usb_mount_point` default `/media/aloop-usb`,
+`usb_chunk_minutes` default 10, `usb_chunk_count` default 6) follows the
+existing `loadConfig()` sscanf pattern in `src/main.cpp` exactly.
+`effectiveChunkCount()` shrinks the ring to fit smaller drives (`statvfs`
+against the mount, capped by the configured chunk count) so a small flash
+drive doesn't get asked to hold `usb_chunk_count * usb_chunk_minutes`
+worth of audio it doesn't have room for.
+
+**New `src/usb/usb-automount.sh` (mdev hotplug script) + `src/usb/
+usb-automount-setup.sh` (local.d bootstrap)**, since nothing populated
+`/media/aloop-usb` before this session. `usb-automount-setup.sh` appends
+two rules to `/etc/mdev.conf` (`sd[a-z][0-9]* ... @/opt/aloop/
+usb-automount.sh add` / `... $.../usb-automount.sh remove`) if not already
+present -- APPENDED, never overwriting the file, since Alpine's stock
+`mdev.conf` already drives the base system's own device-node population
+(the `.default_boot_services` marker this file already documents elsewhere
+depends on `mdev`'s normal hotplug behavior staying intact) and clobbering
+it would be the same class of regression as the MONITORFOLD/dead-zone bugs
+elsewhere in this file. Because `local.d` (boot runlevel) runs AFTER
+`mdev -s`'s initial sysinit-runlevel coldplug scan, a drive already
+inserted before boot would be missed by that first scan (our mdev.conf rule
+doesn't exist yet when it runs) -- `usb-automount-setup.sh` compensates with
+its own explicit coldplug pass over `/dev/sd[a-z][0-9]*` after installing
+the rule, invoking the same `usb-automount.sh add` path directly. Only FAT32/
+ext4/exFAT/NTFS are attempted (`mount` with no `-t` first for kernel
+auto-detection, then explicit `-t vfat`/`ext4`/`exfat`/`ntfs` fallbacks) --
+exFAT/NTFS userspace tools are almost certainly NOT in the minimal Alpine
+RPi tarball's local apk repo (same "~100-package minimal set, no CDN
+fallback" constraint this file's vendored-hostapd/dnsmasq entry already
+documents), so only kernel-native FAT32/ext4 mounting is expected to
+actually work without further vendoring -- UNVERIFIED on real hardware,
+flagged here rather than assumed.
+
+New files registered in BOTH `image/lib-boot-tree.sh`'s `_exec_paths` and
+`image/build-netboot.sh`'s `_nb_exec_paths` (`./opt/aloop/
+usb-automount.sh`, `./etc/local.d/25-usb-automount.start`), per this file's
+own "Anything newly vendored into the apkovl needs adding to BOTH
+`tar --mode='+x'` lists" entry -- `build-netboot.sh`'s `NBOVL` is extracted
+directly from `boot_tree_apkovl`'s own output, so both lists needed the
+identical addition, not just one.
+
+**Verification actually performed this session** (no real Pi 4, no USB
+hardware, no `faust`/Docker, matching every gap already documented
+elsewhere in this file): `usb_recorder.cpp` compiles clean under
+`g++ -std=c++17 -Wall -Wextra -fsyntax-only` (it has zero dependency on
+Faust/ALSA/the `ALOOP_HAVE_*` gates, unlike every other native-side change
+in this file's history) and was exercised with a real standalone harness
+against a real `tmpfs` mount (root-mounted in this sandbox, so `isMounted()`
+'s `st_dev` comparison is exercised against a genuine distinct-filesystem
+mountpoint, not a mock): recording auto-starts the instant the mountpoint
+is detected as mounted, 400 pushed blocks at a deliberately tiny sample
+rate produced exactly `usb_chunk_count` bounded chunk files with zero ring
+overruns, chunk 0's WAV header parses back with the correct `RIFF`/`WAVE`/
+`data` tags and a real non-zero patched `data` size (i.e. the seek-back-
+and-repatch-on-rotate logic is genuinely exercised, not just written and
+trusted), and recording survives the record directory being deleted out
+from under it (the open fd keeps writing to the unlinked inode, matching
+POSIX semantics) until a real unmount. `sh -n`/`dash -n` clean on both new
+shell scripts and the two edited packaging scripts. The mdev.conf rule
+syntax itself, real USB-drive enumeration on the Pi 4's host-mode USB-A
+ports, and exFAT/NTFS driver/tool availability on the real device are all
+UNVERIFIED and need live Pi 4 hardware to close -- same standing caveat
+this file applies to every hardware-adjacent change with no device access.
+
+## Follow-up to the SHIFT free-transpose fix, same session: the natural/dry
+pitch must NOT play underneath the locked pitch while actively transposing
+
+The free-transpose fix above only handled the SHIFT-held case; direct user
+follow-up pointed out that even with SHIFT released, actively holding a
+keybed lock target still let `pitchStage(dry)`'s own passthrough (SNAC
+disengaged = a bare `dry` passthrough, see `pitch.dsp`'s `process = _,
+scale, FORMANT, ENGAGED : pitchTick`, a no-op transform when `ENGAGED=0`)
+sum alongside `harmonize`'s wet locked voices, so the original pitch was
+always audible layered under the lock -- not a real "lock," a harmonizer.
+Fixed in `dsp/effects_runtime.dsp` alone (no new signal input needed --
+`dry` and `g0..g5` were already in scope there): `dryGate = (1.0 -
+min(1.0,g0+g1+g2+g3+g4+g5)*(1.0-freeXpose)) : si.smoo` multiplies
+`pitchStage(dry)`'s contribution, so it fades to ~0 whenever any voice is
+gated AND `freeXpose` is 0 (actively locking), and stays at 1 (full
+passthrough) whenever no voice is held OR `freeXpose` is 1 (SHIFT/free
+held) -- the two features compose correctly by construction since `dryGate`
+already factors in `freeXpose`.
+
+Verified via the same DawDreamer/`pitch.dsp`-stub harness as the
+free-transpose fix above: idle (no voice gated) keeps >0.99 correlation
+with the original dry signal; actively locked (voice gated, `freeXpose=0`)
+drops to ~0 correlation with the original dry pitch while the locked wet
+content stays audible (`max_abs` > 0.02); SHIFT/free held with a voice
+still gated restores full dry passthrough (>0.99 correlation again); a
+mid-render gate-on transition's own max sample jump (0.025) stays below the
+render's own pre-existing attack-transient jump size (0.058) -- no added
+click from the new gate.

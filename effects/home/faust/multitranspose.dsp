@@ -35,12 +35,13 @@ harmonySum(sig, detNote, winSamples, xfSamples, n0,g0, n1,g1, n2,g2, n3,g3, n4,g
   + voiceOut(sig,detNote,winSamples,xfSamples,n2,g2) + voiceOut(sig,detNote,winSamples,xfSamples,n3,g3)
   + voiceOut(sig,detNote,winSamples,xfSamples,n4,g4) + voiceOut(sig,detNote,winSamples,xfSamples,n5,g5);
 
-process(sig, n0,g0, n1,g1, n2,g2, n3,g3, n4,g4, n5,g5) = harmonySum(
+process(sig, free, n0,g0, n1,g1, n2,g2, n3,g3, n4,g4, n5,g5) = harmonySum(
     sig, ba.hz2midikey(freqDet), winSamples, xfSamples,
     n0,g0, n1,g1, n2,g2, n3,g3, n4,g4, n5,g5
-) : ma.tanh
+) * freeGate : ma.tanh
 with {
     freqDet     = detectedFreq(sig);
     winSamples  = windowFor(freqDet);
     xfSamples   = int(winSamples * 0.5) : max(32);
+    freeGate    = (1.0 - free) : si.smoo;
 };
