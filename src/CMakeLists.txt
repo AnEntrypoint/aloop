@@ -14,7 +14,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
-add_compile_options(-O2 -Wall)
+add_compile_options(-O3 -Wall)
 # -mcpu=cortex-a72: the Pi 4's real CPU core (ARMv8-A/aarch64) -- the
 # aarch64-correct equivalent of the Faust optimizing-compiler manual's
 # -march=cpu advice (faustdoc.grame.fr/manual/optimizing/, "Multi-CPU

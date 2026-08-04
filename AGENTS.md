@@ -1806,3 +1806,185 @@ repo's template. Always `grep -n disable_core3_lv2 /etc/aloop.conf` on the
 live device (anchored to line-start, no leading `#`, matching the already-
 fixed detector regex in the bisection tool) before spending further time
 debugging "guitar/lofi effects don't do anything" as a code bug.
+
+## DawDreamer-driven optimization pass 2: what shipped, what was verified-and-rejected, what's still open
+
+Follow-up to "Faust DSP compiler optimization pass" and `test/faust-flags/`
+above, using the same DawDreamer (`FaustProcessor`, real Linux `libfaust`
+LLVM JIT, `compile_flags` passthrough) harness pattern, extended with a
+native-side native-code A/B (`faust2bench`, since `-O2` vs `-O3` is a g++
+flag downstream of Faust's own codegen, outside what the LLVM JIT backend
+exercises). This session had no real Pi 4 access -- everything below is
+either verified on a real Linux x86_64 host (DawDreamer's real libfaust, or
+a real local g++/cmake build) or explicitly flagged as still needing
+real-hardware confirmation, per this project's own established "compiles
+clean proves nothing about runtime safety" discipline (see `-mapp`/`-fm def`
+above).
+
+**SHIPPED: `-O3` for the aloop binary itself (`src/CMakeLists.txt`), was
+`-O2`.** The LV2 `.so` builds (`build-lv2.yml`) already compiled the
+Faust-generated C++ at `-O3`; the main `aloop` binary -- which contains the
+actual hot RT path, `AloopLoopDsp::compute()` plus all native C++ -- was
+still at `-O2`, an inconsistency nobody had benchmarked. Measured via this
+project's own established `faust2bench` methodology (real `dsp/aloop.dsp`,
+shipped Faust flags `-vec -fun -dfs -vs 32 -nvi -ct 0`, `-bs 64`, 60 samples
+per flag set, x86_64 host): `-O2` averaged 8.128% DSP CPU / 26.43 MB/s;
+`-O3` averaged 8.029% DSP CPU / 27.62 MB/s -- a real, reproducible ~1.2%
+relative CPU reduction and ~4.5% throughput increase, isolated to JUST the
+GCC optimization level (no `-Ofast`, no `-march=native`, no fast-math --
+those carry the same numeric-approximation risk class as `-mapp`/`-fm def`
+and were deliberately not touched). `-O3`'s extra passes over `-O2`
+(GCC's own `-ftree-vectorize`, loop unswitching/distribution/peeling,
+predictive commoning) are standard behavior-preserving optimizations, not
+precision-losing ones, so this carries none of `-mapp`'s risk profile --
+still confirmed via a real local `cmake`+g++ build (x86_64, dev-only
+`-march=native` substituted for the Pi-specific `-mcpu=cortex-a72`) that the
+full binary (Link, LV2 host, MIDI, the real Faust-generated `loop.cpp`, all
+of it) still compiles clean and boots identically to the `-O2` build.
+
+**SHIPPED: removed the confirmed-dead `rawGlitchTap` Faust output**
+(`dsp/effects_runtime.dsp`'s `<: (_, _)` fanout, `dsp/aloop.dsp`'s
+`mixAndFx` 4th-output plumbing, `audio_thread.cpp`'s matching `fouts[4]` ->
+`fouts[3]`). `effects_runtime.dsp`'s own header comment already asserted
+this tap was dead (`audio_thread.cpp`'s old `fouts[1]` was populated every
+block but never read again anywhere in that file); grepped the whole tree
+to confirm zero other readers before removing. Not a measurable CPU win by
+itself (Faust's `<:` fanout duplicates an already-computed signal, it
+doesn't recompute it -- the cost was one extra buffer + one extra per-block
+store), but it's real, verified-zero-risk dead-code removal in the exact
+hot-path struct this session was auditing, and simplifies the interface for
+the next person touching it.
+
+**SHIPPED: cached the per-block looper telemetry zone lookups**
+(`audio_thread.cpp`'s telemetry-read block, resolved once into
+`looperTelemetryZones[]` right after `fui` is built, matching the EXACT
+established pattern `resolvedControls`/`sidechainSrcSlot` already use
+elsewhere in this same file). This is the READ-side twin of the already-
+documented "Severe continuous readi()-slowdown" fix above, which only ever
+fixed the WRITE side (pushing control values into Faust zones) -- the
+telemetry READ path (`rec`/`play`/`vol`/`level`/`writeidx`/`wraplen`/
+`readposdiag2` for 20 loopers, 140 `snprintf`+`std::map::find` calls) was
+never converted and still ran on every single audio block (750/sec, so
+105,000 `snprintf`+map-lookup pairs/sec). Exact-match zone registration was
+already fixed (see the FaustUI bargraph-registration entry above), so this
+was never hitting the O(n) linear-scan fallback -- but it was still paying
+a full `snprintf` + `std::map::find` for 140 already-known, never-changing
+pointers every block. Fixed by resolving all 140 `float*` zone pointers
+ONCE at thread startup (with the identical exact-match-then-suffix-scan
+fallback `fui.get()` itself uses, so behavior is provably unchanged even in
+the zone-not-found case), then dereferencing them directly per block. No
+DawDreamer needed for this one (pure native C++ pointer caching, mechanical
+and behavior-identical by construction) but it was verified compiling and
+booting clean via a real local `cmake` build (see above).
+
+**SHIPPED: avoided `std::fmod` in the per-sample `masterPhaseBuf` ramp
+loop** (`audio_thread.cpp`, the loop that fills `masterPhaseBuf[i]` for
+`dsp/loop.dsp`'s `masterPhase` signal input -- see this file's own
+"`masterPhaseBuf` must ramp per-sample" entry above for why this loop
+exists and must never be reverted to a block-constant fill). The original
+called `std::fmod` (double-precision) once per sample, N times/block. Since
+the caller already guarantees `masterPhaseSamples` is pre-wrapped into
+`[0, masterLen)` before this loop runs, and `masterLen` is virtually always
+>= the block size N for any real recorded loop, the common case needs at
+most ONE wrap within the block -- replaced with a cheap running
+accumulator (`p += 1.0`, conditional single subtract on overflow), falling
+back to the exact original `fmod`-based code only when `masterLen < N` (a
+pathological loop shorter than one block, which cannot happen from normal
+recording/quantization but is cheap to keep correct for). **Verified
+numerically exact, not just "should be equivalent"**: a Python harness
+swept `masterLen` from 1 to `MAXLEN` (`48000*60`) and `N` from 1 to 512
+against thousands of phase-start values (including near-wrap and Link's
+fractional-phase inputs), comparing the fast path's output to the original
+formula's bit pattern via a real float32 round-trip -- 0 mismatches across
+7452+ cases. This same sweep FIRST caught a real divergence in an
+earlier, unguarded version of this optimization (accumulated rounding
+across many wraps-per-block when `masterLen < N`, a case that cannot occur
+today but would have been a silent latent bug for any future change that
+shrinks the minimum loop length) -- the guard above is what closes it, not
+an afterthought.
+
+**Correctness fix found *while* verifying an unrelated performance
+question, not itself a performance change: `effects/home/faust/
+bitcrush.dsp`'s "byte-exact passthrough at BITCRUSHAMT=0" claim was false.**
+While using DawDreamer to verify `guitar_lofi_fx.dsp`'s own header comment
+("At every control's default (0.0), each stage is independently verified
+byte-exact passthrough... so the WHOLE chain is byte-exact passthrough at
+all defaults by construction"), a real random full-amplitude float signal
+through the whole chain came back with `max_abs_diff = 1.529e-05` --
+nonzero, and far above the ~3e-8 float32-round-trip floor every other
+always-on stage in that chain actually sits at. Isolating each of the 8
+stages individually (same DawDreamer harness, one stage at a time) pinned
+it to `bitcrush.dsp` alone; the other 7 were genuinely at the float32 noise
+floor. Root cause: `BITS_MAX=16` at `BITCRUSHAMT=0` quantizes to 16-bit
+resolution (`step = 2/2^16`) unconditionally -- the file's own header
+comment claimed this was "far finer than any float rounding noise," which
+is wrong for real full-precision float audio (16-bit quantization noise is
+~500x the float32 rounding floor, not below it). The stale rationale
+assumed identity with "the CLI harness's own WAV writer" (a bench-only
+int16 dump) -- but aloop's real production signal path never round-trips
+through int16 anywhere before this stage; the instrument device negotiates
+real S32_LE/24-bit (see this file's own ALSA format entry above), so 16-bit
+quantization was a real, always-on, unconditional precision floor on the
+live audio path even with the bitcrush knob left at its "off" default.
+Fixed by raising `BITS_MAX` to 24 -- verified via the same DawDreamer
+harness to bring the amt=0 diff down to 8.94e-08 (now genuinely at the
+float32 noise floor, matching every other stage) while leaving the crushed
+extreme (`BITCRUSHAMT=1`, `BITS_MIN=2` unchanged) numerically identical
+(same unique-output-level count verified before/after). Inaudibly small
+either way at 16 vs 24 bits, but it directly contradicted an explicitly
+documented invariant (`param_mapping.md`'s all-defaults passthrough
+requirement, referenced elsewhere in this file's own "parameter-smoothing
+order" entry) and is exactly the kind of gap DawDreamer-based verification
+is for -- catching a comment's confident claim that was never actually
+checked against a real render.
+
+**Investigated and NOT pursued (evidence-based, not skipped):**
+- **`ba.tabulate`/further approximating `filters.dsp`'s `tan()`/`pow()` or
+  `reverb.dsp`'s `decayC`/`dampC`**: already rejected in the prior
+  optimization pass for the hardware-parity/bit-exactness reason (see
+  above); nothing this pass found changes that tradeoff.
+- **Splitting or gating `reverb.dsp`'s comb-filter compute / `guitar_lofi_fx.dsp`'s
+  8 always-on stages behind their own amount parameters**: confirmed, via
+  direct reading of both files (`reverb.dsp`'s own `select2`-guarded
+  passthrough, `guitar_lofi_fx.dsp`'s own header history), that this is the
+  SAME already-documented "Faust has no runtime branching" constraint the
+  prior 3-bank-crossfade removal already fixed once system-wide --
+  `select2`/`ba.if` choose among already-computed signals, they do not skip
+  computing them, so there is no in-Faust way to skip a stage's cost based
+  on its own runtime amount being zero. Not re-litigated; would need the
+  same topology-level fix (moving a stage off-core) the guitar/lofi-fx
+  redesign already applied once, not a DSP-level change.
+- **`dsp/loop.dsp`'s dual-tap `ring`/`ringCeil` rwtable read (floor/ceil
+  linear-interpolation taps)**: suspected as a possible double-allocated
+  table (two `rwtable()` calls sharing the same write args, different read
+  index) before checking -- WITNESSED via a real DawDreamer memory-delta
+  test (a large synthetic table, 4 processor instances, measured RSS
+  growth per instance) that Faust's compiler already shares the underlying
+  table storage between the two reads (~31 MB/instance measured against a
+  24 MB single-table expectation, not ~48 MB a genuinely doubled table
+  would cost) -- already efficient, not a bug, no change made.
+- **`-clang` (Faust's clang-specific auto-vectorization pragmas)**: checked
+  against the actual toolchain this project uses for every real target
+  compile -- `build-binary.yml`/`build-lv2.yml`/`src/CMakeLists.txt` all use
+  `gcc`/`g++` (Alpine's `build-base` inside the aarch64 container, or the
+  CI host's own `g++` for LV2), never `clang++`. This flag emits
+  `#pragma clang loop vectorize(...)`-style pragmas GCC does not act on --
+  zero benefit for this project's real toolchain, not evaluated further.
+- **`-mem` (Faust's multi-memory-block DSP layout flag)**: aimed at
+  embedded targets with genuinely separate memory banks (e.g. DSP chips
+  with distinct fast/slow RAM regions); the Pi 4 target is a normal Linux
+  process with one unified heap, so this has no real target to split
+  across. Not evaluated further.
+
+**Still open, needs real Pi 4 hardware to close (not evaluated further this
+session, no hardware access):** whether `-O3`'s measured x86_64 win
+transfers proportionally to the Pi 4's aarch64 Cortex-A72 core (the prior
+optimization pass's own `-vec -fun -dfs -nvi` benchmark carries the same
+caveat and was shipped anyway on the reasoning that the underlying codegen
+wins transfer across architectures even if the exact percentage doesn't --
+same reasoning applies here, `-O3` is even less architecture-specific than
+those flags). Also open: whether the `bitcrush.dsp` fix is audible at all
+(expected answer: no, by construction -- verify by ear only if the user
+asks, per this file's own "Real hardware over asking the user to reproduce
+input" standing rule, since a DawDreamer render diff already answers the
+numeric question a byte-level test could not improve on).

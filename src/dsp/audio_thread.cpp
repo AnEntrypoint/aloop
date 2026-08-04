@@ -201,10 +201,34 @@ static void* worker(void*) {
     struct ResolvedControl { int slot; float* zone; };
     std::vector<ResolvedControl> resolvedControls;
     int resolvedControlsForCount = -1;
-    std::vector<float> rawGlitchTap((size_t)N, 0.0f);
+    struct LooperTelemetryZones { float* rec=nullptr; float* play=nullptr; float* vol=nullptr; float* level=nullptr; float* writeidx=nullptr; float* wraplen=nullptr; float* readpos=nullptr; };
+    LooperTelemetryZones looperTelemetryZones[AudioThread::Telemetry::kLoopers];
+    {
+        char z[32];
+        auto resolveZone = [&]() -> float* {
+            auto it = fui.zones.find(z);
+            if (it != fui.zones.end()) return it->second;
+            std::string suf(z);
+            for (auto& kv : fui.zones) {
+                const std::string& k = kv.first;
+                if (k.size() >= suf.size() && k.compare(k.size() - suf.size(), suf.size(), suf) == 0) return kv.second;
+            }
+            return nullptr;
+        };
+        for (int lp = 0; lp < AudioThread::Telemetry::kLoopers; lp++) {
+            auto& tz = looperTelemetryZones[lp];
+            snprintf(z, sizeof z, "looper%2d/rec",  lp);         tz.rec      = resolveZone();
+            snprintf(z, sizeof z, "looper%2d/play", lp);         tz.play     = resolveZone();
+            snprintf(z, sizeof z, "looper%2d/vol",  lp);         tz.vol      = resolveZone();
+            snprintf(z, sizeof z, "looper%2d/level", lp);        tz.level    = resolveZone();
+            snprintf(z, sizeof z, "looper%2d/writeidx", lp);     tz.writeidx = resolveZone();
+            snprintf(z, sizeof z, "looper%2d/wraplen", lp);      tz.wraplen  = resolveZone();
+            snprintf(z, sizeof z, "looper%2d/readposdiag2", lp); tz.readpos  = resolveZone();
+        }
+    }
     std::vector<float> rawLoopSum((size_t)N, 0.0f);
     std::vector<float> rawFiltTap((size_t)N, 0.0f);
-    float* fouts[4] = { fout.data(), rawGlitchTap.data(), rawLoopSum.data(), rawFiltTap.data() };
+    float* fouts[3] = { fout.data(), rawLoopSum.data(), rawFiltTap.data() };
 #endif
 
 #ifdef ALOOP_HAVE_FAUST_LOOP
@@ -380,15 +404,15 @@ static void* worker(void*) {
                 fui.set("DIV", g_params->get("fx/microrepeat_div"));
             }
             {
-                char z[32];
                 for (int lp = 0; lp < AudioThread::Telemetry::kLoopers; lp++) {
-                    snprintf(z, sizeof z, "looper%2d/rec",  lp); g_telem.looperRec[lp]  = fui.get(z) > 0.5f;
-                    snprintf(z, sizeof z, "looper%2d/play", lp); g_telem.looperPlay[lp] = fui.get(z) > 0.5f;
-                    snprintf(z, sizeof z, "looper%2d/vol",  lp); g_telem.looperVol[lp]  = fui.get(z, 1.0f);
-                    snprintf(z, sizeof z, "looper%2d/level", lp); g_telem.looperLevel[lp] = fui.get(z, 0.0f);
-                    snprintf(z, sizeof z, "looper%2d/writeidx", lp); g_telem.looperWriteIdx[lp] = fui.get(z, 0.0f);
-                    snprintf(z, sizeof z, "looper%2d/wraplen", lp); g_telem.looperWrapLen[lp] = fui.get(z, 0.0f);
-                    snprintf(z, sizeof z, "looper%2d/readposdiag2", lp); g_telem.looperReadPos[lp] = fui.get(z, 0.0f);
+                    auto& tz = looperTelemetryZones[lp];
+                    g_telem.looperRec[lp]      = tz.rec      && *tz.rec > 0.5f;
+                    g_telem.looperPlay[lp]     = tz.play     && *tz.play > 0.5f;
+                    g_telem.looperVol[lp]      = tz.vol      ? *tz.vol : 1.0f;
+                    g_telem.looperLevel[lp]    = tz.level    ? *tz.level : 0.0f;
+                    g_telem.looperWriteIdx[lp] = tz.writeidx ? *tz.writeidx : 0.0f;
+                    g_telem.looperWrapLen[lp]  = tz.wraplen  ? *tz.wraplen : 0.0f;
+                    g_telem.looperReadPos[lp]  = tz.readpos  ? *tz.readpos : 0.0f;
                 }
             }
             g_telem.monitorMode = g_params && g_params->get("fx/monitorfold") > 0.5f;
@@ -459,11 +483,21 @@ static void* worker(void*) {
                     masterPhaseSamples = 0.0;
                 }
                 if (masterLen > 0.0f) {
-                    for (int i = 0; i < N; i++) {
-                        double p = masterPhaseSamples + (double)i;
-                        p = std::fmod(p, (double)masterLen);
-                        if (p < 0.0) p += masterLen;
-                        masterPhaseBuf[(size_t)i] = (float)p;
+                    const double lenD = (double)masterLen;
+                    if (lenD >= (double)N) {
+                        double p = masterPhaseSamples;
+                        for (int i = 0; i < N; i++) {
+                            masterPhaseBuf[(size_t)i] = (float)p;
+                            p += 1.0;
+                            if (p >= lenD) p -= lenD;
+                        }
+                    } else {
+                        for (int i = 0; i < N; i++) {
+                            double p = masterPhaseSamples + (double)i;
+                            p = std::fmod(p, lenD);
+                            if (p < 0.0) p += lenD;
+                            masterPhaseBuf[(size_t)i] = (float)p;
+                        }
                     }
                 } else {
                     std::fill(masterPhaseBuf.begin(), masterPhaseBuf.end(), 0.0f);

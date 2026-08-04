@@ -141,23 +141,23 @@ glitchFold = hslider("GLITCHFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
 //     when a prior fix removed loopSum from the mix entirely instead of
 //     just re-gating it; the glitch case reuses the identical gating shape
 //     to avoid repeating that mistake.
-//     Four total program outputs, in this order:
+//     Three total program outputs, in this order:
 //   1. finalOut  -- the real audible/wire signal (fouts[0] in audio_thread.cpp)
-//   2. rawGlitchTap -- microStage's own post-glitch signal (fouts[1]); kept
-//      as a structural output but no longer consumed for record-folding
-//      (see RECORD-ALWAYS-EFFECTED below -- recordTap/prevFiltIn superseded
-//      the old glitchIn-only mechanism this tap used to feed).
-//   3. rawLoopSum -- the loop engine's own output (fouts[2]), so the native
+//   2. rawLoopSum -- the loop engine's own output (fouts[1]), so the native
 //      SHIFT-fold mix (see top-of-file comment) can fold it into next
 //      block's input, matching looper's m_input_buffer += m_output_buffer*fg
 //      (loopMachine.cpp:738) -- the RAW loop output, not the fully-effected
 //      wet signal (which would compound effects every block the fold is held).
-//   4. recordTap -- the fx-EFFECTED signal alone (fouts[3], NOT filtOut --
+//   3. recordTap -- the fx-EFFECTED signal alone (fouts[2], NOT filtOut --
 //      see the REGRESSION FOUND AND FIXED note below for why they must
 //      differ), so audio_thread.cpp can snapshot it into prevFiltOut for
 //      next block's DEDICATED record-only input (see RECORD-ALWAYS-EFFECTED
 //      below and loop.dsp's oneLooper) without ever including the
 //      unconditional direct-playback term.
+// (A 4th output, rawGlitchTap -- effects_runtime.dsp's own pre-fanout
+// second tap -- used to sit here too; confirmed dead (audio_thread.cpp's
+// old fouts[1] was populated every block but never read again anywhere in
+// that file) and removed from both files together, see AGENTS.md.)
 // directFoldSuppress: the direct raw-loopSum term is suppressed whenever
 // EITHER SHIFT (monitorFold) OR glitch (glitchFold) is fading its own
 // fx-routed copy of loop content IN via `dry` (audio_thread.cpp's native
@@ -204,14 +204,12 @@ glitchFold = hslider("GLITCHFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
 // content (same fold, glitch-gated) -- everything that should be
 // recordable -- while excluding the unconditional direct-playback term
 // that must stay audible-only, never automatically recordable.
-mixAndFx(dry, loopSum) = filtOut, rawGlitchTap, loopSum, recordTap
+mixAndFx(dry, loopSum) = filtOut, loopSum, recordTap
 with {
     fxOuts = dry : fx;
     directFoldSuppress = (1.0-monitorFold) * (1.0-glitchFold);
-    fxEffected = fxOuts : (_, !);
-    filtOut = fxEffected + loopSum*directFoldSuppress;
-    rawGlitchTap = fxOuts : (!, _);
-    recordTap = fxEffected;
+    filtOut = fxOuts + loopSum*directFoldSuppress;
+    recordTap = fxOuts;
 };
 // prevFiltIn: previous block's fully-effected mix output (audio_thread.cpp's
 // prevFiltOut), fed ONLY into loop's dedicated record-only input (see
