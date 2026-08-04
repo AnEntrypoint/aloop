@@ -54,6 +54,10 @@ harmonize = component("effects/home/faust/multitranspose.dsp");
 // `rawGlitchTap` program output on aloop.dsp's mixAndFx -- confirmed dead
 // there, see AGENTS.md's "confirmed-dead rawGlitchTap output" entry, and
 // removed from both files together).
-process(dry, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5) =
-    (pitchStage(dry) + harmonize(dry, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5))
-    : microStage : filterStage : delayStage : reverbStage;
+process(dry, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5) =
+    (pitchStage(dry)*dryGate + harmonize(dry, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5))
+    : microStage : filterStage : delayStage : reverbStage
+with {
+    anyVoiceGated = min(1.0, g0+g1+g2+g3+g4+g5);
+    dryGate = (1.0 - anyVoiceGated*(1.0-freeXpose)) : si.smoo;
+};

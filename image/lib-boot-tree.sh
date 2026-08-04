@@ -113,6 +113,8 @@ boot_tree_apkovl() {
 
   cp "$ROOT/kernel/rt-tune.sh"        "$OVL/etc/local.d/10-rt-tune.start"
   cp "$ROOT/src/usb/f_uac2-gadget.sh" "$OVL/etc/local.d/20-usb-gadget.start"
+  cp "$ROOT/src/usb/usb-automount-setup.sh" "$OVL/etc/local.d/25-usb-automount.start"
+  cp "$ROOT/src/usb/usb-automount.sh" "$OVL/opt/aloop/usb-automount.sh"
   cp "$ROOT/src/net/autoap.sh"        "$OVL/opt/aloop/autoap.sh"
   cp -r "$ROOT/src/net/config"        "$OVL/etc/aloop-net"
   cp "$ROOT/config/aloop.conf"        "$OVL/etc/aloop.conf"
@@ -223,8 +225,8 @@ SSHCFG
   APKOVL="aloop.apkovl.tar.gz"
   APKOVL_TAR="$_work/aloop.apkovl.tar"
   ( cd "$OVL" && tar -cf "$APKOVL_TAR" . )
-  _exec_paths="./opt/aloop/autoap.sh \
-      ./etc/local.d/10-rt-tune.start ./etc/local.d/20-usb-gadget.start \
+  _exec_paths="./opt/aloop/autoap.sh ./opt/aloop/usb-automount.sh \
+      ./etc/local.d/10-rt-tune.start ./etc/local.d/20-usb-gadget.start ./etc/local.d/25-usb-automount.start \
       ./etc/init.d/aloop ./etc/init.d/autoap \
       $(find usr/sbin -type f 2>/dev/null | sed 's|^|./|') \
       $(find opt/aloop/test -type f -name '*.sh' 2>/dev/null | sed 's|^|./|')"

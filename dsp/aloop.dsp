@@ -204,9 +204,9 @@ glitchFold = hslider("GLITCHFOLD", 0.0, 0.0, 1.0, 1.0) : si.smoo;
 // content (same fold, glitch-gated) -- everything that should be
 // recordable -- while excluding the unconditional direct-playback term
 // that must stay audible-only, never automatically recordable.
-mixAndFx(dry, loopSum, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5) = filtOut, loopSum, recordTap
+mixAndFx(dry, loopSum, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5) = filtOut, loopSum, recordTap
 with {
-    fxOuts = (dry, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5) : fx;
+    fxOuts = (dry, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5) : fx;
     directFoldSuppress = (1.0-monitorFold) * (1.0-glitchFold);
     filtOut = fxOuts + loopSum*directFoldSuppress;
     recordTap = fxOuts;
@@ -242,6 +242,6 @@ with {
 // comments -- the sidechain-pump multi-source ducking envelope, computed
 // natively in audio_thread.cpp from every currently-designated source
 // looper's own level telemetry (looperLevel[]) and broadcast here unchanged.
-process(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen, sidechainEnv, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5) =
-    (loop(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen, sidechainEnv), s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5)
+process(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen, sidechainEnv, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5) =
+    (loop(in, prevFiltIn, clearAll, effSpeed, masterPhase, masterLen, sidechainEnv), freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5)
     : mixAndFx;

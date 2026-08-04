@@ -35,8 +35,8 @@ ln -sf /etc/init.d/networking "$NBOVL/etc/runlevels/boot/networking" 2>/dev/null
   || : > "$NBOVL/etc/runlevels/boot/networking"
 NBOVL_TAR="$WORK/nbovl.tar"
 ( cd "$NBOVL" && tar -cf "$NBOVL_TAR" . )
-_nb_exec_paths="./opt/aloop/autoap.sh \
-    ./etc/local.d/10-rt-tune.start ./etc/local.d/20-usb-gadget.start \
+_nb_exec_paths="./opt/aloop/autoap.sh ./opt/aloop/usb-automount.sh \
+    ./etc/local.d/10-rt-tune.start ./etc/local.d/20-usb-gadget.start ./etc/local.d/25-usb-automount.start \
     ./etc/init.d/aloop ./etc/init.d/autoap \
     $(find usr/sbin -type f 2>/dev/null | sed 's|^|./|') \
     $(find opt/aloop/test -type f -name '*.sh' 2>/dev/null | sed 's|^|./|')"

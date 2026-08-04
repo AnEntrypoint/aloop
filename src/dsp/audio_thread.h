@@ -15,6 +15,7 @@ struct ParamStore;   // control values from MIDI (control/midi.h)
 class  LinkBridge;   // Ableton Link tempo/phase (link/link_bridge.h)
 class  Sampler;       // sampler subsystem (dsp/sampler/sampler.h)
 class  Lv2Host;       // in-process LV2 host (host/lv2_host.h)
+class  UsbRecorder;   // continuous USB-drive ring recorder (storage/usb_recorder.h)
 
 struct AudioConfig {
     int sampleRate = 48000;
@@ -85,6 +86,14 @@ struct AudioConfig {
     // over the network at all — the safe default, unlike looper's unauthenticated
     // UDP REBOOT protocol).
     std::string remoteToken = "";
+
+    // [storage] usb_record=: continuously ring-record the post-fx signal to a
+    // USB flash drive whenever one is mounted at usbMountPoint, independent of
+    // looper/sampler recording. See storage/usb_recorder.h.
+    bool usbRecordEnabled = true;
+    std::string usbMountPoint = "/media/aloop-usb";
+    int usbChunkMinutes = 10;
+    int usbChunkCount = 6;
 };
 
 // Starts the RT audio pipeline:
@@ -129,6 +138,13 @@ public:
         // GLITCHFOLD comment), exposed so a test harness can directly verify
         // glitch content is recordable with monitorMode=false.
         bool     glitchEngaged = false;
+        // Continuous USB-drive ring recording state (storage/usb_recorder.h) —
+        // true whenever a USB flash drive is mounted and being written to,
+        // independent of looper/sampler recording. usbRecOverruns counts
+        // lock-free-ring drops (the control-thread drain fell behind the
+        // audio-thread push rate) — should stay 0 in normal operation.
+        bool     usbRecording = false;
+        uint64_t usbRecOverruns = 0;
         // Peak level of the last block's capture input and post-effects output
         // (0..1, absolute value of the float sample) -- lets a UDP query answer
         // "is real signal reaching the DSP at all" and "is anything coming out
@@ -187,6 +203,13 @@ public:
     // fx-knob dispatch pushes guitar/lofi-fx bank values into its fx2/* ports
     // via Lv2Host::setControl, the same way sampler() reaches the sampler.
     Lv2Host* homeFx() const;
+
+    // Continuous USB-drive ring recorder: heap-allocated inside worker() once
+    // the thread starts, null until then. The control loop calls poll() on it
+    // ~5 Hz (main.cpp) to detect mount/unmount and drain the lock-free ring the
+    // audio thread pushes into every block — never touches the RT audio path
+    // beyond that push.
+    UsbRecorder* usbRecorder() const;
 
 private:
     void workerLoop();              // the per-block RT loop
