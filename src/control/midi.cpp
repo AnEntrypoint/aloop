@@ -501,7 +501,7 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
         // directly explaining "keys didnt arm transpose".
         if (channel == 1) {
             if (type == 0x90 && d2 > 0) { grid.onKeybedNoteOn((int)d1, ps, audio ? audio->sampler() : nullptr); continue; }
-            if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onKeybedNoteOff((int)d1, audio ? audio->sampler() : nullptr); continue; }
+            if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onKeybedNoteOff((int)d1, ps, audio ? audio->sampler() : nullptr); continue; }
         }
 
         // --- everything else (filters, transport buttons, speed) via the flat remap ---

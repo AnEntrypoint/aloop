@@ -1988,3 +1988,148 @@ those flags). Also open: whether the `bitcrush.dsp` fix is audible at all
 asks, per this file's own "Real hardware over asking the user to reproduce
 input" standing rule, since a DawDreamer render diff already answers the
 numeric question a byte-level test could not improve on).
+
+## Polyphonic keybed live-pitch: ported and redesigned from lanmower/DawDreamer's DT_Whammy, replaces the old mono last-key-wins engine
+
+`effects/home/faust/multitranspose.dsp` is a new NVOICES=6 polyphonic
+chord-harmonizer stage, ported from the DT_Whammy design in
+`lanmower/DawDreamer` (`tests/faust_dsp/dt_whammy.dsp`, commits `b0e05c3`/
+`df93b37`/`9e6426c`) then reworked for aloop's constraints. DT_Whammy's
+own `harmony_mode` is the direct ancestor: each Faust polyphonic voice
+takes `freq`/`gain`/`gate`, derives `harmonyShift = hz2midikey(freq) -
+root_note`, glides the shift via `si.smooth(tau2pole(glide_ms))`, gates a
+fast `en.adsr` envelope, and shifts via `ef.transpose` (a crossfaded
+delay-line shifter -- cheap, no pitch-detection lookahead, unlike the
+autocorrelation-based SNAC engine already used elsewhere in this file).
+
+**Why a second, separate engine instead of running N instances of the
+existing SNAC engine (`effects/home/faust/pitch_ffi.h`)**: SNAC does real
+pitch detection/resynthesis, real CPU cost per instance; running up to 6
+of them concurrently was never seriously considered as a viable low-
+latency option. `ef.transpose` is the same class of technique DT_Whammy
+itself is built on and is cheap enough that this project's own established
+"Faust has no runtime branching, always-on stages have a real fixed cost"
+tradeoff (already accepted for `guitar_lofi_fx.dsp`'s 8 always-on stages)
+applies the same way here. The existing SNAC engine (`fx/pitchbend`,
+mod-wheel/CC52-driven) is UNTOUCHED -- it remains the mono "pedal ride"
+lane; the new engine is strictly additive, summed with `pitchStage`'s
+output in `effects_runtime.dsp` before the shared filter/delay/reverb
+chain, so `pitchStage(dry) + harmonize(dry, ...)` reduces to exactly `dry`
+when neither is engaged (`pitchStage` is a hard bypass when `ENGAGED=0`;
+`harmonize` outputs silence when every voice's gate is 0), i.e. zero
+behavior change to the existing mono pedal path.
+
+**Faust `par()`-replicated UI duplication (this file's own long-documented
+gotcha, "Faust `par()`-replicated UI controls silently duplicate per
+instance") is why the 6 voices' `(semis, gate)` pairs are plain
+`process()` signal inputs, never `hslider`/`button`.** `multitranspose.dsp`
+is imported once (not `par()`-replicated) so this specific bug class can't
+hit it directly, but threading the 12 values as signal inputs anyway
+(matching `masterPhase`/`clearAll`/`effSpeed`'s existing discipline) means
+nobody has to rediscover this if the stage is ever wrapped in a `par()`
+later. This DOES mean `dsp/aloop.dsp`'s `process()` arity grew from 7 to
+19 inputs (`s0,g0,...,s5,g5` appended), threaded through `mixAndFx` into
+`effects_runtime.dsp`'s own `process()` (also grown, 1 to 13 inputs).
+
+**Faust direct function-call syntax substitutes the WHOLE multi-wire
+expression into a single formal parameter -- it does not splice a bus
+across several formal parameters positionally.** Hit live while wiring
+this feature: an initial `mixAndFx(loop(...), s0,g0,...)` (calling
+`mixAndFx` as a function with `loop(...)`'s 2-output bus as the first
+argument) failed to compile with `too much arguments : 2, instead of : 1`
+inside `pitchStage`, because `dry` inside `mixAndFx` had been bound to the
+ENTIRE 2-wire `loop(...)` output, not just its first wire -- Faust function
+application is closer to textual substitution than to a wire-count-based
+splice. The fix, and the correct idiom (matching how this file already
+composed `loop(...) : mixAndFx` before this change): build the combined
+bus with `,` (parallel composition) first, then pipe the whole thing with
+`:` into a multi-formal-parameter function -- `:`-based composition DOES
+wire positionally by count, unlike direct call syntax.
+`(loop(...), s0,g0,...,s5,g5) : mixAndFx` and, inside `mixAndFx`,
+`(dry, s0,g0,...,s5,g5) : fx` are the two sites this applied to.
+
+**Voice allocation is a plain round-robin/oldest-steal allocator in
+`ApcGrid`** (`allocateTransposeVoice`/`releaseTransposeVoice`,
+`m_transposeVoiceNote[kTransposeVoices]`), the same class of technique
+Faust's own `dsp_poly` voice manager uses -- a held note reuses its own
+slot if replayed, an unheld slot is preferred, and once all 6 are held the
+OLDEST-triggered voice is stolen (its Faust-side ADSR just re-attacks from
+wherever its envelope is, same as a real synth voice-steal; not a special
+case). `onKeybedNoteOff` releases by GATE only (`fx/xpose{v}/gate=0`),
+never a hard cut -- the Faust-side `en.adsr` release phase (50ms, matching
+DT_Whammy's own verified click-free release time) does the fade.
+`onLiveEngageToggle` (the master "transpose on/off" button) and
+`onClearAll` both release every held voice, matching this file's own
+repeatedly-hit "momentary gates must be explicitly zeroed, never
+fire-and-forget" discipline (see the `erase`/`finishreq`/CLEAR_ALL entries
+above) -- applied here from the start, not discovered as a live bug this
+time.
+
+**Gain staging: fixed per-voice gain (0.6) plus a `ma.tanh` soft-clip on
+the summed voice bus, not a dynamic active-voice-count normalization.** A
+dynamic `1/sqrt(activeVoices)`-style renormalization was considered and
+rejected: it would make the OVERALL harmony bus level jump every time a
+chord note releases (a new pumping artifact directly contradicting the
+"smooth" requirement), even though it would technically use full headroom
+more efficiently. A fixed gain risks clipping when many voices are held at
+once at a loud input level; `ma.tanh` after the sum is a static,
+level-independent nonlinearity (no pumping) that caps the worst case
+without touching the audible character of normal 1-3 voice playing.
+Verified numerically via DawDreamer (`FaustProcessor`, real Faust JIT,
+`test_multitranspose.py`/`test_performance.py`, not committed --
+scratchpad-only harnesses matching this file's own established
+`test/faust-flags/` verification style): 6 real voices held simultaneously
+against a near-full-scale (0.95 peak) input stays at 0.995 max abs (no
+clipping, no NaN/Inf); silence when no voice is gated; smooth,
+click-free glide through note-on/retrigger/release sequences (max
+sample-to-sample jump ~0.02 during a 3ms attack ramp, no discontinuities).
+
+**Glide 8ms, ADSR (3ms attack / 30ms decay / sustain 1 / 50ms release),
+window 10ms, crossfade 50%** -- deliberately faster than DT_Whammy's own
+defaults (12ms glide, 15ms window) per this feature's explicit "even more
+digitech, smooth AND fast" requirement, while keeping the exact
+already-verified-click-free ADSR shape DT_Whammy's own commit history
+arrived at (see `9e6426c` above). `auto_window` (DT_Whammy's later
+pitch-synchronous window-sizing feature, `df93b37`) was deliberately NOT
+ported: its own commit message states the zero-crossing pitch tracker
+"assumes roughly monophonic/tonal input" and is unpredictable on
+chord/broadband material -- exactly what this stage's shared input always
+is once more than one voice is held, so it would be worse, not better,
+for aloop's actual use case.
+
+**None of this touches the audio-path block size/ALSA buffer chain** --
+`ef.transpose`'s ~10ms window is an algorithmic pitch-shift latency
+intrinsic to the effect itself (identical in kind to the existing SNAC
+engine's own engaged-only latency), applied only to the wet harmony bus,
+which is purely additive on top of the always-instant dry/loop signal.
+Never a candidate for the "never add audio-path latency" rule, which is
+about the fixed ~7ms system block chain, not a wet effect's own DSP
+latency while engaged.
+
+**Verification status, explicit split**: the Faust signal graph (all 3
+touched `.dsp` files, `dsp/aloop.dsp`+`dsp/effects_runtime.dsp`+the new
+`multitranspose.dsp`, wired together exactly as shipped) compiled and
+rendered NaN/Inf/click-free via DawDreamer's real Faust frontend/JIT
+(`pip install dawdreamer` in-session; `pitchStage`'s `ffunction` bridge to
+`pitch_ffi.h` had to be bypassed for this specific harness only -- the JIT
+backend flatly refuses to link `ffunction`-declared external symbols,
+`calling foreign function 'dubfx_pitch_tick' is not allowed in this
+compilation mode`, a known pre-existing JIT-vs-`-lang cpp` gap this file's
+own `test/faust-flags/` harness already works around the same way by never
+compiling `pitch.dsp`/`aloop.dsp` directly -- unrelated to this change,
+`pitch_ffi.h` itself is untouched). `src/control/apc_grid.cpp`/`.h` and
+`src/control/midi.cpp` (the new voice-allocator logic) compiled clean via
+a real `g++ -std=c++17 -fsyntax-only`. `src/dsp/audio_thread.cpp`'s new
+buffer-threading code could NOT be compiled in this session -- no Docker
+daemon for this file's own `build-local.sh` cross-compile path, and the
+sandbox's `apt` mirror (`security.ubuntu.com`) was 404ing on
+`libasound2-dev`/`faust` package fetches, independent of anything in this
+change. That file's new code was reviewed by hand against directly
+adjacent, already-working patterns in the same function (`clearBuf`'s
+`std::fill`, `sidechainSrcSlot`'s resolve-once-cache-by-slot pattern) but
+is UNVERIFIED by any real compiler in this session -- the real
+`build-binary.yml`/`build-lv2.yml` CI run on push is the first real
+compile this code gets, and CPU/`core_busy`/xrun impact of 6 new always-on
+`ef.transpose` voices, plus genuine audible click-free-ness under real
+playing, both still need live Pi 4 verification per this file's own
+"compiles clean proves nothing about runtime safety" discipline.
