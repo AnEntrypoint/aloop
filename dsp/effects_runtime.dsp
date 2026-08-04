@@ -37,6 +37,8 @@ reverbStage = component("effects/home/faust/reverb.dsp")[ REVAMT=REVAMT; TIME=TI
 microStage  = component("effects/home/faust/microrepeat.dsp")[ DIV=DIV; MLB=MLB; ];
 pitchStage  = component("effects/home/faust/pitch.dsp")[ SEMIS=SEMIS; FORMANT=FORMANT; ENGAGED=ENGAGED; ];
 
+harmonize = component("effects/home/faust/multitranspose.dsp");
+
 // Chain order (REVISED per direct user correction after the first reorder):
 // glitch (microrepeat) -> filter -> delay -> reverb. The user's own words:
 // "filter isnt applying to glitch, glitch should be before filter" and
@@ -52,4 +54,6 @@ pitchStage  = component("effects/home/faust/pitch.dsp")[ SEMIS=SEMIS; FORMANT=FO
 // `rawGlitchTap` program output on aloop.dsp's mixAndFx -- confirmed dead
 // there, see AGENTS.md's "confirmed-dead rawGlitchTap output" entry, and
 // removed from both files together).
-process = pitchStage : microStage : filterStage : delayStage : reverbStage;
+process(dry, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5) =
+    (pitchStage(dry) + harmonize(dry, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5))
+    : microStage : filterStage : delayStage : reverbStage;

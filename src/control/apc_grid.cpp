@@ -25,6 +25,13 @@ void ApcGrid::bindAll(ParamStore& ps) {
     }
     ps.bind("fx/pitchbend");
     ps.bind("fx/pitchbend_engaged");
+    char xposeName[24];
+    for (int v = 0; v < kTransposeVoices; v++) {
+        snprintf(xposeName, sizeof xposeName, "fx/xpose%d/semis", v);
+        ps.bind(xposeName, 0.0f);
+        snprintf(xposeName, sizeof xposeName, "fx/xpose%d/gate", v);
+        ps.bind(xposeName, 0.0f);
+    }
     ps.bind("fx/microrepeat_div");
     ps.bind("fx/monitorfold");
     ps.bind("fx/formant");
@@ -409,6 +416,13 @@ void ApcGrid::onLiveEngageToggle(ParamStore& ps) {
     if (!m_liveEngaged) {
         ps.setByName("fx/pitchbend", 0.0f);
         ps.setByName("fx/pitchbend_engaged", 0.0f);
+        for (int v = 0; v < kTransposeVoices; v++) {
+            if (m_transposeVoiceNote[v] < 0) continue;
+            m_transposeVoiceNote[v] = -1;
+            char gateName[24];
+            snprintf(gateName, sizeof gateName, "fx/xpose%d/gate", v);
+            ps.setByName(gateName, 0.0f);
+        }
     }
 }
 void ApcGrid::onStopImmediate(ParamStore& ps, LinkBridge* link) {
@@ -449,7 +463,40 @@ void ApcGrid::onClearAll(bool held, ParamStore& ps, LinkBridge* link) {
     m_masterLenSamples = 0;
     ps.setByName("cmd/master_len", 0.0f);
     ps.setByName("cmd/recorded_bpm", 0.0f);
+    for (int v = 0; v < kTransposeVoices; v++) {
+        if (m_transposeVoiceNote[v] < 0) continue;
+        m_transposeVoiceNote[v] = -1;
+        char gateName[24];
+        snprintf(gateName, sizeof gateName, "fx/xpose%d/gate", v);
+        ps.setByName(gateName, 0.0f);
+    }
     publishTransport(link);
+}
+int ApcGrid::allocateTransposeVoice(int note) {
+    for (int v = 0; v < kTransposeVoices; v++)
+        if (m_transposeVoiceNote[v] == note) return v;
+    for (int v = 0; v < kTransposeVoices; v++) {
+        if (m_transposeVoiceNote[v] >= 0) continue;
+        m_transposeVoiceNote[v] = note;
+        m_transposeVoiceOrder[v] = ++m_transposeVoiceCounter;
+        return v;
+    }
+    int oldest = 0;
+    for (int v = 1; v < kTransposeVoices; v++)
+        if (m_transposeVoiceOrder[v] < m_transposeVoiceOrder[oldest]) oldest = v;
+    m_transposeVoiceNote[oldest] = note;
+    m_transposeVoiceOrder[oldest] = ++m_transposeVoiceCounter;
+    return oldest;
+}
+void ApcGrid::releaseTransposeVoice(int note, ParamStore& ps) {
+    for (int v = 0; v < kTransposeVoices; v++) {
+        if (m_transposeVoiceNote[v] != note) continue;
+        m_transposeVoiceNote[v] = -1;
+        char gateName[24];
+        snprintf(gateName, sizeof gateName, "fx/xpose%d/gate", v);
+        ps.setByName(gateName, 0.0f);
+        return;
+    }
 }
 void ApcGrid::onKeybedNoteOn(int note, ParamStore& ps, Sampler* sampler) {
     if (sampler) {
@@ -464,18 +511,23 @@ void ApcGrid::onKeybedNoteOn(int note, ParamStore& ps, Sampler* sampler) {
         }
     }
     m_liveEngaged = true;
-    float semis = (float)(note - 60);
-    ps.setByName("fx/pitchbend", semis);
-    ps.setByName("fx/pitchbend_engaged", 1.0f);
+    int v = allocateTransposeVoice(note);
+    char semisName[24], gateName[24];
+    snprintf(semisName, sizeof semisName, "fx/xpose%d/semis", v);
+    snprintf(gateName, sizeof gateName, "fx/xpose%d/gate", v);
+    ps.setByName(semisName, (float)(note - 60));
+    ps.setByName(gateName, 1.0f);
 }
-void ApcGrid::onKeybedNoteOff(int note, Sampler* sampler) {
-    if (!sampler) return;
+void ApcGrid::onKeybedNoteOff(int note, ParamStore& ps, Sampler* sampler) {
     if (m_drumRecordMode) {
-        int keyIdx = Sampler::keyIndex(note);
-        if (keyIdx >= 0) sampler->pushEvent(Sampler::EV_REC_STOP, 0, 0);
+        if (sampler) {
+            int keyIdx = Sampler::keyIndex(note);
+            if (keyIdx >= 0) sampler->pushEvent(Sampler::EV_REC_STOP, 0, 0);
+        }
         return;
     }
-    sampler->pushEvent(Sampler::EV_NOTE_OFF, note, 0);
+    if (sampler) sampler->pushEvent(Sampler::EV_NOTE_OFF, note, 0);
+    releaseTransposeVoice(note, ps);
 }
 void ApcGrid::onSamplerBtn65Press(Sampler* sampler) {
     if (sampler) sampler->pushEvent(Sampler::EV_REC_START, -1, 0);

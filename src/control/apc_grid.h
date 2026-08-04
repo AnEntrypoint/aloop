@@ -21,6 +21,7 @@ constexpr int kApcRows = 5;
 constexpr int kApcCols = 8;
 constexpr int kLooperCount = 20;
 constexpr int kPresetCount = 10;
+constexpr int kTransposeVoices = 6;   // effects/home/faust/multitranspose.dsp NVOICES -- keep in sync
 constexpr unsigned kHoldEraseMs = 1000;   // apcKey25.h APC_HOLD_ERASE_MS
 constexpr int kSampleRate = 48000;        // dsp/loop.dsp's SR -- fixed throughout aloop, no runtime config path yet
 constexpr int kMaxLoopSamples = 48000 * 60;  // dsp/loop.dsp's MAXLEN -- the delay ring's hard ceiling
@@ -171,7 +172,7 @@ public:
     // its own loaded slot) when the sampler has content for it, otherwise
     // falls through to live-pitch (apcKey25.cpp:110-125).
     void onKeybedNoteOn(int note, ParamStore& ps, Sampler* sampler);
-    void onKeybedNoteOff(int note, Sampler* sampler);
+    void onKeybedNoteOff(int note, ParamStore& ps, Sampler* sampler);
 
     // Sampler record-arm buttons (channel 0): note 65 held records ONE shared
     // chromatic sample; note 66 held arms drum-record-mode (while held, each
@@ -332,6 +333,14 @@ private:
     bool m_shift = false;
     bool m_liveEngaged = false;   // master toggle for live pitch (note 64), apcKey25.cpp m_liveEngaged
     bool m_drumRecordMode = false;   // note 66 held (apcKey25.cpp m_drumRecordMode)
+
+    // Polyphonic live-pitch voice allocator: -1 = free slot. Index i maps to
+    // Faust signal inputs fx/xpose{i}/semis and fx/xpose{i}/gate.
+    int m_transposeVoiceNote[kTransposeVoices] = {-1, -1, -1, -1, -1, -1};
+    uint32_t m_transposeVoiceOrder[kTransposeVoices] = {};
+    uint32_t m_transposeVoiceCounter = 0;
+    int allocateTransposeVoice(int note);
+    void releaseTransposeVoice(int note, ParamStore& ps);
     // Local master-phrase length in samples, established from the FIRST
     // looper's own recorded duration (../looper loopClip.cpp:219-244:
     // "ALWAYS defines the local master grid from its own recorded length,
