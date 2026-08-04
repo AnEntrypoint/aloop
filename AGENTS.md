@@ -2658,3 +2658,90 @@ transitions use, so no new ramp-rate risk was introduced -- but this
 specific transition (mid-fold, triggered by a voice-gate edge rather than
 a SHIFT press/release edge) is a new trigger source for an existing ramp,
 not something the original feature's own live verification covered.
+
+## Still audible after the fix above: `dsp/aloop.dsp`'s `directFoldSuppress`/`loopDirectGate` were two independently-paced crossfades racing each other, not a single gate
+
+User report, follow-up to the entry above: "we hear the dry loops while
+holding shift even when transposing with key we must fix that" -- the
+native `foldTarget`/`anyXposeVoiceGatedNow` fix above is real and
+necessary but was not sufficient; a second, independent leak lived
+entirely inside `dsp/aloop.dsp`'s own `mixAndFx`, unrelated to the native
+`fin[]` fold.
+
+Root cause, found via DawDreamer (real libfaust JIT, `pitch.dsp` stubbed
+to a bare passthrough per this file's established workaround, a minimal
+harness reproducing `mixAndFx`+`effects_runtime.dsp` verbatim with
+`MONITORFOLD`/`GLITCHFOLD` driven by the exact native per-block ramp
+audio_thread.cpp computes): `filtOut`'s raw `loopSum` term was gated by
+TWO SEPARATELY-SMOOTHED complementary signals multiplied together --
+`directFoldSuppress = (1-monitorFold)*(1-glitchFold)` (where `monitorFold`
+was `hslider(...) : si.smoo` layered ON TOP OF the native foldGain ramp,
+i.e. double-smoothed, several tens of ms of extra lag) and
+`loopDirectGate = (1-anyVoiceGated*freeXpose) : si.smoo` (a single
+si.smoo on a step input, faster to react). The instant a transpose voice
+gates while SHIFT is held, `directFoldSuppress` was RISING away from its
+already-suppressed 0 (because `foldTarget` flips to 0, telling
+`monitorFold` to fall, which REMOVES suppression from this term) at
+almost exactly the same time `loopDirectGate` was FALLING toward 0 to
+supply the suppression instead -- two crossfades handing off suppression
+duty to each other, at close but not identical rates, leaves their
+PRODUCT with a real mid-transition hump instead of staying pinned near
+zero. Measured directly (both terms logged as extra Faust outputs against
+a real per-block-ramped `MONITORFOLD` automation track): the product
+peaks at 0.15 around 30ms after gate-on and does not decay below 0.02
+until ~110ms -- a genuine, audible window of raw/unshifted loop content on
+EVERY note-gate transition, not a one-time startup transient. Under a
+realistic rapid-retrigger stress test (150ms note period, matching this
+file's own established retrigger-stress cadence elsewhere), this measured
+as 3x more raw-loop spectral energy in the output than the fixed version
+below -- exactly the kind of "we hear the dry loops" symptom reported,
+since real playing retriggers notes far more often than once every few
+hundred ms.
+
+Fixed by collapsing both suppression paths into ONE gate instead of two
+independently-timed ones: `loopDirectRaw = 1.0 - max(max(monitorFold,
+glitchFold), anyVoiceGated*freeXpose)` (now driven directly by the
+already-smooth native-ramped `monitorFold`/`glitchFold` hsliders with NO
+additional si.smoo on them individually), then a SINGLE
+`loopDirectGate = loopDirectRaw : si.smoo` gates `loopSum` alone
+(`filtOut = fxOuts + loopSum*loopDirectGate + loopHarmonyWet`). Since
+`anyVoiceGated*freeXpose` stays pinned at 1 for the entire duration a
+voice is held (not a momentary pulse), `max(...)` stays pinned at 1
+throughout the hold regardless of what `monitorFold` is doing, so
+`loopDirectGate` falls monotonically to 0 with no reversal/hump -- there
+is nothing left to race against. `directFoldSuppress` as a named term is
+gone entirely; `monitorFold`/`glitchFold` are now plain (unsmoothed at
+the individual-hslider level) since the one downstream si.smoo already
+provides the click-safe ramp.
+
+Verified via the same DawDreamer harness, both before/after and a
+click-safety check: raw-loop energy in the `[0,+50]ms` post-gate window
+dropped from 1532 to 0.64 (essentially the render's own noise floor,
+matching the `[+150,+300]ms` window's 0.11-0.2 baseline in BOTH old and
+new versions); the rapid-retrigger stress test's total raw-loop energy
+dropped from 11.7M to 3.6M (3.2x); max sample-to-sample delta for BOTH
+the plain-SHIFT-engage-no-voice transition (0.02327) and the
+SHIFT+voice-gated-together transition (0.06185) are IDENTICAL between the
+old and new implementations to 5 decimal places -- confirming the fix
+removes the leak without introducing or worsening any click, and the
+plain-SHIFT-no-voice case (this file's own repeatedly-emphasized "must
+stay completely unchanged" requirement) is untouched by construction,
+not just by claim. `src/dsp/audio_thread.cpp` needed no changes -- this
+was purely a Faust-side (`dsp/aloop.dsp`) gating-topology bug, independent
+of and additional to the native `foldTarget` fix above. Not verified live
+(no Pi 4 access this session, same standing gap as every other DSP change
+in this file): genuine audible confirmation on real hardware/real
+playing, though the measured spectral-leakage and click-safety numbers
+both point the same direction as the reported symptom and its fix.
+
+`dsp/aloop.dsp`'s large historical comment blocks (SHIFT-fold rationale,
+the several "BUG FOUND AND FIXED"/"REGRESSION FOUND AND FIXED" notes, the
+process()-input-by-input walkthrough) were removed from the file in the
+same pass that landed this fix, per this file's own "No comments in
+code, ever" policy -- every fact they documented already lives in this
+file's own entries (this one, "SHIFT-held loop-lock still bled...",
+"SHIFT-held recording latency compensation", "Recording must tap a
+dedicated post-fx Faust input", "`dsp/effects_runtime.dsp`'s old `fx/bank`
+3-way crossfade...", and "Faust `par()`-replicated UI controls silently
+duplicate per instance" above), so nothing was lost, only moved to where
+this policy says it belongs.
