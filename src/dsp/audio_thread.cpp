@@ -556,7 +556,12 @@ static void* worker(void*) {
             for (int i = 0; i < N; i++) fin[i] = (float)samplerBuf[(size_t)i] / 32768.0f;
             if (g_params) {
                 static float foldGain = 0.0f;
-                float foldTarget = g_params->get("fx/monitorfold") > 0.5f ? 1.0f : 0.0f;
+                bool anyXposeVoiceGatedNow = false;
+                for (int v = 0; v < kTransposeVoices; v++) {
+                    if (g_params->getBySlot(xposeGateSlot[v]) > 0.5f) { anyXposeVoiceGatedNow = true; break; }
+                }
+                bool shiftHeldNow = g_params->get("fx/monitorfold") > 0.5f;
+                float foldTarget = (shiftHeldNow && !anyXposeVoiceGatedNow) ? 1.0f : 0.0f;
                 const float kFoldStep = 1.0f / 16.0f;
                 const float kFoldStepPerSample = kFoldStep / (float)N;
                 static float glitchFoldGain = 0.0f;

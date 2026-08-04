@@ -2604,3 +2604,57 @@ hardware. `src/control/apc_grid.cpp`'s existing SHIFT/voice-allocation
 logic needed no changes -- this feature is entirely a Faust-side reroute of
 signals `apc_grid.cpp` already drives (`fx/monitorfold`/`freeXpose`,
 `fx/xpose%d/note`+`/gate`).
+
+## SHIFT-held loop-lock still bled the original/dry loop underneath the locked pitch: the native monitor-fold pathway, not the Faust `loopDirectGate` gate, was the leak
+
+User report: "when pressing the shift button of the controller, we still
+hear the dry loops even when pressing keys for polyphonic transpose" --
+i.e. the "SHIFT-held polyphonic keyplay redirects the transpose engine
+onto the loops instead of muting it" feature (see its own entry above)
+was replacing nothing; both the original loop pitch and the locked wet
+voice played at once.
+
+Root cause: `dsp/aloop.dsp`'s `mixAndFx` already suppresses the *direct*
+`loopSum` term correctly (`loopDirectGate = 1 - anyVoiceGated*freeXpose`),
+but that is not the only pathway loop content reaches the output.
+`src/dsp/audio_thread.cpp`'s `worker()` has an entirely separate, older
+mechanism (predating the transpose feature, see "SHIFT-held recording
+latency compensation" above): whenever `fx/monitorfold` (SHIFT) is held,
+it unconditionally ramps `foldGain` toward 1 and does
+`fin[i] += prevLoopSum[i] * combinedFold`, folding the RAW, UNSHIFTED
+previous-block loop output into `fin` (the Faust top-level `in`/`dry`
+input) every block. That folded content then flows through
+`fxOuts = fx(dry, ...)` at its original pitch -- with `dryWet` correctly
+zeroed and `dryGate` correctly at 1 (passthrough, not muted) whenever
+`freeXpose=1`, since those two only ever governed the LIVE instrument's
+own pitch-lock, never this native fold's re-entered loop content. Nothing
+in the chain gated this pathway on whether a transpose voice was gated,
+so during an actual SHIFT+held-key lock, the output was the correctly
+pitch-locked `loopHarmonyWet` bus PLUS this unshifted folded-in copy of
+the same loop, simultaneously -- audibly indistinguishable from "the lock
+isn't working."
+
+Fixed by making `foldTarget` (the target the native `foldGain` ramps
+toward) also depend on whether any transpose voice is currently gated:
+`foldTarget = (shiftHeldNow && !anyXposeVoiceGatedNow) ? 1.0f : 0.0f`,
+checking `xposeGateSlot[v]` (already resolved once at thread startup,
+same slots `xposeGateBuf` fills from) each block. Plain SHIFT-hold with
+no voice pressed is completely unchanged (fold behaves exactly as
+before -- the original monitor-fold/glitch-fold audibility and recording
+behavior). Only the SHIFT+voice-gated combination now also suppresses
+this native fold, so the loop's raw pitch stops re-entering `fin` for the
+duration of the hold and the locked `loopHarmonyWet` bus is the only loop
+content left in the output -- matching the "replace, not layer" design
+this feature always intended. `glitchFoldGain`/glitch-hold behavior is
+untouched (a different, unrelated gesture).
+
+Not verified live (no Pi 4 access this session, same standing gap as
+every other native-side change in this file): genuine audible
+click-free-ness at the moment `foldGain` is forced back down from a
+partial ramp value when a voice gates on mid-SHIFT-hold. `foldGain` still
+ramps at the existing `kFoldStep` rate (1/16 per block), the same
+already-proven click-safe rate the original monitor-fold/glitch-fold
+transitions use, so no new ramp-rate risk was introduced -- but this
+specific transition (mid-fold, triggered by a voice-gate edge rather than
+a SHIFT press/release edge) is a new trigger source for an existing ramp,
+not something the original feature's own live verification covered.
