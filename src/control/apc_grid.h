@@ -163,14 +163,17 @@ public:
     // midi.cpp only ever inspected channel 0, so a keybed key had NO path to
     // engage live-pitch at all. Confirmed via cross-codebase research against
     // ../looper (apcKey25.cpp:103-125): "any keybed key press unconditionally
-    // sets m_liveEngaged=true and derives a semitone offset from the key" --
-    // this is looper's PRIMARY way live-pitch actually gets engaged/played in
-    // practice (the note-64 button is more of a manual override), so its
-    // absence directly explains "keys didnt arm transpose". `sampler` (may be
-    // null) gates the routing exactly as looper does: a keybed key plays
-    // sampler content (chromatic pitched, or a drum one-shot if that key has
-    // its own loaded slot) when the sampler has content for it, otherwise
-    // falls through to live-pitch (apcKey25.cpp:110-125).
+    // sets m_liveEngaged=true" -- this is looper's PRIMARY way live-pitch
+    // actually gets engaged/played in practice (the note-64 button is more of
+    // a manual override), so its absence directly explains "keys didnt arm
+    // transpose". `sampler` (may be null) gates the routing exactly as looper
+    // does: a keybed key plays sampler content (chromatic pitched, or a drum
+    // one-shot if that key has its own loaded slot) when the sampler has
+    // content for it, otherwise falls through to live-pitch
+    // (apcKey25.cpp:110-125). The key's raw MIDI note number becomes that
+    // voice's fx/xpose{i}/note pitch-LOCK target (multitranspose.dsp derives
+    // the actual shift from the live-detected input pitch), not a fixed
+    // semitone offset -- see multitranspose.dsp's own header.
     void onKeybedNoteOn(int note, ParamStore& ps, Sampler* sampler);
     void onKeybedNoteOff(int note, ParamStore& ps, Sampler* sampler);
 
@@ -335,7 +338,7 @@ private:
     bool m_drumRecordMode = false;   // note 66 held (apcKey25.cpp m_drumRecordMode)
 
     // Polyphonic live-pitch voice allocator: -1 = free slot. Index i maps to
-    // Faust signal inputs fx/xpose{i}/semis and fx/xpose{i}/gate.
+    // Faust signal inputs fx/xpose{i}/note and fx/xpose{i}/gate.
     int m_transposeVoiceNote[kTransposeVoices] = {-1, -1, -1, -1, -1, -1};
     uint32_t m_transposeVoiceOrder[kTransposeVoices] = {};
     uint32_t m_transposeVoiceCounter = 0;
