@@ -2437,3 +2437,170 @@ still gated restores full dry passthrough (>0.99 correlation again); a
 mid-render gate-on transition's own max sample jump (0.025) stays below the
 render's own pre-existing attack-transient jump size (0.058) -- no added
 click from the new gate.
+
+## `delay.dsp`'s minimum delay time was never actually fast: a spurious `+1.0`
+per-sample term in the slew recursion put a hidden ~208ms floor under EVERY
+TIME setting, independent of the TIME->ms mapping
+
+User request: "the fastest delay must be real fast, to allow micro delay
+effects." The TIME->ms mapping's floor was already 0.5ms (a prior session's
+change from the original hardware-parity 1ms), which LOOKS fast on paper --
+but `curStep(target, c) = c + (target - c)*SLEW + 1.0` (SLEW=0.0001) adds a
+full sample of drift every single sample regardless of `target`, on top of
+the intended exponential approach. Solving the recursion's own fixed point
+(`c* = c*(1-SLEW) + target*SLEW + 1.0` => `c* = target + 1.0/SLEW`) shows the
+delay-length state converges to `target + 10000` samples, not `target` --
+i.e. every TIME setting carried a hidden, constant ~208ms (10000 samples @
+48kHz) floor on top of whatever the TIME knob mapped to. WITNESSED via a
+real DawDreamer render (`FaustProcessor`, real libfaust JIT): warming the
+ring up for 90000 samples (so the SLEW recursion has time to reach its real
+fixed point) then injecting a single impulse at TIME=0 (the new 0.02ms/
+1-sample floor) showed the first echo landing at sample **9995**, not
+sample 1 -- confirming the bug numerically, not just symbolically. This
+explains the user's report directly: the "fastest" delay was never
+meaningfully faster than any other setting near the bottom of the range,
+since the ~208ms floor dominates the whole low end of the TIME mapping.
+
+Root cause traced to a documented-but-wrong claim in the file's own header
+comment ("C++: currentDelay = writePos - readPos == newDelay[n-1] + 1"): the
+real C++ reference (`apcEffectsProcessor::processSends`, quoted verbatim at
+the top of this file) has NO `+1` anywhere -- `newDelay = curLen +
+(target-curLen)*0.0001` is a plain one-pole slew toward `target`, full stop.
+The relationship the old comment describes (`currentDelay[n] ==
+newDelay[n-1]+1`) is a TAUTOLOGY about how sample indices relate when
+`readPos` tracks a constant-length gap behind `writePos` (which itself
+advances by 1 every sample) -- true of the C++ model's own bookkeeping, but
+never a reason to literally add 1.0 to a recursively-slewing state variable.
+A prior session appears to have mistaken that tautology for a required
+correction term. Fixed by removing the `+1.0` entirely: `curStep(target, c)
+= c + (target - c)*SLEW` -- now numerically identical in form to
+`newDelayFrom`, preserving the existing one-sample lag between the `letrec`
+state and the actual read tap (`len[n] = newDelayFrom(target, cd[n])`, so
+`cd[n+1] == len[n]` by construction) without the spurious drift.
+
+**TIME->ms mapping also widened to genuinely reach the structural 1-sample
+floor** (was 0.5ms min): `MIN_DELAY_MS = 1000.0/SR` (exactly 1 sample,
+0.0208ms @ 48kHz) replaces the old hardcoded 0.5ms constant, so TIME=0 now
+maps to precisely the `max(1.0, ...)` floor `targetSamples` already
+enforces structurally -- the fastest the delay can possibly represent,
+genuinely reachable now that the recursion bug no longer masks it. TIME=1
+still maps to ~1000ms (the ceiling is unchanged).
+
+**Verified via DawDreamer** (real libfaust JIT, `component("effects/home/
+faust/delay.dsp")[DELAYAMT=...; TIME=...;]`, ring warmed up 90000 samples
+before measuring so the SLEW recursion reflects true steady state, not
+cold-start transient): TIME=0 now lands the echo at sample 1 (0.0208ms);
+TIME=1.0 lands at sample 47980 (999.58ms, matching the intended ~1000ms
+ceiling); a 6-point sweep (TIME=0/0.1/0.25/0.5/0.75/1.0) is linear and
+monotonic across the full range (0.02ms/100.0ms/249.9ms/499.8ms/749.6ms/
+999.6ms); a real-noise render at TIME=0 with feedback (DELAYAMT=0.6, a
+stable fb=0.63<1 setting) produced no NaN/Inf. Not verified: real Pi 4
+audible character at the new sub-millisecond floor (expected to sound like
+a tight comb/flange rather than a discrete echo, which is the whole point
+of "micro delay" -- this is a direct, provable consequence of the fixed
+recursion's math, not something that needs live hardware to confirm, unlike
+this file's numeric-approximation-flag entries elsewhere in this file).
+
+## SHIFT-held polyphonic keyplay redirects the transpose engine onto the
+loops instead of muting it: `multitranspose.dsp` gets a `loopSum` input,
+crossfades its OWN tracked/shifted source and wet destination on `free`
+rather than adding a second voice bank
+
+User request, direct follow-up to the SHIFT free-transpose feature above:
+"when shift is held the polyphonic keyplay of the transpose should affect
+the loops." The existing SHIFT-held behavior (see this file's own "SHIFT
+engaging free (unlocked) transpose" entry) simply MUTED the harmony engine
+entirely while SHIFT was held (`freeGate = (1.0-free) : si.smoo` zeroed the
+whole wet bus) so the live instrument could be played at its natural pitch
+-- but nothing happened to the currently-playing loop content during that
+hold. The user wants SHIFT-held polyphonic keyplay to become a live
+"Whammy-on-the-loop" gesture instead: holding SHIFT and playing chords now
+pitch-locks the LOOP PLAYBACK to the held keys, exactly like the existing
+dry-input pitch-lock does when SHIFT is NOT held.
+
+**Design: reuse the SAME 6-voice `ef.transpose` bank + single
+`an.pitchTracker` instance, never add a second one.** This project's own
+established cost discipline (`guitar_lofi_fx.dsp`'s 8 always-on stages,
+this file's own "Faust has no runtime branching" entries) makes a naive
+"add a second identical 6-voice bank for the loop" the wrong shape --
+doubles this stage's CPU cost for a feature that's only ever audible while
+SHIFT is held. Instead, `multitranspose.dsp`'s `process` now takes a second
+audio input (`loopSum`, the raw loop-engine output, already available at
+every call site since it was already an `effects_runtime.dsp`/`mixAndFx`
+parameter) and crossfades which signal FEEDS the tracker/shifter, and which
+output CARRIES the resulting wet signal, on the SAME smoothed `free` gate:
+`sigIn = dry*(1-freeSmooth) + loopSum*freeSmooth`, `dryWet = wet*(1-
+freeSmooth)`, `loopWet = wet*freeSmooth`. At free=0 this is numerically
+identical to the pre-existing behavior (loopWet=0, dryWet=wet, sigIn=dry);
+at free=1 the entire engine -- tracking AND shifting -- is redirected onto
+`loopSum`, with dryWet=0. The crossfade sharing the same `freeSmooth` value
+for both the source blend and the output split means a mid-transition
+sample carries a proportionally correct mix of both, not a mismatched
+source/destination pairing.
+
+**Threading the second output through the call chain**: `effects_runtime.
+dsp`'s `process` gained a `loopSum` input and now returns TWO outputs
+(`mainOut`, unchanged shape/meaning; `loopHarmonyWet`, the new loop-routed
+wet bus, deliberately NOT run through `microStage:filterStage:delayStage:
+reverbStage` -- those are dry-signal-oriented stages, and `loopSum` itself
+already bypasses them entirely on the direct-playback path, so the wet loop
+transpose stays consistent with that existing architectural choice rather
+than adding a second parallel fx-chain pass). `aloop.dsp`'s `mixAndFx` now
+calls `fx` with `loopSum` as an extra argument (it already received
+`loopSum` as its own parameter -- no new top-level `process()` input needed
+anywhere, so **audio_thread.cpp needs zero changes** for this feature) and
+splits the resulting 2-wire bus via `fxBus : _,! ` / `fxBus : !,_` (a
+single shared computation, not a duplicated one -- Faust shares named
+signal bindings referenced multiple times the same way this file's own
+`freqDet`/`winSamples` bindings inside `multitranspose.dsp`'s `harmonySum`
+already prove, this is NOT the `par()`-replication UI-duplication class of
+bug documented elsewhere in this file).
+
+**New `loopDirectGate` complementarily suppresses the raw, unprocessed
+`loopSum` term exactly when SHIFT is held AND a voice is gated** (`1 -
+anyVoiceGated*freeXpose`, the same multiplicative-complement shape as
+`directFoldSuppress`/`monitorFold`/`glitchFold` elsewhere in this file, but
+driven by `freeXpose` directly rather than the native one-block-lag fold
+ramp, since the harmony bus here is computed same-block): `filtOut = fxOuts
++ loopSum*directFoldSuppress*loopDirectGate + loopHarmonyWet`. Mirrors the
+existing dry-side `dryGate` exactly (dry fades OUT while actively locked,
+replaced by the wet locked signal, never summed with the raw original) --
+the loop is REPLACED by its pitch-locked version while SHIFT+voice is held,
+not layered underneath it (avoiding a comb-filter/phasing mess from
+playing raw and shifted copies of the same loop simultaneously). At
+SHIFT-held-but-no-voice, `loopDirectGate` is 1 (raw loop plays normally,
+unaffected) and `loopHarmonyWet` is 0 (silent, since the ADSR gate keeps
+every voice's envelope at 0) -- zero behavior change from before this
+feature when nothing is actually being played.
+
+**Verified via DawDreamer** (real libfaust JIT): `multitranspose.dsp`
+standalone -- free=0+voice-gated locks the `dry` input to the target note
+(spectral energy at the target frequency >0.02, loopWet silent); free=1+
+voice-gated locks `loopSum` instead (dryWet silent, loop carries the
+target-note energy); free=1+no-voice leaves both wet outputs silent. The
+real committed `effects_runtime.dsp` (compiled as its own file, not a
+reimplementation, pitch.dsp stubbed to a bare passthrough for the harness
+only -- the same established JIT-vs-`ffunction` workaround this file's
+other DawDreamer entries already use) reproduces the identical 4-case
+matrix end-to-end, including confirming the EXISTING dry-pitch-lock
+behavior (free=0, voice gated) is numerically unchanged (correlation with
+raw dry <0.5, i.e. genuinely locked not passthrough) and that plain
+passthrough (free=0 or free=1, no voice) keeps >0.99 correlation with dry
+in both cases. The real committed `aloop.dsp` (20 process() inputs, 3
+outputs, matching the pre-existing signature exactly) compiles clean and
+renders a 2-second real-signal smoke test with SHIFT held + a voice gated
+with zero NaN/Inf and sane output levels; the `loopDirectGate`/
+`loopHarmonyWet` arithmetic itself was hand-traced against all 4 gating
+states (SHIFT x voice-gated) rather than re-verified with a second
+DawDreamer pass, since `fxOuts`/`loopHarmonyWet` feeding into it are
+already the DawDreamer-verified `effects_runtime.dsp` outputs and the
+remaining new arithmetic in `mixAndFx` is a direct, mechanical extension of
+the already-proven `directFoldSuppress` pattern. Not verified: real Pi 4
+audible character/CPU cost -- expected to be ~zero additional CPU (no new
+`ef.transpose` voices or `an.pitchTracker` instance, purely a crossfade of
+existing computation), unlike the original multitranspose feature's own
+real-hardware CPU caveat, but this has not been measured on target
+hardware. `src/control/apc_grid.cpp`'s existing SHIFT/voice-allocation
+logic needed no changes -- this feature is entirely a Faust-side reroute of
+signals `apc_grid.cpp` already drives (`fx/monitorfold`/`freeXpose`,
+`fx/xpose%d/note`+`/gate`).
