@@ -5,7 +5,10 @@
 //   d        = linInterp(ring, writePos - newDelay)  // fractional read (past)
 //   ring[writePos] = x + d*feedback                  // feedback comb write
 //   writePos++;  out = x + d*amount                  // wet mix
-// feedback = amount*1.05; curLen starts at 0 (cold ring).
+// feedback = min(0.98, amount*1.05), clamped strictly below unity so the
+// comb can never enter positive-feedback runaway; curLen starts at 0 (cold
+// ring). The recursive state is also hard-clamped to +-8.0 on every sample
+// so a transient overflow can never poison it with Inf/NaN permanently.
 //
 // Feedback comb: w[n] = x[n] + fb*D(w)[n], D = linear-interp fractional delay
 // of `newDelay` samples. Output y = x + amount*D(w). The tap is >=1 sample in
@@ -46,15 +49,18 @@ with {
     tap1 = de.delay(MAXD, i0 + 1, w);
 };
 
+FB_MAX = 0.98;
+FEEDBACK_STATE_LIMIT = 8.0;
+
 delayFC(amount, t, x) = x + amount * d
 with {
-    fb     = amount * 1.05;
+    fb     = min(FB_MAX, amount * 1.05);
     target = targetSamples(t);
     cd     = curDelayRec(target);        // currentDelay[n], letrec state init 0
     len    = newDelayFrom(target, cd);   // read tap = newDelay[n]
     d   = (loop ~ _) : fracDelay(len)
     with {
-        loop(w) = x + fb * fracDelay(len, w);
+        loop(w) = (x + fb * fracDelay(len, w)) : max(-FEEDBACK_STATE_LIMIT) : min(FEEDBACK_STATE_LIMIT);
     };
 };
 
