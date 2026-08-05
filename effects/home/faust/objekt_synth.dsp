@@ -16,21 +16,34 @@ strikePos = 0.3;
 strikeSharp = 0.7;
 bankPosition = 0.35;
 voiceGain = 0.5;
+retuneGlide = 0.01;
 
-exciteFor(exciteIn, gate) = impact*(1.0-character) + wash*character
+stealEvent(note, gate) = (note != note') * (gate <= gate');
+retriggerGate(note, gate) = gate * (1.0 - stealEvent(note, gate));
+
+exciteFor(exciteIn, note, gate) = impact*(1.0-character) + wash*character
 with {
-    impact = pm.strike(strikePos, strikeSharp, 1.0, gate) : fi.lowpass(2, tone);
-    wash   = exciteIn : fi.lowpass(2, tone) : *(en.asr(0.02, 1.0, 0.3, gate));
+    xgate = retriggerGate(note, gate);
+    impact = pm.strike(strikePos, strikeSharp, 1.0, xgate) : fi.lowpass(2, tone);
+    wash   = exciteIn : fi.lowpass(2, tone) : *(en.asr(0.02, 1.0, 0.3, xgate));
 };
 
-mode1(freqHz) = pm.modeFilter(freqHz*pow(1.0, 1.0+stretch), objDecay*pow(damping,0), 1.0*abs(sin(ma.PI*bankPosition*1)));
-mode2(freqHz) = pm.modeFilter(freqHz*pow(2.0, 1.0+stretch), objDecay*pow(damping,1), 0.6*abs(sin(ma.PI*bankPosition*2)));
-mode3(freqHz) = pm.modeFilter(freqHz*pow(3.0, 1.0+stretch), objDecay*pow(damping,2), 0.4*abs(sin(ma.PI*bankPosition*3)));
-mode4(freqHz) = pm.modeFilter(freqHz*pow(4.0, 1.0+stretch), objDecay*pow(damping,3), 0.3*abs(sin(ma.PI*bankPosition*4)));
+freqGlide(note, gate) = f
+letrec {
+    'f = ba.if(gate > gate', target, f + (target - f)*retuneGlide)
+    with { target = ba.midikey2hz(note); };
+};
+
+aliasGuard(f) = min(1.0, max(0.0, (ma.SR*0.5 - f) / (ma.SR*0.05)));
+
+mode1(freqHz) = pm.modeFilter(freqHz, objDecay, 1.0*abs(sin(ma.PI*bankPosition*1))*aliasGuard(freqHz));
+mode2(freqHz) = pm.modeFilter(f2, objDecay*pow(damping,1), 0.6*abs(sin(ma.PI*bankPosition*2))*aliasGuard(f2)) with { f2 = freqHz*pow(2.0, 1.0+stretch); };
+mode3(freqHz) = pm.modeFilter(f3, objDecay*pow(damping,2), 0.4*abs(sin(ma.PI*bankPosition*3))*aliasGuard(f3)) with { f3 = freqHz*pow(3.0, 1.0+stretch); };
+mode4(freqHz) = pm.modeFilter(f4, objDecay*pow(damping,3), 0.3*abs(sin(ma.PI*bankPosition*4))*aliasGuard(f4)) with { f4 = freqHz*pow(4.0, 1.0+stretch); };
 
 bank(freqHz, exc) = exc <: (mode1(freqHz), mode2(freqHz), mode3(freqHz), mode4(freqHz)) :> _;
 
-voice(exciteIn, note, gate) = bank(ba.midikey2hz(note), exciteFor(exciteIn, gate)) * voiceGain;
+voice(exciteIn, note, gate) = bank(freqGlide(note, gate), exciteFor(exciteIn, note, gate)) * voiceGain;
 
 process(exciteIn, note0,gate0, note1,gate1, note2,gate2, note3,gate3) =
     (voice(exciteIn,note0,gate0) + voice(exciteIn,note1,gate1) + voice(exciteIn,note2,gate2) + voice(exciteIn,note3,gate3)) : ma.tanh : *(objLevel);

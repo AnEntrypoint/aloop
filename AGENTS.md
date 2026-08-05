@@ -1538,6 +1538,121 @@ spawn density via `densityFromVel = 0.4 + 0.6*velGain` in
 brighter grain cloud, the dynamic-response feel real granular groovebox
 hardware has and this sampler never had.
 
+## Objekt voice-steal must retrigger the exciter AND glide the resonator frequency
+
+`allocateObjektVoice` (like `allocateTransposeVoice`) steals the oldest voice
+slot when all `kObjektVoices` are already held, reassigning that slot's
+`fx/objektvoice{v}/note` to the new key while leaving
+`fx/objektvoice{v}/gate` at 1.0 the whole time (both `onKeybedNoteOn`'s
+steal path and its fresh-allocation path write `gate=1.0` unconditionally,
+since there is no cheap race-free way to force a genuine 0→1 edge from the
+control thread without the `pollHolds`-deadline machinery `erase`/`finishreq`
+need — see "Every momentary Faust gate must be explicitly released" above).
+
+WITNESSED via the DawDreamer JIT harness (`objekt_synth.dsp` compiles
+standalone, no `pitch.dsp`/`ffunction` stub needed): feeding a synthetic
+9-channel input (`exciteIn, note0,gate0, ..., note3,gate3`) that holds
+`gate0=1` continuously while stepping `note0` from 60 to 72 mid-ring —
+exactly what a steal produces — reproduced two independent, real defects:
+
+1. **No new strike.** `pm.strike`'s internal `en.ar` and the wash's
+   `en.asr` both key their attack phase on a literal `gate > gate'` rising
+   edge (`envelopes.lib`); a gate that never drops never re-fires either
+   envelope, so a stolen voice silently changes pitch with zero fresh
+   excitation — the note-on is inaudible as an attack.
+2. **A real click, worse than a legitimate onset.** `pm.modeFilter` is a
+   raw `fi.tf2` biquad whose `a1`/`a2` are recomputed from `freq`/`t60`
+   every sample with no smoothing; jumping `note` (hence `freq`) in one
+   sample reuses the filter's stored `y[n-1],y[n-2]` under abruptly
+   different coefficients. Measured max sample-to-sample derivative right
+   at the steal instant: 0.057, over 2x a genuine fresh strike's own onset
+   derivative (reference: 0.026, same DSP struck from silence) and over 3x
+   the background derivative of an undisturbed ringing note (0.018) — a
+   real, audible transient artifact, not merely "quieter than a strike".
+
+Fix, both parts verified together and independently before landing:
+
+- **`stealEvent`/`retriggerGate`**: `stealEvent(note,gate) = (note !=
+  note') * (gate <= gate')` is true for exactly the one sample a steal
+  reassigns `note` while `gate` was already high (and is structurally
+  false at a genuine fresh onset, where `gate <= gate'` never holds since
+  gate is rising that same sample). `retriggerGate` multiplies it into a
+  synthetic one-sample dip of the signal fed to `pm.strike`/the wash's
+  `en.asr`, so the very next sample sees a real `xgate > xgate'` edge and
+  both envelopes fire a genuine fresh attack — exactly as if a new note-on
+  had arrived.
+- **`freqGlide`**: a `letrec`-based one-pole (the same recursive-signal
+  idiom `delay.dsp`'s `curDelayRec`/`curStep` already uses in this
+  codebase) that snaps instantly to `ba.midikey2hz(note)` on a genuine
+  `gate > gate'` onset (bit-exact with the pre-fix behavior — verified,
+  not assumed) and glides at `retuneGlide=0.01` per sample (~10ms to
+  converge) on any other note change, i.e. only during a steal. This
+  spreads the coefficient change over ~10ms instead of one sample,
+  bringing the steal-instant derivative down to 0.022-0.027 depending on
+  exact glide rate — in line with the genuine-onset reference, not a
+  multiple of it.
+
+Both changes are additive/no-ops outside the steal case: every
+idle-silence, fresh-onset (including the realistic case where `note` and
+`gate` both change in the same control tick, matching
+`onKeybedNoteOn`/`allocateObjektVoice`'s real write pattern), sustained
+single-note, release, and 4-simultaneous-distinct-voice scenario rendered
+bit-exact (or within float32 rounding, see below) against the pre-fix DSP.
+With the fix applied, the same steal scenario's peak derivative (0.34-0.41,
+dominated by `ma.tanh`'s soft-clip ceiling) now matches a constructed
+reference of two *legitimately* overlapping strikes (one held note plus a
+second, brand-new voice struck at the same instant, no steal involved:
+0.34-0.63 across the same measurement windows) — the steal now sounds like
+what it physically is, two strikes' energy briefly overlapping, instead of
+a silent pitch-jump artifact.
+
+`mode1`'s `pow(freqHz*pow(1.0,1.0+stretch), objDecay*pow(damping,0), ...)`
+was also simplified to `pow(freqHz, objDecay, ...)` — `pow(1.0, x)` and
+`pow(damping,0)` are mathematically always `1.0` regardless of the runtime
+`stretch`/`damping` hslider values, but as runtime `pow()` calls (not
+compile-time constants, since the exponent is a live hslider) Faust cannot
+constant-fold them away, so every block was paying two wasted transcendental
+calls per mode-1 evaluation across all 4 voices for a result that could
+never differ from a literal `1.0`. This is a pure efficiency cleanup (the
+DawDreamer regression suite's one non-bit-exact case, a 1.477e-06 max
+absolute difference, is exactly the float32 rounding this removes, ~106dB
+below audible).
+
+## Objekt's higher modes must mute, not alias, once their frequency exceeds Nyquist
+
+`pm.modeFilter(freq,t60,gain) = fi.tf2(...)*gain` computes `a1 =
+-2*r*cos(2*ma.PI*freq/ma.SR)`, which is trigonometrically well-defined (and
+numerically stable, `r<1` always) for `freq` above `ma.SR/2` — but a
+"resonance" above Nyquist has no such thing as its true frequency; the
+biquad instead produces a spurious peak at the alias frequency
+`SR-freq` (or further-folded multiples of it), with no relationship to the
+played note's harmonic series. WITNESSED via the DawDreamer JIT harness
+(broadband-noise-excited voice, FFT of the settled ring, 8 loudest spectral
+peaks): note 120 (fundamental ~8372Hz) has mode4 at
+`8372*4*pow(4,1+stretch)=33488Hz` with `stretch=0` — above the 24000Hz
+Nyquist ceiling — and measured output showed a real spectral peak at
+~14513Hz, matching `2*24000-33488=14512Hz` almost exactly: the classic
+fold-back alias formula, not silence and not the intended 4th mode. This is
+reachable at ordinary knob settings (`stretch=0`, the slider's own default)
+starting around any note whose 4th-mode multiple crosses 24kHz — well
+inside the practical playable range of a keybed-driven instrument, not an
+extreme corner case.
+
+`aliasGuard(f) = min(1.0, max(0.0, (ma.SR*0.5-f)/(ma.SR*0.05)))` multiplies
+each mode's own gain term (computed against that SPECIFIC mode's actual
+frequency, not the voice's fundamental — `mode2`/`mode3`/`mode4` each bind
+their own `f2`/`f3`/`f4` via `with{}` since their real ringing frequency is
+`freqHz*pow(ratio,1+stretch)`, not `freqHz` itself), linearly fading a
+mode's contribution to 0 over the top 5% of the Nyquist range and leaving
+it untouched (multiplier exactly 1.0) everywhere else. Re-measuring the
+same note-120 case with the guard in place: the spurious ~14513Hz alias
+peak is gone; the loudest peaks are the fundamental and the still-valid
+(sub-Nyquist) mode2. Verified as a pure no-op for the whole practically
+playable register below the guard band: every existing regression scenario
+(idle, fresh onset, mid-range notes, the voice-steal fix above) renders
+bit-exact against the pre-guard DSP, since none of their mode frequencies
+approach the last 5% of Nyquist.
+
 ## CC53 formant constants (must match `../looper` exactly)
 
 Deadzone 60-68, range ±1 unshifted / ±3 shifted, formula
