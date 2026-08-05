@@ -120,8 +120,12 @@ public:
             FxBank which = grid.bankFlashWhich();
             sendCoalesced(kApcBtnDubFx,    (flash && which == FxBank::Dub)    ? kLedGreen : kLedOff, write);
             sendCoalesced(kApcBtnGuitarFx, (flash && which == FxBank::Guitar) ? kLedGreen : kLedOff, write);
-            sendCoalesced(kApcBtnLofiFx,   (flash && which == FxBank::LofiFx) ? kLedGreen : kLedOff, write);
         }
+        sendCoalesced(kApcBtnLofiFx,
+            grid.granulatorHeld()    ? kLedGreenBlink :
+            grid.granulatorLatched() ? kLedGreen :
+                                        kLedOff,
+            write);
     }
 
     // Force a full re-send next refresh (looper: invalidateLedCache, called on
