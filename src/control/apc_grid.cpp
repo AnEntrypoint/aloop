@@ -153,7 +153,6 @@ void ApcGrid::publishTransport(LinkBridge* link) {
 void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, LinkBridge* link, AudioThread* audio) {
     if (m_looperRecording[looper]) {
         setLooper(ps, looper, "rec", 0.0f);
-        m_looperRecording[looper] = false;
         m_looperHasContent[looper] = true;
         m_looperPlaying[looper] = true;
         setLooper(ps, looper, "play", 1.0f);
@@ -197,6 +196,12 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             setLooper(ps, looper, "finishtarget", (float)m_masterLenSamples);
             setLooper(ps, looper, "finishreq", 1.0f);
             m_looperFinishReqReleaseAt[looper] = now_ms + 50;
+            // First-establish recording: finishtarget == this take's own raw
+            // writeIdx (lenSamples came directly from telemetry above), so
+            // there is no real extend window -- the DSP has already written
+            // exactly finishtarget samples by this instant. Recording LED can
+            // clear immediately; ground truth and the press instant coincide.
+            m_looperRecording[looper] = false;
         } else {
             long rawSamples;
             if (audio) {
@@ -267,6 +272,18 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             setLooper(ps, looper, "finishtarget", (float)quantized);
             setLooper(ps, looper, "finishreq", 1.0f);
             m_looperFinishReqReleaseAt[looper] = now_ms + 50;
+            // Quantize-UP (extend) case: the DSP's recordingGate keeps
+            // writeIdx advancing PAST this press, ignoring rec's own
+            // release, until writeIdx reaches finishtarget ("wait when
+            // waiting is closer" -- dsp/loop.dsp). The recording-state LED
+            // must reflect that real, still-in-flight capture rather than
+            // clearing on the press instant -- see pollHolds, which resolves
+            // this via real looperWriteIdx telemetry once it catches up.
+            // Quantize-DOWN (backdate) case needs no such wait (writeIdx was
+            // already >= quantized the instant this fired), so this is a
+            // harmless no-op there -- pollHolds' very next tick observes
+            // writeIdx already caught up and clears immediately.
+            m_looperFinishTargetPending[looper] = (float)quantized;
         }
     } else if (!m_looperHasContent[looper]) {
         setLooper(ps, looper, "rec", 1.0f);
@@ -359,9 +376,30 @@ void ApcGrid::onPadRelease(int note, unsigned now_ms, ParamStore& ps, LinkBridge
     }
 }
 
-void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps, LinkBridge* link) {
+void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps, LinkBridge* link, AudioThread* audio) {
     if (m_bankFlashReleaseAt != 0 && now_ms >= m_bankFlashReleaseAt) {
         m_bankFlashReleaseAt = 0;
+    }
+    // Resolve any in-flight finish-extend: the recording LED must track
+    // whether the DSP has ACTUALLY stopped writing (real looperWriteIdx
+    // telemetry reaching finishtarget), not the finish-press instant --
+    // see applyRecPlayCycle's quantize-UP branch, which leaves
+    // m_looperRecording true and m_looperFinishTargetPending set until this
+    // resolves it. Falls back to clearing immediately if no audio pointer
+    // is available (matches every other audio-optional fallback in this file).
+    for (int looper = 0; looper < kLooperCount; looper++) {
+        if (m_looperFinishTargetPending[looper] <= 0.0f) continue;
+        bool reached;
+        if (audio) {
+            auto t = audio->snapshotTelemetry();
+            reached = (double)t.looperWriteIdx[looper] >= (double)m_looperFinishTargetPending[looper];
+        } else {
+            reached = true;
+        }
+        if (reached) {
+            m_looperRecording[looper] = false;
+            m_looperFinishTargetPending[looper] = 0.0f;
+        }
     }
     // Follow the session's transport (Test Plan STARTSTOPSTATE-1). Runs on every
     // control tick so a peer's start lands within one quantum boundary.

@@ -144,7 +144,7 @@ public:
     // Poll for long-holds that must fire without waiting for release (erase
     // trigger at >= kHoldEraseMs, and preset-capture at the same threshold).
     // Call once per control-thread tick (e.g. on every MIDI byte, cheap).
-    void pollHolds(unsigned now_ms, ParamStore& ps, class LinkBridge* link = nullptr);
+    void pollHolds(unsigned now_ms, ParamStore& ps, class LinkBridge* link = nullptr, class AudioThread* audio = nullptr);
 
     // Live pitch: CC1 (mod-wheel, deadzone 59-69) or CC52 (absolute 0-127).
     void onModWheel(uint8_t data2, ParamStore& ps);     // CC1
@@ -316,7 +316,8 @@ private:
     bool m_looperArmedOnPress[kLooperCount] = {}; // suppress the release tap (armed on press)
     bool m_looperPlaying[kLooperCount] = {};      // local shadow: last rec/play state we sent
     bool m_looperHasContent[kLooperCount] = {};   // local shadow: has this looper recorded anything
-    bool m_looperRecording[kLooperCount] = {};    // true from arm-press until the finish-press (../looper: TRACK_STATE_RECORDING)
+    bool m_looperRecording[kLooperCount] = {};    // true from arm-press until the DSP has ACTUALLY stopped writing (looperWriteIdx reaches finishtarget) -- see pollHolds' finish-extend resolution, not just the finish-press instant
+    float m_looperFinishTargetPending[kLooperCount] = {};  // this looper's finishtarget while a finish-extend is still in flight (0 = none pending)
     unsigned m_recordStartMs[kLooperCount] = {};  // wall-clock ms at the ARM press, for computing actual recorded duration at finish
     bool m_looperShiftHeldDuringTake[kLooperCount] = {};
     // Last transport state we published to the Link session, so publishTransport

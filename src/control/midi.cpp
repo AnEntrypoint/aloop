@@ -352,14 +352,14 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
         if (!gotInjectedByte) {
             if (pr == 0) {
                 unsigned n = nowMs();
-                grid.pollHolds(n, ps, link);   // timeout: no MIDI, just poll holds
+                grid.pollHolds(n, ps, link, audio);   // timeout: no MIDI, just poll holds
                 auto t = audio ? audio->snapshotTelemetry() : AudioThread::Telemetry{};
                 leds.refresh(n, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr);
                 continue;
             }
             if (pr < 0) {
                 unsigned n = nowMs();
-                grid.pollHolds(n, ps, link);   // interrupted/error: keep polling holds, retry read
+                grid.pollHolds(n, ps, link, audio);   // interrupted/error: keep polling holds, retry read
                 auto t = audio ? audio->snapshotTelemetry() : AudioThread::Telemetry{};
                 leds.refresh(n, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr);
                 continue;
@@ -386,7 +386,7 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
         unsigned now = nowMs();
         if ((type == 0x80 || type == 0x90) && noteLogCount < 500)
             fprintf(stderr, "[midi] note decoded: st=0x%02x type=0x%02x ch=%d d1=%d d2=%d\n", st, type, channel, d1, d2);
-        grid.pollHolds(now, ps, link);   // also check on every real event, for prompt response
+        grid.pollHolds(now, ps, link, audio);   // also check on every real event, for prompt response
         {
             auto t = audio ? audio->snapshotTelemetry() : AudioThread::Telemetry{};
             leds.refresh(now, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr);   // self-throttled to ~30Hz internally
