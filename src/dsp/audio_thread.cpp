@@ -500,11 +500,30 @@ static void* worker(void*) {
             }
             {
                 static double masterPhaseSamples = 0.0;
+                static int64_t lastLinkPhaseMicroBeats = -1;
                 float masterLen = g_params ? g_params->get("cmd/master_len", 0.0f) : 0.0f;
                 if (masterLen > 0.0f) {
+                    // controlTick() (src/main.cpp) republishes Link's phase
+                    // snapshot at only ~5Hz, but this branch used to re-derive
+                    // masterPhaseSamples from it EVERY block -- re-evaluating
+                    // the SAME cached snapshot for ~150 consecutive blocks
+                    // between control ticks, then hard-jumping the instant a
+                    // fresh snapshot lands (its own real-wall-clock capture
+                    // instant never lines up with the audio thread's
+                    // free-running accumulation). That produced a periodic
+                    // ~5Hz stepped discontinuity in masterPhase/absPos, worst
+                    // exactly when Link's tempo matches the recorded tempo
+                    // (varispeedActive is off then, so absPos drives playback
+                    // directly with no smoothing to mask it). Fix: free-run
+                    // every block like the non-Link branch, and only snap to
+                    // Link's live phase as a drift-correction the ONE block
+                    // where a genuinely NEW snapshot is observed.
                     if (linkDrivingLength && g_link) {
                         LinkSnapshot ls3 = g_link->audioRead();
-                        if (ls3.phaseValid && ls3.quantumMicroBeats > 0) {
+                        bool freshSnapshot = ls3.phaseValid && ls3.quantumMicroBeats > 0 &&
+                                              ls3.beatPhaseMicroBeats != lastLinkPhaseMicroBeats;
+                        if (freshSnapshot) {
+                            lastLinkPhaseMicroBeats = ls3.beatPhaseMicroBeats;
                             double linkPhaseFrac = (double)ls3.beatPhaseMicroBeats / (double)ls3.quantumMicroBeats;
                             if (linkPhaseFrac < 0.0) linkPhaseFrac = 0.0;
                             if (linkPhaseFrac >= 1.0) linkPhaseFrac = 0.0;
@@ -513,12 +532,14 @@ static void* worker(void*) {
                             masterPhaseSamples += (double)N;
                         }
                     } else {
+                        lastLinkPhaseMicroBeats = -1;
                         masterPhaseSamples += (double)N;
                     }
                     masterPhaseSamples = std::fmod(masterPhaseSamples, (double)masterLen);
                     if (masterPhaseSamples < 0.0) masterPhaseSamples += masterLen;
                 } else {
                     masterPhaseSamples = 0.0;
+                    lastLinkPhaseMicroBeats = -1;
                 }
                 if (masterLen > 0.0f) {
                     const double lenD = (double)masterLen;
