@@ -1,0 +1,36 @@
+declare name "ObjektSynth";
+declare author "aloop";
+declare license "GPLv3";
+declare description "4-voice modal-resonator instrument in the spirit of Reason Studios' Objekt -- an independent mode-filter-bank implementation, not a port of Objekt's own proprietary DSP. Architecture (shared exciter driving a bank of resonant modes per voice) ported from DawDreamer's examples/resonaut/resonaut.py (Resonaut, an from-scratch Objekt alternative already in this project's sibling DawDreamer repo), reduced from Resonaut's 3-object/8-mode/8-voice offline design to a single fixed STRING-like 4-mode object at 4 voices to fit aloop's real-time Pi 4 budget. note/gate are signal inputs, not hslider/button UI elements, matching multitranspose.dsp's own convention for momentary per-voice state.";
+
+import("stdfaust.lib");
+
+character = hslider("fx/objekt/character", 0.15, 0.0, 1.0, 0.001);
+tone      = hslider("fx/objekt/tone", 6000.0, 200.0, 18000.0, 1.0);
+objDecay  = hslider("fx/objekt/decay", 1.2, 0.05, 8.0, 0.001);
+damping   = hslider("fx/objekt/damping", 0.85, 0.05, 1.0, 0.001);
+stretch   = hslider("fx/objekt/stretch", 0.0, -0.5, 1.5, 0.001);
+objLevel  = hslider("fx/objekt/level", 0.8, 0.0, 1.5, 0.001);
+
+strikePos = 0.3;
+strikeSharp = 0.7;
+bankPosition = 0.35;
+voiceGain = 0.5;
+
+exciteFor(gate) = impact*(1.0-character) + wash*character
+with {
+    impact = pm.strike(strikePos, strikeSharp, 1.0, gate) : fi.lowpass(2, tone);
+    wash   = no.noise : fi.lowpass(2, tone) : *(en.asr(0.02, 1.0, 0.3, gate));
+};
+
+mode1(freqHz) = pm.modeFilter(freqHz*pow(1.0, 1.0+stretch), objDecay*pow(damping,0), 1.0*abs(sin(ma.PI*bankPosition*1)));
+mode2(freqHz) = pm.modeFilter(freqHz*pow(2.0, 1.0+stretch), objDecay*pow(damping,1), 0.6*abs(sin(ma.PI*bankPosition*2)));
+mode3(freqHz) = pm.modeFilter(freqHz*pow(3.0, 1.0+stretch), objDecay*pow(damping,2), 0.4*abs(sin(ma.PI*bankPosition*3)));
+mode4(freqHz) = pm.modeFilter(freqHz*pow(4.0, 1.0+stretch), objDecay*pow(damping,3), 0.3*abs(sin(ma.PI*bankPosition*4)));
+
+bank(freqHz, exc) = exc <: (mode1(freqHz), mode2(freqHz), mode3(freqHz), mode4(freqHz)) :> _;
+
+voice(note, gate) = bank(ba.midikey2hz(note), exciteFor(gate)) * voiceGain;
+
+process(note0,gate0, note1,gate1, note2,gate2, note3,gate3) =
+    (voice(note0,gate0) + voice(note1,gate1) + voice(note2,gate2) + voice(note3,gate3)) : ma.tanh : *(objLevel);

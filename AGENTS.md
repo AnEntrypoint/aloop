@@ -1372,36 +1372,73 @@ never reaches the ARM/FINISH dispatch — it does not touch
 hold gesture. The sidechain-source designation auto-clears whenever that looper's
 content is wiped (long-hold erase or CLEAR_ALL).
 
-## Objekt-style granulator: tap-latch + hold-to-morph, patch blend
+## LofiFx/granulator button: two dual-mode gestures, tap-latch granulator vs real-hold Objekt-synth
 
 The LofiFx/granulator button (`kApcBtnLofiFx`, note 69) disambiguates tap vs
-hold on RELEASE via `kGranulatorTapMs` (250ms), `ApcGrid::m_granulatorPressAt`
-stamped in `onLofiFxPress`. Both gestures always switch the active bank to
-LofiFx and force `setGranulatorEnabled(true)` for the duration of the physical
-press (so the texture is instantly previewable) — what differs is what
-happens on release:
+hold via `kGranulatorTapMs` (250ms), `ApcGrid::m_granulatorPressAt` stamped in
+`onLofiFxPress`. Every press always switches the active bank to LofiFx and
+force-enables the granulator preview immediately on press (so a tap's
+eventual texture is instantly previewable) — what differs is what happens as
+the press continues:
 
-- **Quick tap (< 250ms)**: flips `m_granulatorLatched`, a state that survives
-  release. This is "pressing enables granulator" — a tap makes the grain
-  engine a persistent, backgrounded part of the sound (playing with whatever
-  patch blend is currently dialed in) exactly like pressing play on a texture,
-  independent of whether the knobs are being touched.
-- **Real hold (>= 250ms)**: on release, the bank reverts to whatever was
-  active before the press and `setGranulatorEnabled` falls back to
-  `m_granulatorLatched` (off unless a prior tap had already latched it on).
-  While held, the 7 physical knobs are "our objekt replacement" — the
-  patch-morph dial surface below — live for redialing the blend in real time.
+- **Quick tap (release before 250ms)**: flips `m_granulatorLatched`, a state
+  that survives release. This is "pressing enables granulator" — a tap makes
+  the grain engine a persistent, backgrounded part of the sound (playing with
+  whatever patch blend is currently dialed in) exactly like pressing play on
+  a texture, independent of whether the knobs are being touched. On release
+  the bank reverts to whatever was active before the press and
+  `setGranulatorEnabled` falls back to `m_granulatorLatched`.
+- **Real hold (still held at 250ms)**: `pollHolds` detects the press crossing
+  `kGranulatorTapMs` while `m_granulatorHeld` is still true, sets
+  `m_objektEngaged = true`, and disables the granulator preview
+  (`setGranulatorEnabled(false)`) — the LofiFx button's second gesture is no
+  longer a granulator-morph dial surface, it SWITCHES the instrument entirely
+  to `effects/home/faust/objekt_synth.dsp`, a 4-voice modal-resonator synth
+  in the spirit of Reason Studios' Objekt (architecture ported from
+  DawDreamer's own `examples/resonaut/resonaut.py`, an independent from-
+  scratch Objekt alternative already living in the sibling DawDreamer repo —
+  see that file's own header for the mode-bank/exciter design it mirrors;
+  Resonaut's 3-object/8-mode/8-voice offline design is reduced to a single
+  fixed STRING-like 4-mode object at 4 voices to fit the Pi 4's real-time
+  budget, verified against DawDreamer's real libfaust JIT before shipping).
+  While engaged: the keybed (`onKeybedNoteOn`/`Off`) drives the 4 Objekt
+  voices (`allocateObjektVoice`/`releaseObjektVoice`, oldest-steal allocator
+  identical in shape to `allocateTransposeVoice`) via `fx/objektvoice{v}/note`
+  and `fx/objektvoice{v}/gate` signal inputs instead of the transpose/Sampler
+  routing, and knob slots 1-6 drive Objekt's own macros
+  (`applyObjektKnob`/`kObjektKnobRanges`: character, tone, decay, damping,
+  stretch, level — Faust zones `fx/objekt/*`) instead of the granulator patch
+  blend below. Releasing the button releases every Objekt voice
+  (`releaseAllObjektVoices`) and reverts the bank; `onClearAll` also releases
+  all Objekt voices (mirroring the existing transpose-voice release there),
+  since a stuck `fx/objektvoice{v}/gate` would be the same class of bug
+  AGENTS.md's "every momentary Faust gate must be explicitly released" entry
+  warns about.
 
-A latch-on + a later hold-and-release is a legitimate combo: the engine stays
-audible (from the latch) while you dial a new blend during the hold, and
-released playback continues with whatever blend you left it on. LED feedback
-on the button itself (`apc_leds.h`): blinking green while physically held (the
-dial surface is live), solid green while latched-on in the background, off
-otherwise — pulled out of the shared dub-fx/guitar-fx bank-select flash block
-since this button now carries persistent state, not just a transient
-selection flash.
+A latch-on (from an earlier tap) plus a later real hold is a legitimate
+combo: the granulator stays audible in the background (from the latch) while
+the hold plays the Objekt synth over it, and once released, playback returns
+to whatever the latch left it on. LED feedback on the button itself
+(`apc_leds.h`): blinking red once Objekt is actually engaged, blinking green
+while still in the pre-threshold granulator-preview window, solid green while
+latched-on in the background, off otherwise — pulled out of the shared
+dub-fx/guitar-fx bank-select flash block since this button now carries
+persistent state, not just a transient selection flash.
 
-Knob slot 0 (`fx2/BITCRUSHAMT`) is unchanged. Slots 1-6 no longer map 1:1 to
+Objekt is wired into the ALWAYS-ON home Faust stack (Core 1, `dsp/aloop.dsp`
+via `effects_runtime.dsp`), the same signal-input convention
+`multitranspose.dsp` uses for its own per-voice note/gate state (see "Faust
+has no runtime branching" / `par()`-replicated-controls entries above) —
+`objektOut` sums into `dry` before `pitchStage`/`harmonize`, so it gets
+exactly the same fx-chain and SHIFT/pitch-lock treatment as Sampler-injected
+audio (`fin`). Like `multitranspose.dsp`'s 6 voices, the 4 Objekt voices are
+computed every block whether or not the button is ever held — this is the
+established, accepted cost model in this codebase (Faust has no in-DSP way to
+skip a stage's cost conditionally), not a regression to fix.
+
+Knob slot 0 (`fx2/BITCRUSHAMT`) is unchanged in both gestures. When Objekt
+is NOT engaged, slots 1-6 map to the granulator patch blend as before; they
+no longer map 1:1 to
 raw grain parameters (grain size/density/scan rate/pitch spray/position
 jitter/reverse probability) — turning six independent raw sliders to their
 extremes simultaneously produced an incoherent, un-musical result. Instead

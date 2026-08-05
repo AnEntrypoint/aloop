@@ -38,6 +38,7 @@ microStage  = component("effects/home/faust/microrepeat.dsp")[ DIV=DIV; MLB=MLB;
 pitchStage  = component("effects/home/faust/pitch.dsp")[ SEMIS=SEMIS; FORMANT=FORMANT; ENGAGED=ENGAGED; ];
 
 harmonize = component("effects/home/faust/multitranspose.dsp");
+objekt    = component("effects/home/faust/objekt_synth.dsp");
 
 // Chain order (REVISED per direct user correction after the first reorder):
 // glitch (microrepeat) -> filter -> delay -> reverb. The user's own words:
@@ -54,12 +55,14 @@ harmonize = component("effects/home/faust/multitranspose.dsp");
 // loopHarmonyWet (harmonize's loop-routed wet bus, passed through
 // unprocessed -- see multitranspose.dsp's own header for why SHIFT-held
 // polyphonic keyplay routes into this bus instead of mainOut).
-process(dry, loopSum, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5) = mainOut, loopHarmonyWet
+process(dry, loopSum, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5, on0,og0, on1,og1, on2,og2, on3,og3) = mainOut, loopHarmonyWet
 with {
     anyVoiceGated = min(1.0, g0+g1+g2+g3+g4+g5);
     dryGate = (1.0 - anyVoiceGated*(1.0-freeXpose)) : si.smoo;
-    harmonyBus     = harmonize(dry, loopSum, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5);
+    objektOut = objekt(on0,og0, on1,og1, on2,og2, on3,og3);
+    dryWithObjekt = dry + objektOut;
+    harmonyBus     = harmonize(dryWithObjekt, loopSum, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5);
     dryWet         = harmonyBus : _,!;
     loopHarmonyWet = harmonyBus : !,_;
-    mainOut = (pitchStage(dry)*dryGate + dryWet) : microStage : filterStage : delayStage : reverbStage;
+    mainOut = (pitchStage(dryWithObjekt)*dryGate + dryWet) : microStage : filterStage : delayStage : reverbStage;
 };

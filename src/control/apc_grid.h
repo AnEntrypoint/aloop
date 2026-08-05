@@ -22,6 +22,7 @@ constexpr int kApcCols = 8;
 constexpr int kLooperCount = 20;
 constexpr int kPresetCount = 10;
 constexpr int kTransposeVoices = 6;   // effects/home/faust/multitranspose.dsp NVOICES -- keep in sync
+constexpr int kObjektVoices = 4;      // effects/home/faust/objekt_synth.dsp NVOICES -- keep in sync
 constexpr unsigned kHoldEraseMs = 1000;   // apcKey25.h APC_HOLD_ERASE_MS
 constexpr int kSampleRate = 48000;        // dsp/loop.dsp's SR -- fixed throughout aloop, no runtime config path yet
 constexpr int kBlockSize  = 64;           // AudioThreadConfig::blockSize -- fixed, AGENTS.md "never add audio-path latency"
@@ -228,6 +229,13 @@ public:
     void onLofiFxRelease(unsigned now_ms, ParamStore& ps, Sampler* sampler);
     bool granulatorHeld() const { return m_granulatorHeld; }
     bool granulatorLatched() const { return m_granulatorLatched; }
+    // True once a genuine hold (>= kGranulatorTapMs, still physically held)
+    // has switched the LofiFx button's second gesture from granulator-preview
+    // over to the objekt_synth.dsp modal-resonator engine -- see pollHolds.
+    // While true: keybed notes drive the 4 Objekt voices instead of the
+    // transpose/Sampler routing, and knob slots 1-6 drive Objekt's macros
+    // (fx/objekt/character etc) instead of the granulator patch blend.
+    bool objektEngaged() const { return m_objektEngaged; }
     // guitar-fx is a dual-gesture button: a quick tap (press+release with NO
     // looper pad pressed in between) selects the guitar bank, exactly like
     // dub-fx/lofi-fx above. HOLDING guitar-fx while pressing a looper pad
@@ -375,6 +383,14 @@ private:
     static constexpr unsigned kGranulatorTapMs = 250;
     FxBank m_bankBeforeGranulatorHold = FxBank::Dub;
     void applyGranulatorMorph(Sampler* sampler);
+
+    bool m_objektEngaged = false;
+    int m_objektVoiceNote[kObjektVoices] = {-1, -1, -1, -1};
+    uint32_t m_objektVoiceOrder[kObjektVoices] = {};
+    uint32_t m_objektVoiceCounter = 0;
+    int allocateObjektVoice(int note);
+    void releaseObjektVoice(int note, ParamStore& ps);
+    void releaseAllObjektVoices(ParamStore& ps);
 
     // Sidechain-pump (guitar-fx hold + looper press): multiple simultaneous
     // sources allowed, persists after guitar-fx release, auto-clears on
