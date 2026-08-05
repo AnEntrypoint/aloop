@@ -40,7 +40,7 @@ void ApcGrid::bindAll(ParamStore& ps) {
         ps.bind(objektVoiceName, 0.0f);
     }
     ps.bind("fx/objekt/engaged", 0.0f);
-    ps.bind("fx/objekt/character", 0.15f);
+    ps.bind("fx/objekt/position", 0.35f);
     ps.bind("fx/objekt/tone", 6000.0f);
     ps.bind("fx/objekt/decay", 1.2f);
     ps.bind("fx/objekt/damping", 0.85f);
@@ -669,19 +669,48 @@ static const GranPatch kGranPatches[kGranPatchCount] = {
     {  14.0f, 150.0f, 90.0f, 300.0f, 4.5f, 0.50f, 1.00f },
 };
 
-struct ObjektKnobRange { const char* zone; float lo; float hi; };
-static const ObjektKnobRange kObjektKnobRanges[kFxKnobCount - 1] = {
-    { "fx/objekt/character", 0.0f, 1.0f },
-    { "fx/objekt/tone",      200.0f, 18000.0f },
-    { "fx/objekt/decay",     0.05f, 8.0f },
-    { "fx/objekt/damping",   0.05f, 1.0f },
-    { "fx/objekt/stretch",   -0.5f, 1.5f },
-    { "fx/objekt/level",     0.0f, 1.5f },
+struct ObjektPatch { float position, decay, damping, stretch; };
+
+constexpr int kObjektPatchCount = 4;
+static const ObjektPatch kObjektPatches[kObjektPatchCount] = {
+    { 0.080f, 0.350f, 0.350f,  0.000f },
+    { 0.650f, 5.500f, 0.940f,  1.050f },
+    { 0.300f, 3.200f, 0.800f,  0.050f },
+    { 0.150f, 3.000f, 0.550f, -0.300f },
 };
-static void applyObjektKnob(int knobIdx, float v01, ParamStore& ps) {
-    if (knobIdx < 1 || knobIdx > kFxKnobCount - 1) return;
-    const ObjektKnobRange& r = kObjektKnobRanges[knobIdx - 1];
+
+struct ObjektDirectKnobRange { const char* zone; float lo; float hi; };
+static const ObjektDirectKnobRange kObjektDirectKnobRanges[kFxKnobCount - 1 - kObjektPatchCount] = {
+    { "fx/objekt/tone",  200.0f, 18000.0f },
+    { "fx/objekt/level", 0.0f, 1.5f },
+};
+static void applyObjektDirectKnob(int knobIdx, float v01, ParamStore& ps) {
+    int i = knobIdx - 1 - kObjektPatchCount;
+    if (i < 0 || i >= kFxKnobCount - 1 - kObjektPatchCount) return;
+    const ObjektDirectKnobRange& r = kObjektDirectKnobRanges[i];
     ps.setByName(r.zone, r.lo + v01 * (r.hi - r.lo));
+}
+
+void ApcGrid::applyObjektPatchMorph(ParamStore& ps) {
+    const float* weight = &m_fxBankValues[(int)FxBank::LofiFx][1];
+    float totalWeight = 0.0f;
+    for (int p = 0; p < kObjektPatchCount; p++) totalWeight += weight[p];
+
+    ObjektPatch blend = kObjektPatches[0];
+    if (totalWeight > 0.0001f) {
+        blend = ObjektPatch{0.0f, 0.0f, 0.0f, 0.0f};
+        for (int p = 0; p < kObjektPatchCount; p++) {
+            float wn = weight[p] / totalWeight;
+            blend.position += wn * kObjektPatches[p].position;
+            blend.decay    += wn * kObjektPatches[p].decay;
+            blend.damping  += wn * kObjektPatches[p].damping;
+            blend.stretch  += wn * kObjektPatches[p].stretch;
+        }
+    }
+    ps.setByName("fx/objekt/position", blend.position);
+    ps.setByName("fx/objekt/decay", blend.decay);
+    ps.setByName("fx/objekt/damping", blend.damping);
+    ps.setByName("fx/objekt/stretch", blend.stretch);
 }
 
 void ApcGrid::applyGranulatorMorph(Sampler* sampler) {
@@ -735,8 +764,12 @@ void ApcGrid::onFxKnobCC(int ccNumber, uint8_t data2, ParamStore& ps, Sampler* s
     float v = (float)data2 / 127.0f;
     m_fxBankValues[(int)m_activeBank][knobIdx] = v;
     if (m_activeBank == FxBank::LofiFx && knobIdx > 0) {
-        if (m_objektEngaged) applyObjektKnob(knobIdx, v, ps);
-        else applyGranulatorMorph(sampler);
+        if (m_objektEngaged) {
+            if (knobIdx <= kObjektPatchCount) applyObjektPatchMorph(ps);
+            else applyObjektDirectKnob(knobIdx, v, ps);
+        } else {
+            applyGranulatorMorph(sampler);
+        }
         return;
     }
     const FxKnobTarget* targets =

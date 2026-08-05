@@ -1,0 +1,4 @@
+__pycache__/
+sweep_results.jsonl
+sweep_stderr.log
+chosen_patches.json
