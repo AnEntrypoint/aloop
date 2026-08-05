@@ -1363,6 +1363,32 @@ a second and re-arming a new recording under what the user believes is still the
 original press. This is a direct mechanism for "recording came out blank".
 `onPadPress` tracks `m_looperHeld` per pad and treats a repeat note-on as a no-op.
 
+**The same retrigger hits `kApcBtnLofiFx`, and this instance is worse: it makes
+the Objekt hold-gesture structurally unreachable, not just occasionally
+mistimed.** `onLofiFxPress` had no analogous guard — every repeat note-on for an
+already-held LofiFx button re-ran unconditionally, stamping
+`m_granulatorPressAt = now_ms` again on each retrigger. `pollHolds`'s engage
+check (`now_ms - m_granulatorPressAt >= kGranulatorTapMs`) and
+`onLofiFxRelease`'s tap-vs-hold classification both measure elapsed time against
+that same continuously-reset timestamp, so on real hardware the elapsed time
+never accumulates past a few tens of ms regardless of how long the button is
+physically held — Objekt's 1000ms threshold can never be crossed, and every
+release reads as a fresh tap (toggling `m_granulatorLatched` on every retrigger
+interval, not just on a genuine quick tap). The same retrigger also re-stamps
+`m_bankBeforeGranulatorHold = m_activeBank` every cycle; once the bank has
+already flipped to `FxBank::LofiFx` from the first press, later retriggers
+capture `LofiFx` itself as "the bank before the hold", so release could leave
+`m_activeBank` stuck on LofiFx instead of reverting. WITNESSED as "pressing the
+granulator button doesn't activate the granulator controls, and holding it
+never engages the Objekt synth" — silent, no error, matching this class of bug
+exactly. Fixed the same way as the grid pads: `onLofiFxPress` now returns
+immediately if `m_granulatorHeld` is already true, so only the true 0→1 edge
+touches `m_granulatorPressAt`/`m_bankBeforeGranulatorHold`. `onDubFxPress`/
+`onGuitarFxPress` don't need the same guard — neither reads a press-start
+timestamp; a stray reset of `m_guitarFxConsumedByLooperPress` on a GuitarFx
+retrigger is a distinct, narrower concern (only matters if a looper press lands
+between two retriggers) and is out of scope here.
+
 ## Guitar-fx held REDIRECTS looper pad presses entirely
 
 While `m_guitarFxHeld` is true, a looper pad press is consumed by
