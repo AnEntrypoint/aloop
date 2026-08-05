@@ -527,6 +527,7 @@ static void* worker(void*) {
             }
             {
                 static double masterPhaseSamples = 0.0;
+                static double standaloneQuantumPhaseSamples = 0.0;
                 static int64_t lastLinkPhaseMicroBeats = -1;
                 float masterLen = g_params ? g_params->get("cmd/master_len", 0.0f) : 0.0f;
                 if (masterLen > 0.0f) {
@@ -549,8 +550,19 @@ static void* worker(void*) {
                     }
                     masterPhaseSamples = std::fmod(masterPhaseSamples, (double)masterLen);
                     if (masterPhaseSamples < 0.0) masterPhaseSamples += masterLen;
+
+                    float recordedBpmForQuantum = g_params ? g_params->get("cmd/recorded_bpm", 0.0f) : 0.0f;
+                    if (recordedBpmForQuantum > 1.0f) {
+                        double quantumSamples = (g_cfg.sampleRate * 60.0 / (double)recordedBpmForQuantum) * 16.0;
+                        standaloneQuantumPhaseSamples += (double)N;
+                        standaloneQuantumPhaseSamples = std::fmod(standaloneQuantumPhaseSamples, quantumSamples);
+                        if (standaloneQuantumPhaseSamples < 0.0) standaloneQuantumPhaseSamples += quantumSamples;
+                    } else {
+                        standaloneQuantumPhaseSamples = masterPhaseSamples;
+                    }
                 } else {
                     masterPhaseSamples = 0.0;
+                    standaloneQuantumPhaseSamples = 0.0;
                     lastLinkPhaseMicroBeats = -1;
                 }
                 if (masterLen > 0.0f) {
@@ -574,7 +586,7 @@ static void* worker(void*) {
                     std::fill(masterPhaseBuf.begin(), masterPhaseBuf.end(), 0.0f);
                 }
                 std::fill(masterLenBuf.begin(), masterLenBuf.end(), masterLen);
-                if (g_link) {
+                if (linkDrivingLength && g_link) {
                     LinkSnapshot lsBeat = g_link->audioRead();
                     if (lsBeat.phaseValid && lsBeat.quantumMicroBeats > 0) {
                         double frac = (double)lsBeat.beatPhaseMicroBeats / (double)lsBeat.quantumMicroBeats;
@@ -588,8 +600,12 @@ static void* worker(void*) {
                         g_telem.gridBeatIndex = -1;
                     }
                 } else if (masterLen > 0.0f) {
-                    double gridStep = (double)masterLen / 16.0;
-                    int idx = (int)(masterPhaseSamples / gridStep);
+                    float recordedBpmForQuantum = g_params ? g_params->get("cmd/recorded_bpm", 0.0f) : 0.0f;
+                    double quantumSamples = recordedBpmForQuantum > 1.0f
+                        ? (g_cfg.sampleRate * 60.0 / (double)recordedBpmForQuantum) * 16.0
+                        : (double)masterLen;
+                    double gridStep = quantumSamples / 16.0;
+                    int idx = (int)(standaloneQuantumPhaseSamples / gridStep);
                     if (idx < 0) idx = 0;
                     if (idx > 15) idx = 15;
                     g_telem.gridBeatIndex = idx;
