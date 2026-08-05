@@ -116,6 +116,7 @@ void Telemetry::publish() {
         "\"glitch_engaged\":%s,"
         "\"usb_recording\":%s,\"usb_rec_overruns\":%llu,"
         "\"audio_peak\":{\"in\":%.4f,\"out\":%.4f},\"eff_speed\":%.4f,"
+        "\"grid_beat_index\":%d,"
         "\"loopers\":{\"rec\":%u,\"play\":%u,\"vol\":%s,\"level\":%s,\"wraplen\":%s,\"readpos\":%s}}",
         t.coreBusyPct[0], t.coreBusyPct[1], t.coreBusyPct[2], t.coreBusyPct[3],
         (unsigned long long)t.xruns,
@@ -126,6 +127,7 @@ void Telemetry::publish() {
         t.glitchEngaged ? "true" : "false",
         t.usbRecording ? "true" : "false", (unsigned long long)t.usbRecOverruns,
         t.inPeak, t.outPeak, t.effSpeed,
+        t.gridBeatIndex,
         recBits, playBits, vols, levels, wraplens, readposes);
 
     // Write the status file for shell/curl inspection.
