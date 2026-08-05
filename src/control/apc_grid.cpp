@@ -39,6 +39,7 @@ void ApcGrid::bindAll(ParamStore& ps) {
         snprintf(objektVoiceName, sizeof objektVoiceName, "fx/objektvoice%d/gate", v);
         ps.bind(objektVoiceName, 0.0f);
     }
+    ps.bind("fx/objekt/engaged", 0.0f);
     ps.bind("fx/objekt/character", 0.15f);
     ps.bind("fx/objekt/tone", 6000.0f);
     ps.bind("fx/objekt/decay", 1.2f);

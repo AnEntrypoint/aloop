@@ -1653,6 +1653,39 @@ playable register below the guard band: every existing regression scenario
 bit-exact against the pre-guard DSP, since none of their mode frequencies
 approach the last 5% of Nyquist.
 
+## `ApcGrid::bindAll` must `ps.bind()` every internal flag a C++ path later `setByName`s
+
+`ParamStore::setByName` only writes into a slot `bind()` already created — it never
+creates one itself (`bind()` is the only path that inserts into the `slot` map).
+`pollHolds`/`onLofiFxRelease` call `ps.setByName("fx/objekt/engaged", ...)` on the
+hold-threshold and release edges, but `fx/objekt/engaged` was never added to the
+`ps.bind("fx/objekt/...")` block in `bindAll` (only `character`/`tone`/`decay`/
+`damping`/`stretch`/`level` were). Those `setByName` calls were therefore silent
+no-ops on every real device: the WITNESSED symptom was "holding the LofiFx button
+past the 1s threshold never produces the Objekt sound" even though
+`m_objektEngaged` flips correctly and the per-voice `fx/objektvoice{v}/note`/`gate`
+slots (which ARE bound) work fine, so notes visibly retune/gate but nothing
+resonator-like is ever audible.
+
+Root cause is downstream of the missing bind, not in `targetToZone` or the DSP:
+`resolvedControls` (the per-block ParamStore→Faust-zone cache in
+`audio_thread.cpp`) is rebuilt by iterating `g_params->forEach(...)`, which only
+visits BOUND names. An unbound target is invisible to that cache regardless of
+`targetToZone` returning a valid zone string for it, so the Faust
+`OBJEKT_ENGAGED = checkbox("fx/objekt/engaged")` in `effects_runtime.dsp` never
+leaves its compiled-in default of 0, `objektEngageGate` stays 0, and
+`preChain`'s crossfade never picks up `objektOut` — permanently silent, no error
+anywhere. This is a different failure shape than the "`targetToZone()` must have a
+case for every control target" entry above (that one is a missing zone-name
+mapping; this one is a missing ParamStore slot for a target `targetToZone` already
+handles correctly via its `fx/objekt/`-prefix passthrough).
+
+Fix: `ps.bind("fx/objekt/engaged", 0.0f)` alongside the other `fx/objekt/*` binds
+in `bindAll`. Any future internal (non-MIDI-mapped) C++ flag that reaches Faust via
+`setByName` needs the same audit — grep `setByName` targets against `bind()` calls
+before trusting a new flag "should just work" because `targetToZone` has a case for
+it.
+
 ## CC53 formant constants (must match `../looper` exactly)
 
 Deadzone 60-68, range ±1 unshifted / ±3 shifted, formula
