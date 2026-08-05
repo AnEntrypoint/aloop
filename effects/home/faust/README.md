@@ -6,7 +6,9 @@ and the dubfx repo). It is vendored here unchanged (ADR-003) and packaged as the
 home-FX LV2 bundle by CI (`.github/workflows/build-lv2.yml`).
 
 - `chain.dsp` — the full chain: pitch → delay → reverb → microrepeat → HP/LP filters.
-- `filters.dsp`, `delay.dsp`, `reverb.dsp`, `microrepeat.dsp`, `mixbus.dsp` — the stages.
+- `filters.dsp`, `delay.dsp`, `reverb.dsp`, `microrepeat.dsp` — the stages. The final
+  mix/hard-clip stage lives natively in `audio_thread.cpp`'s int32 write path, not
+  as a Faust stage.
 - `pitch.dsp` + `pitch_ffi.h` — the live pitch stage. It links the EXACT C++ pitch
   engine via a Faust `ffunction` (ADR-004), so the sound is identical to looper.
 - `soladSnacOctaver.h`, `grainFormant.h` — the vendored pitch engine headers from `../looper/patches/` (the ffunction target, ADR-004), kept flat next to the dsp so faust2lv2 resolves the `#include`s.

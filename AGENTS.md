@@ -2745,3 +2745,138 @@ dedicated post-fx Faust input", "`dsp/effects_runtime.dsp`'s old `fx/bank`
 3-way crossfade...", and "Faust `par()`-replicated UI controls silently
 duplicate per instance" above), so nothing was lost, only moved to where
 this policy says it belongs.
+
+## DawDreamer-driven optimization pass 3: `multitranspose.dsp`'s stdlib `ef.transpose` hides a 65536-sample delay line regardless of the actual window used, plus a dead-code find
+
+Follow-up pass, same DawDreamer (`FaustProcessor`, real Linux `libfaust` JIT,
+`pip install dawdreamer` in-session) plus `faust2bench` methodology this
+file's own "Faust DSP compiler optimization pass"/"DawDreamer-driven
+optimization pass 2" entries already established. Scope: everything added
+since pass 2 (the whole `multitranspose.dsp` feature and its several
+SHIFT/loop-lock follow-ups) had never been benchmarked or memory-audited,
+only correctness-verified: this pass reread every `.dsp` file plus the
+native hot path looking specifically for cost, not just behavior.
+
+**SHIPPED: `multitranspose.dsp` no longer calls `misceffects.lib`'s
+`ef.transpose` -- it defines its own local `xpose` copy of the identical
+algorithm with a 4096-sample delay line, was implicitly 65536.** Reading
+`ef.transpose`'s real definition directly (`/usr/share/faust/misceffects.lib`,
+confirmed against the exact copy DawDreamer itself vendors under
+`dawdreamer/faustlibraries/`) shows `maxDelay = 65536` is a HARDCODED
+CONSTANT inside the library function, completely independent of the `w`
+(window) argument the call site passes -- `windowFor`'s own 20ms cap
+(`maxWindowMs=20.0`, ~960 samples at 48kHz, see this file's own
+`multitranspose.dsp` v2 entry above) only ever bounded the READ offset
+(`d` and `d+w`, both providably `< 2*960 = 1920` samples), never the
+underlying ring-buffer ALLOCATION each of the two `de.fdelay` calls inside
+`transpose` makes. Every one of the 6 polyphonic voices instantiates its
+own `ef.transpose` (2 delay lines each), so the real footprint was
+12 x 65536 x 4 bytes = 3,145,728 bytes (~3.0MB) of RT-thread memory for
+content whose actual live working set never exceeds ~1920 samples per
+tap -- invisible from reading `multitranspose.dsp` itself, since the
+oversized constant lives one level down in a stdlib function nobody had
+occasion to open until this pass specifically went looking for cost, not
+correctness.
+
+Fixed by copying `transpose`'s exact algorithm into a local `xpose`
+function inside `multitranspose.dsp` with `maxDelay` lowered to 4096 --
+chosen as `2 * (0.02 * 96000)` rounded up to the next power of 2, i.e.
+safe with real margin up to double the project's actual fixed 48kHz
+operating rate, not merely enough for today's exact numbers. A real
+DawDreamer A/B (both the raw `ef.transpose(w,x,s)` call and the new local
+`xpose(w,x,s)`, standalone, matching hslider control names by index-vs-name
+sorting since DawDreamer's `FaustProcessor` parameter list is alphabetical
+not declaration-order -- worth remembering for any future harness using
+`set_parameter` by raw index) across a full sweep of window sizes
+64..1920 samples (covering the real 48kHz operating range with 2x headroom)
+crossed with shift amounts -48..+48 semitones, both noise and 220Hz-tone
+test signals, 90000-sample warm-up matching this file's own established
+`delay.dsp` warm-up discipline (`de.fdelay`'s internal recursive state needs
+settling time, not just the top-level `d` recursion) -- **0.0 max abs
+diff, bit-exact, every case** in the real operating range. Deliberately
+also swept out to w=4096 (beyond the chosen margin) to confirm the failure
+mode is understood, not just the safe range: those cases diverge as
+expected (read offset exceeds the smaller buffer), proving the mechanism
+rather than just the safe answer.
+
+The real, committed `multitranspose.dsp` (not a reproduction) was then
+re-run through this file's own full existing test battery from the v2/
+free-transpose/loop-lock entries above -- pitch-lock accuracy across
+110/220/440Hz inputs locked to G4, silence stability (zero output, no
+NaN/Inf), extreme lock targets (MIDI 24 and 108), a 150ms rapid-retrigger
+click-safety stress test, and `free` routing between `dryWet`/`loopWet` --
+all identical to the previously-documented behavior (silence input:
+`max abs=0.0`; extreme targets both finite with real spectral energy at
+the locked frequency; retrigger max sample-to-sample jump 0.072, well
+inside click-safe range; `free=1` settles `dryWet` to `1.25e-05` --
+float-noise-floor silent -- while `loopWet` carries the locked content).
+Full `dsp/aloop.dsp` (all 20 `process()` inputs, both flag sets --
+`build-binary.yml`'s `-vec -fun -dfs -vs 32 -nvi -ct 0` and CMake's real
+target flags) compiles clean with the change.
+
+**Real measured CPU improvement, not just memory** -- `faust2bench`,
+20 runs each, `-bs 64`, x86_64 CI-runner-equivalent host, real shipped
+Faust flags, isolating JUST this change via a `git stash`/rebuild A/B on
+the exact same tree: old (`ef.transpose`, 65536-sample lines) DSP CPU
+mean 12.2201% (stdev 0.330); new (local `xpose`, 4096-sample lines) DSP
+CPU mean 11.9762% (stdev 0.174) -- a real, reproducible **~2.0% relative
+CPU reduction**, plausibly cache-locality-driven (a 16x-smaller ring
+buffer per delay line means the RT thread's actual working set touches
+far less memory per read/write, even though the per-sample arithmetic
+is identical) rather than an instruction-count change. The now-lower
+stdev (0.174 vs 0.330) is itself mildly consistent with less
+cache-contention-driven timing variance, though not something this pass
+treated as load-bearing evidence on its own.
+
+For context (not re-benchmarked exhaustively this pass): pass 2's last
+recorded `dsp/aloop.dsp` baseline was ~8.03% DSP CPU, measured BEFORE
+`multitranspose.dsp` existed at all. Current CPU (~12.0%, post-fix) is
+therefore mostly the real, expected cost of everything shipped since --
+the whole polyphonic pitch-lock engine (`an.pitchTracker` running every
+sample plus 6 always-on `ef.transpose`/`xpose` voices) and the SHIFT/
+loop-lock gating logic -- not a regression to chase. Still open, same as
+every prior entry touching this feature: real Pi 4 aarch64 `core_busy`
+confirmation, no hardware access this session.
+
+**SHIPPED: removed `effects/home/faust/mixbus.dsp`, confirmed dead code.**
+Grepped the entire tree (`.dsp`, `.cpp`, `.yml`, `.sh`, `.md`) for any
+`component("mixbus...`/`import("mixbus...`/bare filename reference --
+the only hit was `effects/home/faust/README.md`'s own stage list, which
+was stale/aspirational (it lists `mixbus.dsp` alongside the stages
+`chain.dsp`'s real `process =` line actually composes, but `chain.dsp`
+never calls it, and neither does `effects_runtime.dsp`/`aloop.dsp`).
+Unlike `chain.dsp` itself (also never imported by the live production
+chain, but genuinely still built by `build-lv2.yml`'s `home-fx-lv2` CI
+job as the packaging-reproducibility check documented in this file's own
+`aloop.lv2` entry above), `mixbus.dsp` has zero consumers anywhere,
+including CI -- a materially different, fully-dead status, not a
+reference file. Before removing, checked whether its documented behavior
+(a final `ival*THRU + oval*LOOP*GATE) * MIX` mix-down then hard-clip to
+`[-1, 32767/32768]`, an "exact port of loopMachine::update final mix") is
+actually still missing from the real production output path -- it is
+not: `audio_thread.cpp`'s real int32 write path (`s32 = v32 > INT32_MAX ?
+INT32_MAX : (v32 < INT32_MIN ? INT32_MIN : v32)`, right before
+`snd_pcm_writei`) already hard-clips the final output, natively, at the
+real S32_LE precision the instrument device actually negotiates (see this
+file's own ALSA-format entry above) -- strictly finer-grained than
+`mixbus.dsp`'s stale s16-domain math, so removing the Faust file drops
+zero real coverage. `effects/home/faust/README.md`'s stage list corrected
+to match reality and note where the final clip genuinely lives.
+
+**Investigated and found not applicable, corrected a premise from pass 1**
+(delay-line threshold flags, revisited because several delay-line-bearing
+files were added since that pass): `flanger.dsp` (`de.fdelay`, `MAXD=4096`)
+and `flutter.dsp` (`de.fdelay`, `MAXD=1024`) both size their own delay
+lines to their real, actually-used range already, by their own authors,
+with reasonable margin -- neither is a repeat of the `ef.transpose` finding
+above, and `-mcd 16`/`-dlt <INT_MAX>` still don't apply for the same
+reason pass 1 already established for `delay.dsp`/`reverb.dsp` (both
+comfortably above the tiny `-mcd` copy-delay threshold, and Faust's
+`-dlt` default already selects the efficient mask-based ring buffer
+unconditionally at these sizes). `an.pitchTracker` (the function driving
+`multitranspose.dsp`'s pitch detection, running every sample) was also
+checked against the same "hidden oversized stdlib buffer" hypothesis that
+found the `ef.transpose` issue -- its real implementation
+(`/usr/share/faust/analyzers.lib`) is a zero-crossing-rate detector built
+from `fi.highpass`/`fi.lowpass` (fixed, small per-order filter state) with
+no table or delay line at all, so no equivalent finding there.

@@ -23,11 +23,20 @@ windowFor(freqHz) = (ma.SR / freqHz)
     : max(64) : min(maxWindowMs * 0.001 * ma.SR)
     : si.smooth(ba.tau2pole(0.05)) : max(64) : int;
 
+xposeMaxDelay = 4096;
+
+xpose(w, x, s, sig) = de.fdelay(xposeMaxDelay,d,sig)*ma.fmin(d/x,1) +
+    de.fdelay(xposeMaxDelay,d+w,sig)*(1-ma.fmin(d/x,1))
+with {
+    i = 1 - pow(2, s/12);
+    d = i : (+ : +(w) : fmod(_,w)) ~ _;
+};
+
 voiceOut(sig, detNote, winSamples, xfSamples, targetNote, gate) = wet
 with {
     shiftAmount = (targetNote - detNote) : si.smooth(glideTau);
     voiceEnv    = en.adsr(0.003, 0.03, 1, 0.05, gate);
-    wet = (sig : ef.transpose(winSamples, xfSamples, shiftAmount)) * voiceEnv * voiceGain;
+    wet = (sig : xpose(winSamples, xfSamples, shiftAmount)) * voiceEnv * voiceGain;
 };
 
 harmonySum(sig, detNote, winSamples, xfSamples, n0,g0, n1,g1, n2,g2, n3,g3, n4,g4, n5,g5) =
