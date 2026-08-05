@@ -195,7 +195,42 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
                 unsigned elapsedMs = now_ms - m_recordStartMs[looper];
                 rawSamples = (long)elapsedMs * kSampleRate / 1000;
             }
-            double log2Ratio = std::log2((double)rawSamples / (double)m_masterLenSamples);
+            // rawSamples is writeIdx's real elapsed sample count -- always
+            // real-time, never varispeed-corrected (see loop.dsp's writeIdx,
+            // a plain +1/sample counter with no effSpeed dependency), and
+            // wrapLen/finishtarget MUST stay in that same real-sample space:
+            // the ring (`rwtable(MAXLEN,...,writeIdx,writeVal,readIdx0)`) is
+            // indexed at write time by real writeIdx, so readIdx0/readIdx1
+            // must land in the identical real-sample space or playback reads
+            // the wrong ring position entirely, not just the wrong speed.
+            //
+            // But m_masterLenSamples was sized in real samples AT THE TIME
+            // THE MASTER WAS RECORDED, and playback applies ONE shared
+            // effSpeed = recordedBpm/currentLinkBpm to every looper's read
+            // position (see AGENTS.md close-tempo phasing / audio_thread.cpp's
+            // linkSpeedRatio) to compensate for Link's CURRENT tempo having
+            // drifted from that original recorded tempo. If Link's tempo has
+            // already changed by the time THIS recording happens, rawSamples
+            // reflects the CURRENT (already-drifted) tempo -- comparing it
+            // directly against m_masterLenSamples (sized at the ORIGINAL
+            // tempo) picks the wrong quantize candidate, and this looper then
+            // also inherits the SAME playback-time effSpeed correction meant
+            // to compensate for a drift that doesn't apply to content already
+            // recorded at the current tempo. Fix: only the QUANTIZE DECISION
+            // (which power-of-2 candidate of m_masterLenSamples to snap to)
+            // is made in original-tempo-equivalent space; the stored
+            // wrapLen/finishtarget stays in real-sample space by converting
+            // the chosen candidate back.
+            double tempoScale = 1.0;
+            if (link) {
+                float recordedBpm = ps.get("cmd/recorded_bpm", 0.0f);
+                double curBpm = link->audioRead().bpm;
+                if (recordedBpm > 1.0f && curBpm > 1.0) {
+                    tempoScale = (double)recordedBpm / curBpm;
+                }
+            }
+            double effectiveSamples = (double)rawSamples * tempoScale;
+            double log2Ratio = std::log2(effectiveSamples / (double)m_masterLenSamples);
             double lowerExp = std::floor(log2Ratio);
             if (lowerExp < -4.0) lowerExp = -4.0;
             double lowerCand = (double)m_masterLenSamples * std::pow(2.0, lowerExp);
@@ -207,13 +242,17 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
                 bestLen = lowerCand;
             } else {
                 double midpoint = std::sqrt(lowerCand * upperCand);
-                bestLen = ((double)rawSamples >= midpoint) ? upperCand : lowerCand;
+                bestLen = (effectiveSamples >= midpoint) ? upperCand : lowerCand;
             }
-            long quantized = (long)(bestLen + 0.5);
+            // bestLen is in original-tempo-equivalent space (derived from
+            // m_masterLenSamples by powers of 2) -- convert back to real
+            // elapsed-sample space (matching writeIdx's own indexing) before
+            // storing as finishtarget/wrapLen.
+            long quantized = (long)(bestLen / tempoScale + 0.5);
             if (quantized < 64) quantized = 64;
             if (quantized > kMaxLoopSamples) quantized = kMaxLoopSamples;
-            fprintf(stderr, "[diag9] QUANT looper=%d rawSamples=%ld lowerCand=%.0f upperCand=%.0f quantized=%ld ratio=%.4f\n",
-                    looper, rawSamples, lowerCand, upperCand, quantized, (double)rawSamples / (double)m_masterLenSamples);
+            fprintf(stderr, "[diag9] QUANT looper=%d rawSamples=%ld effectiveSamples=%.0f lowerCand=%.0f upperCand=%.0f tempoScale=%.5f quantized=%ld ratio=%.4f\n",
+                    looper, rawSamples, effectiveSamples, lowerCand, upperCand, tempoScale, quantized, effectiveSamples / (double)m_masterLenSamples);
             setLooper(ps, looper, "finishtarget", (float)quantized);
             setLooper(ps, looper, "finishreq", 1.0f);
             m_looperFinishReqReleaseAt[looper] = now_ms + 50;
