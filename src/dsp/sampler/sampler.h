@@ -99,15 +99,15 @@ public:
         m_attackMs  = -1.0f;               // sentinel: legacy auto-scaled attack
         m_releaseMs = 1000.0f / 48.0f;     // == old GAIN_STEP (1/48 per sample @48k) in ms
 
-        // Feature 2 defaults: granulator off, pool empty. Params default to
-        // values that would sound reasonable if enabled, but they are inert
-        // until setGranulatorEnabled(true) is called.
         m_granOn         = false;
-        m_grainMs        = 60.0f;    // 60ms grains: small enough for texture, large enough to carry pitch
-        m_grainRateHz    = 20.0f;    // grains/sec spawned per active note (with overlap this yields dense clouds)
-        m_pitchSprayCents= 0.0f;     // no spray by default
-        m_posJitterMs    = 0.0f;     // no jitter by default -> scan is a plain linear read, matching non-granular
-        m_scanRate       = 1.0f;     // 1.0 = advance through buffer at playback rate (like normal read)
+        m_grainMs        = 60.0f;
+        m_grainRateHz    = 20.0f;
+        m_pitchSprayCents= 0.0f;
+        m_posJitterMs    = 0.0f;
+        m_scanRate       = 1.0f;
+        m_reverseProb    = 0.0f;
+        m_envShape       = 0.0f;
+        _recomputeGrainGainComp();
         for (int g = 0; g < MAX_GRAINS; g++) m_grains[g].active = false;
         for (int v = 0; v < VOICES; v++) m_voice[v].grainAccum = 0.0;
     }
@@ -174,71 +174,36 @@ public:
     }
 
     // ---- Feature 2: granulator controls (chromatic + drum) -------------------
-    // Off by default (see ctor) -> zero behavior change until explicitly enabled.
     void setGranulatorEnabled(bool on) { m_granOn = on; }
     bool granulatorEnabled() const     { return m_granOn; }
 
-    // Grain size in ms. Lower bound avoids a near-zero-length grain (div-by-zero
-    // in the envelope phase increment); upper bound is a sanity cap, not a hard
-    // DSP limit (a very long "grain" is really just an unwindowed segment).
-    void setGrainSizeMs(float ms)
+    void setGrainPatch(float grainMs, float grainRateHz, float pitchSprayCents,
+                        float posJitterMs, float scanRate, float reverseProb,
+                        float envShape)
     {
-        if (ms < 5.0f) ms = 5.0f;
-        if (ms > 500.0f) ms = 500.0f;
-        m_grainMs = ms;
-    }
-    // Grain spawn rate in grains/sec (per sounding note). At 1/grainMs this is
-    // "back to back, no overlap"; higher values overlap grains for a denser,
-    // smoother texture; lower values leave audible gaps (rhythmic granular).
-    void setGrainDensityHz(float hz)
-    {
-        if (hz < 0.5f) hz = 0.5f;
-        if (hz > 200.0f) hz = 200.0f;
-        m_grainRateHz = hz;
-    }
-    // Per-grain random playback-rate spray, in cents (+/-), applied on top of
-    // the note's own pitch ratio. 0 = every grain plays at exactly the note's
-    // rate (matches non-granular pitch exactly at spray=0).
-    void setPitchSprayCents(float cents)
-    {
-        if (cents < 0.0f) cents = 0.0f;
-        if (cents > 1200.0f) cents = 1200.0f;
-        m_pitchSprayCents = cents;
-    }
-    // Random position jitter applied at each grain's spawn, in ms (+/-) around
-    // the current scan position. 0 = grains start exactly on the advancing scan
-    // pointer (fully deterministic read position, like the non-granular voice).
-    void setPositionJitterMs(float ms)
-    {
-        if (ms < 0.0f) ms = 0.0f;
-        if (ms > 1000.0f) ms = 1000.0f;
-        m_posJitterMs = ms;
-    }
-    // Scan-rate multiplier: how fast the underlying read position advances
-    // through the buffer relative to the note's natural playback rate. 1.0 =
-    // scans through the buffer at the same rate a normal voice would consume
-    // it (grain cloud tracks the same material a plain read would, just
-    // granulated); 0 = frozen scan (grains keep re-reading around one spot,
-    // classic "freeze" effect); >1 = scrubs through the buffer faster than
-    // real-time playback (time-compression texture).
-    void setScanRate(float rate)
-    {
-        if (rate < 0.0f) rate = 0.0f;
-        if (rate > 8.0f) rate = 8.0f;
-        m_scanRate = rate;
-    }
-    // Per-grain probability [0,1] of spawning in REVERSE (negative playback
-    // rate, grain plays tail-to-head instead of head-to-tail). 0 = every
-    // grain plays forward (matches the plain-read voice's direction exactly).
-    // A reversed grain still spawns/decays with the same raised-cosine
-    // window and lifespan as a forward one, so reversal is purely a read-
-    // direction flip -- it never changes grain timing/density, keeping this
-    // control orthogonal to grain size/rate/scan.
-    void setReverseProbability(float p)
-    {
-        if (p < 0.0f) p = 0.0f;
-        if (p > 1.0f) p = 1.0f;
-        m_reverseProb = p;
+        if (grainMs < 5.0f) grainMs = 5.0f;
+        if (grainMs > 500.0f) grainMs = 500.0f;
+        if (grainRateHz < 0.5f) grainRateHz = 0.5f;
+        if (grainRateHz > 200.0f) grainRateHz = 200.0f;
+        if (pitchSprayCents < 0.0f) pitchSprayCents = 0.0f;
+        if (pitchSprayCents > 1200.0f) pitchSprayCents = 1200.0f;
+        if (posJitterMs < 0.0f) posJitterMs = 0.0f;
+        if (posJitterMs > 1000.0f) posJitterMs = 1000.0f;
+        if (scanRate < 0.0f) scanRate = 0.0f;
+        if (scanRate > 8.0f) scanRate = 8.0f;
+        if (reverseProb < 0.0f) reverseProb = 0.0f;
+        if (reverseProb > 1.0f) reverseProb = 1.0f;
+        if (envShape < 0.0f) envShape = 0.0f;
+        if (envShape > 1.0f) envShape = 1.0f;
+
+        m_grainMs = grainMs;
+        m_grainRateHz = grainRateHz;
+        m_pitchSprayCents = pitchSprayCents;
+        m_posJitterMs = posJitterMs;
+        m_scanRate = scanRate;
+        m_reverseProb = reverseProb;
+        m_envShape = envShape;
+        _recomputeGrainGainComp();
     }
 
     // ---- Consumer side (audio thread) ---------------------------------------
@@ -349,6 +314,7 @@ private:
         double rate;        // this grain's own playback rate (note rate * random pitch-spray factor)
         int    lifeSamples; // total grain length in samples (fixed at spawn from m_grainMs)
         int    lifePos;     // samples elapsed since spawn (0..lifeSamples)
+        float  envShape;    // 0 = round raised-cosine window, 1 = percussive fast-attack/decay window
     };
 
     static short _clip16(int v)
@@ -432,6 +398,7 @@ private:
         gr.lifeSamples = (int)((m_grainMs * 0.001f) * (float)SR);
         if (gr.lifeSamples < 2) gr.lifeSamples = 2;   // avoid degenerate 0/1-sample "grain"
         gr.lifePos = 0;
+        gr.envShape = m_envShape;
     }
 
     // Render one granular voice's grain cloud into inout for n samples, and
@@ -483,14 +450,17 @@ private:
 
                 float sm = _readInterp(gr.M, gr.len, gr.pos);
 
-                // Raised-cosine (Hann) window over the grain's lifetime: 0 at
-                // both ends, 1 at the midpoint -> click-free onset/offset for
-                // every grain regardless of overlap, matching the file's
-                // existing "click-free" invariant without needing a dedicated
-                // fade table (cosf cost here is fine: MAX_GRAINS<=48 per block,
-                // not per sample-count-of-the-whole-buffer).
                 float phase = (float)gr.lifePos / (float)gr.lifeSamples;
-                float win = 0.5f * (1.0f - cosf(2.0f * 3.14159265f * phase));
+                float hannWin = 0.5f * (1.0f - cosf(2.0f * 3.14159265f * phase));
+                float percAttack = 0.12f;
+                float percWin;
+                if (phase < percAttack) {
+                    percWin = phase / percAttack;
+                } else {
+                    float t = (phase - percAttack) / (1.0f - percAttack);
+                    percWin = (1.0f - t) * (1.0f - t);
+                }
+                float win = hannWin + (percWin - hannWin) * gr.envShape;
 
                 mixed += sm * win;
 
@@ -499,7 +469,7 @@ private:
                 if (gr.lifePos >= gr.lifeSamples || gr.pos < 0.0 || gr.pos >= (double)(gr.len - 1)) gr.active = false;
             }
 
-            inout[i] += (int)(mixed * vo.gain);
+            inout[i] += (int)(mixed * vo.gain * m_grainGainComp);
 
             if (vo.gain <= 0.0f && vo.target == 0.0f) {
                 // Voice released and faded: kill any still-active grains it
@@ -749,6 +719,13 @@ private:
 
     // Feature 2: granulator pool + runtime params. Pool is fixed-size and
     // constructed once (see ctor) — no allocation on the audio path.
+    void _recomputeGrainGainComp()
+    {
+        float overlap = (m_grainMs * 0.001f) * m_grainRateHz;
+        if (overlap < 1.0f) overlap = 1.0f;
+        m_grainGainComp = 1.0f / sqrtf(overlap);
+    }
+
     Grain    m_grains[MAX_GRAINS];
     bool     m_granOn;
     float    m_grainMs;
@@ -757,6 +734,8 @@ private:
     float    m_posJitterMs;
     float    m_scanRate;
     float    m_reverseProb = 0.0f;
+    float    m_envShape = 0.0f;
+    float    m_grainGainComp = 1.0f;
     uint32_t m_rngState = 2463534242u;   // xorshift32 seed (any nonzero value works; fixed for reproducibility)
 };
 

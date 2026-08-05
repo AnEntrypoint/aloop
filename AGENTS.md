@@ -1372,18 +1372,34 @@ never reaches the ARM/FINISH dispatch — it does not touch
 hold gesture. The sidechain-source designation auto-clears whenever that looper's
 content is wiped (long-hold erase or CLEAR_ALL).
 
-## Objekt-style granulator: hold-to-engage + patch morph
+## Objekt-style granulator: tap-latch + hold-to-morph, patch blend
 
-The LofiFx bank (`kApcBtnLofiFx`, note 69) is a momentary hold gesture, not a
-tap-select bank button like dub-fx/guitar-fx. `onLofiFxPress` immediately
-switches the active bank to LofiFx and calls `setGranulatorEnabled(true)`;
-`onLofiFxRelease` reverts the active bank to whatever it was before the press
-and calls `setGranulatorEnabled(false)`. This replaces an earlier SHIFT+tap
-permanent toggle — the granular texture is now present only while the
-performer physically holds the button, matching how a real Objekt-style
-groovebox is played (press-and-hold a gesture, release to drop back to plain
-sample playback), and keeps the 7 physical knobs pointed at the granulator's
-own controls only for the duration of that hold.
+The LofiFx/granulator button (`kApcBtnLofiFx`, note 69) disambiguates tap vs
+hold on RELEASE via `kGranulatorTapMs` (250ms), `ApcGrid::m_granulatorPressAt`
+stamped in `onLofiFxPress`. Both gestures always switch the active bank to
+LofiFx and force `setGranulatorEnabled(true)` for the duration of the physical
+press (so the texture is instantly previewable) — what differs is what
+happens on release:
+
+- **Quick tap (< 250ms)**: flips `m_granulatorLatched`, a state that survives
+  release. This is "pressing enables granulator" — a tap makes the grain
+  engine a persistent, backgrounded part of the sound (playing with whatever
+  patch blend is currently dialed in) exactly like pressing play on a texture,
+  independent of whether the knobs are being touched.
+- **Real hold (>= 250ms)**: on release, the bank reverts to whatever was
+  active before the press and `setGranulatorEnabled` falls back to
+  `m_granulatorLatched` (off unless a prior tap had already latched it on).
+  While held, the 7 physical knobs are "our objekt replacement" — the
+  patch-morph dial surface below — live for redialing the blend in real time.
+
+A latch-on + a later hold-and-release is a legitimate combo: the engine stays
+audible (from the latch) while you dial a new blend during the hold, and
+released playback continues with whatever blend you left it on. LED feedback
+on the button itself (`apc_leds.h`): blinking green while physically held (the
+dial surface is live), solid green while latched-on in the background, off
+otherwise — pulled out of the shared dub-fx/guitar-fx bank-select flash block
+since this button now carries persistent state, not just a transient
+selection flash.
 
 Knob slot 0 (`fx2/BITCRUSHAMT`) is unchanged. Slots 1-6 no longer map 1:1 to
 raw grain parameters (grain size/density/scan rate/pitch spray/position
@@ -1391,16 +1407,47 @@ jitter/reverse probability) — turning six independent raw sliders to their
 extremes simultaneously produced an incoherent, un-musical result. Instead
 each slot is the BLEND WEIGHT of one of 6 fixed named patches
 (`kGranPatches` in `apc_grid.cpp`: Glass, Cloud, Freeze, Chop, Tape,
-Shatter — each a full point in grain-size/density/spray/jitter/scan/reverse
-space representing a distinct musical character). `applyGranulatorMorph`
+Shatter — each a full point in grain-size/density/spray/jitter/scan/reverse/
+envShape space representing a distinct musical character). `applyGranulatorMorph`
 computes a weighted average across all 6 patches (weights normalized by
 their sum, a convex combination) and pushes the single resulting blended
-point into the Sampler's existing 6 setters. All weights at 0 falls back to
-patch 0 (Glass, closest to a plain/transparent read) rather than dividing by
-zero. This means turning up two patch dials together always yields a
-coherent midpoint texture instead of two raw parameters fighting each other,
-and dialing every patch to max still yields a bounded, sane blend (never the
-sum of six maxed-out raw parameters at once).
+point into `Sampler::setGrainPatch` (one atomic call replacing the old six
+independent setters — the previous per-setter design let a caller apply a
+partial/inconsistent blend mid-update; the new one clamps and recomputes
+derived state exactly once per morph). All weights at 0 falls back to patch 0
+(Glass, closest to a plain/transparent read) rather than dividing by zero.
+This means turning up two patch dials together always yields a coherent
+midpoint texture instead of two raw parameters fighting each other, and
+dialing every patch to max still yields a bounded, sane blend (never the sum
+of six maxed-out raw parameters at once).
+
+**`envShape`** (0..1, the 7th per-patch dimension, baked into each named
+patch rather than exposed as its own knob — no free knob slot exists) blends
+each grain's amplitude window between a round, symmetric raised-cosine (0,
+pad-like/ambient) and a fast-attack/exponential-decay shape (1, plucky/
+percussive/glitchy). Glass/Freeze sit at 0 (smooth, sustained textures), Chop/
+Shatter sit near 1 (rhythmic, percussive chopping), Cloud/Tape sit in between.
+Computed per-grain at spawn (`Grain::envShape`, frozen from `Sampler::m_envShape`
+so an in-flight grain never changes shape mid-life even if the dial moves),
+blended in `_renderGranularVoice` — cheap (one extra branch + lerp per grain
+per sample, MAX_GRAINS<=48 per block, same cost class as the existing window
+computation).
+
+**Grain density gain compensation** (`Sampler::m_grainGainComp`,
+`_recomputeGrainGainComp`): different patches spawn wildly different average
+grain overlap (Glass: ~200ms grains at 8Hz, overlap ~1.6; Shatter: ~14ms
+grains at 150Hz, overlap ~2.1, but Chop's short/sparse grains sit under 1)
+and, uncompensated, the summed grain-window amplitude scales with overlap —
+so morphing between patches used to also mean morphing LOUDNESS, unrelated to
+the patch's actual musical intent. `1/sqrt(max(1, grainMs*0.001*grainRateHz))`
+is recomputed once whenever `setGrainPatch` changes the blend (a STATIC
+function of the density/size dial position, not of live active-grain or
+active-voice COUNT) and applied as a flat multiplier at mix time in
+`_renderGranularVoice`. This is deliberately NOT the "dynamic
+`1/sqrt(activeVoices)`" anti-pattern `multitranspose.dsp` warns against (that
+one pumps because it renormalizes against a count that changes on every
+note-on/off mid-sustain) — this compensation only changes when the performer
+turns a knob, so it never pumps during a held note.
 
 Real MIDI velocity (previously hardcoded to 127 in `onKeybedNoteOn`, the real
 `d2` byte discarded at the `midi.cpp` call site) now reaches

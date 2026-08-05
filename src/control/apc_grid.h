@@ -221,13 +221,13 @@ public:
     // nothing left to re-push on a bank switch. `now_ms` starts the brief LED
     // flash window (see bankFlashActive/pollHolds).
     void onDubFxPress(unsigned now_ms, ParamStore& ps);
-    // The granulator button: a momentary hold-to-engage gesture (see AGENTS.md's
-    // "Objekt-style granulator" entry), not a tap-select like dub-fx/guitar-fx.
-    // Press switches the active bank to LofiFx and engages the granulator;
-    // release reverts both. Both are null-tolerant like onKeybedNoteOn.
+    // The granulator/objekt button (see AGENTS.md's "Objekt-style granulator"
+    // entry): tap vs hold, disambiguated on release by kGranulatorTapMs. Both
+    // are null-tolerant like onKeybedNoteOn.
     void onLofiFxPress(unsigned now_ms, ParamStore& ps, Sampler* sampler);
-    void onLofiFxRelease(ParamStore& ps, Sampler* sampler);
+    void onLofiFxRelease(unsigned now_ms, ParamStore& ps, Sampler* sampler);
     bool granulatorHeld() const { return m_granulatorHeld; }
+    bool granulatorLatched() const { return m_granulatorLatched; }
     // guitar-fx is a dual-gesture button: a quick tap (press+release with NO
     // looper pad pressed in between) selects the guitar bank, exactly like
     // dub-fx/lofi-fx above. HOLDING guitar-fx while pressing a looper pad
@@ -370,6 +370,9 @@ private:
     static constexpr unsigned kBankFlashMs = 150;   // brief, per the confirmed "flash only during selection" scope
 
     bool m_granulatorHeld = false;
+    bool m_granulatorLatched = false;
+    unsigned m_granulatorPressAt = 0;
+    static constexpr unsigned kGranulatorTapMs = 250;
     FxBank m_bankBeforeGranulatorHold = FxBank::Dub;
     void applyGranulatorMorph(Sampler* sampler);
 
