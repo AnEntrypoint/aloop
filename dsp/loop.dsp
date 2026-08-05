@@ -265,6 +265,23 @@ with {
     armPending = armPendingStep ~ _;
     armPendingPrev = armPending : mem;
     armEdge = ba.if(masterLen < 0.5, armPulse, armPendingPrev & gridTickCrossed);
+    // BACKDATE/FORWARDDATE TO NEAREST GRID (user, this turn): "our looper is
+    // requiring too much accuracy from our users, it has to backdate and
+    // forward date to the most logical interval according to the length of
+    // the loop" -- applies uniformly at every loop size, not just full
+    // phrases. armEdge already quantizes the recording's START to the
+    // nearest 1/16-masterLen grid tick, but that tick is still an arbitrary
+    // offset relative to the length the take TURNS OUT to have -- a take
+    // that lands close to exactly one wrapLen (or 1/2, 1/4, 2x, ...) should
+    // have its START reinterpreted as sitting exactly on the nearest
+    // multiple of ITS OWN length from the true phrase origin (masterPhase
+    // wrapping through 0), not wherever the raw 1/16 grid tick happened to
+    // fall. This can only be corrected at FINISH (wrapLen isn't known until
+    // then), so armMasterPhase latches masterPhase's raw value at the exact
+    // arm instant for finishEdge's own recordStartPhaseOffset correction
+    // (below) to reference.
+    armMasterPhaseStep(prev) = ba.if(armEdge, masterPhase, prev);
+    armMasterPhase = armMasterPhaseStep ~ _;
     // finishRequested: latches the instant a finish is PULSED (finishReqN,
     // pushed by apc_grid.cpp the same block as the finish press, alongside
     // finishTargetN), stays true until the NEXT armEdge. Its own recursion
@@ -465,9 +482,34 @@ with {
     // handled by armEdge's own gridTick gating (recording can only ever
     // START on a 1/16-grid tick), so the READ anchor needs no separate
     // grid-snapping of its own on top of that.
-    recordStartPhaseOffsetStep(prev) = ba.if(finishEdge, masterPhase - latencyBiasN, prev);
-    recordStartPhaseOffset = recordStartPhaseOffsetStep ~ _;
     wrapAbs(p, len) = p - floor(p / float(len)) * float(len);
+    // BACKDATE/FORWARDDATE TO NEAREST GRID, continued from armMasterPhase's
+    // own comment above: at finishEdge, wrapLen (this take's real recorded
+    // length, already latched above from writeIdxForLatch) is known, so we
+    // can now ask "what multiple of wrapLen was armMasterPhase closest to?"
+    // armGridSnap rounds armMasterPhase to the nearest wrapLen-multiple from
+    // the phrase origin (masterPhase==0) -- e.g. a wrapLen==masterLen/4 take
+    // armed 2 grid-ticks (1/16 each) after the nearest true 1/4-phrase
+    // boundary gets treated as if it had armed exactly ON that boundary.
+    // armPhaseBias is the correction this implies (positive = armed slightly
+    // AFTER the nearest snapped boundary, so the read anchor must advance
+    // further into the ring at finishEdge to compensate, exactly the same
+    // sign convention latencyBiasN already uses); it is ADDED into the same
+    // latencyBiasN-style anchor shift, never replacing the existing
+    // verbatim-content anchor -- this
+    // shifts WHEN in phrase-space this loop's own repeat-cycle-0 boundary
+    // sits (inter-looper alignment), it does not reorder or re-anchor the
+    // ring's own content (absPos==0 still lands on the true first recorded
+    // sample once the shift is applied, exactly preserving "plays back
+    // verbatim" -- see the REJECTED prior grid-backdate attempt above, which
+    // broke that property by snapping unconditionally with no length
+    // awareness; this is length-aware and only ever nudges by a bounded
+    // sub-wrapLen amount).
+    armGridSnap = ba.if(wrapLen < 0.5, armMasterPhase,
+                    floor(armMasterPhase / float(wrapLen) + 0.5) * float(wrapLen));
+    armPhaseBias = armMasterPhase - armGridSnap;
+    recordStartPhaseOffsetStep(prev) = ba.if(finishEdge, masterPhase - latencyBiasN - armPhaseBias, prev);
+    recordStartPhaseOffset = recordStartPhaseOffsetStep ~ _;
     // MULTI-PHRASE PLAYBACK (WITNESSED live, real hardware: "record long,
     // play back short" / "maxing out at 4 beats regardless of hold
     // duration" -- confirmed via diag9 telemetry that recording/
