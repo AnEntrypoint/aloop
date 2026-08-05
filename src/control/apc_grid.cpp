@@ -32,6 +32,19 @@ void ApcGrid::bindAll(ParamStore& ps) {
         snprintf(xposeName, sizeof xposeName, "fx/xpose%d/gate", v);
         ps.bind(xposeName, 0.0f);
     }
+    char objektVoiceName[28];
+    for (int v = 0; v < kObjektVoices; v++) {
+        snprintf(objektVoiceName, sizeof objektVoiceName, "fx/objektvoice%d/note", v);
+        ps.bind(objektVoiceName, 0.0f);
+        snprintf(objektVoiceName, sizeof objektVoiceName, "fx/objektvoice%d/gate", v);
+        ps.bind(objektVoiceName, 0.0f);
+    }
+    ps.bind("fx/objekt/character", 0.15f);
+    ps.bind("fx/objekt/tone", 6000.0f);
+    ps.bind("fx/objekt/decay", 1.2f);
+    ps.bind("fx/objekt/damping", 0.85f);
+    ps.bind("fx/objekt/stretch", 0.0f);
+    ps.bind("fx/objekt/level", 0.8f);
     ps.bind("fx/microrepeat_div");
     ps.bind("fx/monitorfold");
     ps.bind("fx/formant");
@@ -396,6 +409,10 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps, LinkBridge* link, Audio
     if (m_bankFlashReleaseAt != 0 && now_ms >= m_bankFlashReleaseAt) {
         m_bankFlashReleaseAt = 0;
     }
+    if (m_granulatorHeld && !m_objektEngaged && now_ms - m_granulatorPressAt >= kGranulatorTapMs) {
+        m_objektEngaged = true;
+        if (audio && audio->sampler()) audio->sampler()->setGranulatorEnabled(false);
+    }
     // Resolve any in-flight finish-extend: the recording LED must track
     // whether the DSP has ACTUALLY stopped writing (real looperWriteIdx
     // telemetry reaching finishtarget), not the finish-press instant --
@@ -574,6 +591,7 @@ void ApcGrid::onClearAll(bool held, ParamStore& ps, LinkBridge* link) {
         snprintf(gateName, sizeof gateName, "fx/xpose%d/gate", v);
         ps.setByName(gateName, 0.0f);
     }
+    releaseAllObjektVoices(ps);
     publishTransport(link);
 }
 int ApcGrid::allocateTransposeVoice(int note) {
@@ -602,7 +620,50 @@ void ApcGrid::releaseTransposeVoice(int note, ParamStore& ps) {
         return;
     }
 }
+int ApcGrid::allocateObjektVoice(int note) {
+    for (int v = 0; v < kObjektVoices; v++)
+        if (m_objektVoiceNote[v] == note) return v;
+    for (int v = 0; v < kObjektVoices; v++) {
+        if (m_objektVoiceNote[v] >= 0) continue;
+        m_objektVoiceNote[v] = note;
+        m_objektVoiceOrder[v] = ++m_objektVoiceCounter;
+        return v;
+    }
+    int oldest = 0;
+    for (int v = 1; v < kObjektVoices; v++)
+        if (m_objektVoiceOrder[v] < m_objektVoiceOrder[oldest]) oldest = v;
+    m_objektVoiceNote[oldest] = note;
+    m_objektVoiceOrder[oldest] = ++m_objektVoiceCounter;
+    return oldest;
+}
+void ApcGrid::releaseObjektVoice(int note, ParamStore& ps) {
+    for (int v = 0; v < kObjektVoices; v++) {
+        if (m_objektVoiceNote[v] != note) continue;
+        m_objektVoiceNote[v] = -1;
+        char gateName[28];
+        snprintf(gateName, sizeof gateName, "fx/objektvoice%d/gate", v);
+        ps.setByName(gateName, 0.0f);
+        return;
+    }
+}
+void ApcGrid::releaseAllObjektVoices(ParamStore& ps) {
+    char gateName[28];
+    for (int v = 0; v < kObjektVoices; v++) {
+        m_objektVoiceNote[v] = -1;
+        snprintf(gateName, sizeof gateName, "fx/objektvoice%d/gate", v);
+        ps.setByName(gateName, 0.0f);
+    }
+}
 void ApcGrid::onKeybedNoteOn(int note, int vel, ParamStore& ps, Sampler* sampler) {
+    if (m_objektEngaged) {
+        int v = allocateObjektVoice(note);
+        char noteName[28], gateName[28];
+        snprintf(noteName, sizeof noteName, "fx/objektvoice%d/note", v);
+        snprintf(gateName, sizeof gateName, "fx/objektvoice%d/gate", v);
+        ps.setByName(noteName, (float)note);
+        ps.setByName(gateName, 1.0f);
+        return;
+    }
     if (sampler) {
         int keyIdx = Sampler::keyIndex(note);
         if (m_drumRecordMode) {
@@ -623,6 +684,10 @@ void ApcGrid::onKeybedNoteOn(int note, int vel, ParamStore& ps, Sampler* sampler
     ps.setByName(gateName, 1.0f);
 }
 void ApcGrid::onKeybedNoteOff(int note, ParamStore& ps, Sampler* sampler) {
+    if (m_objektEngaged) {
+        releaseObjektVoice(note, ps);
+        return;
+    }
     if (m_drumRecordMode) {
         if (sampler) {
             int keyIdx = Sampler::keyIndex(note);
@@ -722,6 +787,21 @@ static const GranPatch kGranPatches[kGranPatchCount] = {
     {  14.0f, 150.0f, 90.0f, 300.0f, 4.5f, 0.50f, 1.00f },
 };
 
+struct ObjektKnobRange { const char* zone; float lo; float hi; };
+static const ObjektKnobRange kObjektKnobRanges[kFxKnobCount - 1] = {
+    { "fx/objekt/character", 0.0f, 1.0f },
+    { "fx/objekt/tone",      200.0f, 18000.0f },
+    { "fx/objekt/decay",     0.05f, 8.0f },
+    { "fx/objekt/damping",   0.05f, 1.0f },
+    { "fx/objekt/stretch",   -0.5f, 1.5f },
+    { "fx/objekt/level",     0.0f, 1.5f },
+};
+static void applyObjektKnob(int knobIdx, float v01, ParamStore& ps) {
+    if (knobIdx < 1 || knobIdx > kFxKnobCount - 1) return;
+    const ObjektKnobRange& r = kObjektKnobRanges[knobIdx - 1];
+    ps.setByName(r.zone, r.lo + v01 * (r.hi - r.lo));
+}
+
 void ApcGrid::applyGranulatorMorph(Sampler* sampler) {
     if (!sampler) return;
     const float* weight = &m_fxBankValues[(int)FxBank::LofiFx][1];
@@ -773,7 +853,8 @@ void ApcGrid::onFxKnobCC(int ccNumber, uint8_t data2, ParamStore& ps, Sampler* s
     float v = (float)data2 / 127.0f;
     m_fxBankValues[(int)m_activeBank][knobIdx] = v;
     if (m_activeBank == FxBank::LofiFx && knobIdx > 0) {
-        applyGranulatorMorph(sampler);
+        if (m_objektEngaged) applyObjektKnob(knobIdx, v, ps);
+        else applyGranulatorMorph(sampler);
         return;
     }
     const FxKnobTarget* targets =
@@ -799,10 +880,16 @@ void ApcGrid::onLofiFxPress(unsigned now_ms, ParamStore&, Sampler* sampler) {
     m_bankFlashReleaseAt = nonZeroDeadline(now_ms, kBankFlashMs);
     m_granulatorHeld = true;
     m_granulatorPressAt = now_ms;
+    m_objektEngaged = false;
     if (sampler) sampler->setGranulatorEnabled(true);
 }
-void ApcGrid::onLofiFxRelease(unsigned now_ms, ParamStore&, Sampler* sampler) {
-    if (now_ms - m_granulatorPressAt < kGranulatorTapMs) m_granulatorLatched = !m_granulatorLatched;
+void ApcGrid::onLofiFxRelease(unsigned now_ms, ParamStore& ps, Sampler* sampler) {
+    if (m_objektEngaged) {
+        releaseAllObjektVoices(ps);
+        m_objektEngaged = false;
+    } else if (now_ms - m_granulatorPressAt < kGranulatorTapMs) {
+        m_granulatorLatched = !m_granulatorLatched;
+    }
     m_granulatorHeld = false;
     m_activeBank = m_bankBeforeGranulatorHold;
     if (sampler) sampler->setGranulatorEnabled(m_granulatorLatched);

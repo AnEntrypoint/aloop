@@ -34,6 +34,10 @@ enum ApcLedVel : uint8_t {
     kLedYellow      = 5,
     kLedYellowBlink = 6,
 };
+// Real hardware sends only these 7 velocities for LED state (apcKey25.h);
+// the LofiFx button's objekt-engaged phase reuses kLedRedBlink (distinct
+// from granulator-preview's kLedGreenBlink) since no dedicated blue/other
+// color exists on this controller's 2-color (green/red) + yellow-mix LEDs.
 
 // Real APC Key25 button notes this module drives (apcKey25.h, midiMap.h).
 constexpr int kApcBtnStopAll = 0x51;   // 81 -- looper: LOOP_COMMAND_STOP indicator
@@ -122,6 +126,7 @@ public:
             sendCoalesced(kApcBtnGuitarFx, (flash && which == FxBank::Guitar) ? kLedGreen : kLedOff, write);
         }
         sendCoalesced(kApcBtnLofiFx,
+            grid.objektEngaged()     ? kLedRedBlink :
             grid.granulatorHeld()    ? kLedGreenBlink :
             grid.granulatorLatched() ? kLedGreen :
                                         kLedOff,
