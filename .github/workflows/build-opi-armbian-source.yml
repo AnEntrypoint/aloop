@@ -40,6 +40,17 @@ jobs:
             "$SERIES"
           grep -E 'spi-rockchip-Fix-runtime-PM|spi-fixes\.patch|media-cedrus-Fix-failure' "$SERIES"
 
+      - name: Disable unrelated Realtek USB WiFi driver configs that fail -Werror=incompatible-pointer-types against 6.12's cfg80211_ops signature
+        working-directory: armbian-build
+        run: |
+          CFG=config/kernel/linux-sunxi64-current.config
+          sed -i -E \
+            -e 's/^CONFIG_RTL8189ES=m$/# CONFIG_RTL8189ES is not set/' \
+            -e 's/^CONFIG_RTL8189FS=m$/# CONFIG_RTL8189FS is not set/' \
+            -e 's/^CONFIG_RTL8192EU=m$/# CONFIG_RTL8192EU is not set/' \
+            "$CFG"
+          grep -E 'CONFIG_RTL8189ES|CONFIG_RTL8189FS|CONFIG_RTL8192EU' "$CFG"
+
       - name: Build a minimal Orange Pi Prime image via Armbian's own build script
         working-directory: armbian-build
         run: |
