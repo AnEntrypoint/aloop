@@ -1428,13 +1428,56 @@ persistent state, not just a transient selection flash.
 Objekt is wired into the ALWAYS-ON home Faust stack (Core 1, `dsp/aloop.dsp`
 via `effects_runtime.dsp`), the same signal-input convention
 `multitranspose.dsp` uses for its own per-voice note/gate state (see "Faust
-has no runtime branching" / `par()`-replicated-controls entries above) —
-`objektOut` sums into `dry` before `pitchStage`/`harmonize`, so it gets
-exactly the same fx-chain and SHIFT/pitch-lock treatment as Sampler-injected
-audio (`fin`). Like `multitranspose.dsp`'s 6 voices, the 4 Objekt voices are
-computed every block whether or not the button is ever held — this is the
-established, accepted cost model in this codebase (Faust has no in-DSP way to
-skip a stage's cost conditionally), not a regression to fix.
+has no runtime branching" / `par()`-replicated-controls entries above). Like
+`multitranspose.dsp`'s 6 voices, the 4 Objekt voices are computed every block
+whether or not the button is ever held — this is the established, accepted
+cost model in this codebase (Faust has no in-DSP way to skip a stage's cost
+conditionally), not a regression to fix.
+
+**Objekt is a real-input-excited resonator ("reactor mode"), not a
+self-contained synth voice, and must REPLACE dry, never layer over it.**
+`objekt_synth.dsp`'s `exciteFor(exciteIn, gate)` blends a synthetic
+percussive `impact` (`pm.strike`, unchanged) with a `wash` term that is now
+the live `dry` signal itself (filtered by `tone`, gated per-voice by
+`en.asr(...,gate)`) — WITNESSED bug: `wash` used to be `no.noise`, a
+self-contained synthetic exciter with no live-input path at all, directly
+contradicting "excite via the mic" (the button's whole "reactor mode"
+premise). `effects_runtime.dsp` passes the raw `dry` bus into
+`objekt(dry, on0,og0, ...)` as this excitation signal; each voice only picks
+it up while ITS OWN gate is held (the ASR envelope), so the live input is
+"playing normally into" the resonator continuously but is only audible
+through a voice while that voice's key is down — matches "only allowing
+playback via the keys".
+
+A second, independent WITNESSED bug in the same feature: `objektOut` used to
+be summed INTO `dry` (`dryWithObjekt = dry + objektOut`) and that combined
+signal was then run through the UNCHANGED `pitchStage`/`harmonize` dry-passthrough
+machinery — `dryGate` there is driven only by the multitranspose voices'
+gates (`g0..g5`), which Objekt never touches, so `dryGate` always stayed
+near 1 (fully open) while Objekt was engaged. The result: raw `dry` (and
+`harmonize`'s own separate dry-passthrough term `dryWet`) kept reaching the
+output completely UNMUTED the whole time Objekt was held — audibly "the
+button engages Objekt, but the ordinary pass-through/pitch-lock signal is
+still there too", which is exactly the failure mode "Locked pitch must
+REPLACE, never layer over, the original" (above) already named for the
+transpose engine, just never extended to Objekt. Fix: a new
+`checkbox("fx/objekt/engaged")` control (`OBJEKT_ENGAGED` in
+`effects_runtime.dsp`, set from `ApcGrid::pollHolds`/`onLofiFxRelease`
+alongside the existing `m_objektEngaged` C++ flag — `targetToZone()` needs no
+change since it already passes any `fx/objekt/...`-prefixed target through
+verbatim) drives a smoothed `objektEngageGate` that CROSSFADES the entire
+`(pitchStage(dry)*dryGate + dryWet)` term against `objektOut` right before
+the shared `microStage:filterStage:delayStage:reverbStage` tail, rather than
+summing `objektOut` into `dry` upstream of that machinery. At
+`OBJEKT_ENGAGED=0` this is bit-for-bit the pre-fix formula (objektOut is
+silent there anyway, since voices are never gated unless
+`m_objektEngaged`), so the disengaged path has zero behavioral change.
+Verified via the DawDreamer JIT harness (pitch.dsp stubbed to a bare
+passthrough per the "DawDreamer verification harness" section below): engaged
++ a held voice decorrelates the output from the raw dry input (r≈0.07 vs
+r≈0.997 disengaged) while producing real excited-resonator amplitude; engaged
+with no voice held decays to near-silence within one `si.smoo` time constant
+of the engage edge.
 
 Knob slot 0 (`fx2/BITCRUSHAMT`) is unchanged in both gestures. When Objekt
 is NOT engaged, slots 1-6 map to the granulator patch blend as before; they

@@ -23,6 +23,7 @@ TIME     = hslider("TIME",    0.5, 0.0, 1.0, 0.001);
 FORMANT  = hslider("FORMANT", 0.0, -3.0, 3.0, 0.001);
 SEMIS    = hslider("SEMIS",   0.0, -12.0, 12.0, 0.001);
 ENGAGED  = checkbox("ENGAGED");
+OBJEKT_ENGAGED = checkbox("fx/objekt/engaged");
 // Microrepeat (apc_grid.cpp notes 82-86 -> fx/microrepeat_div): DIV is the beat
 // divisor {0=off,1,2,4,8,16} set live from the control map; MLB is the current
 // loop's length in blocks (masterLoopBlocks), read from the same varispeed grid
@@ -59,10 +60,11 @@ process(dry, loopSum, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5, on0,o
 with {
     anyVoiceGated = min(1.0, g0+g1+g2+g3+g4+g5);
     dryGate = (1.0 - anyVoiceGated*(1.0-freeXpose)) : si.smoo;
-    objektOut = objekt(on0,og0, on1,og1, on2,og2, on3,og3);
-    dryWithObjekt = dry + objektOut;
-    harmonyBus     = harmonize(dryWithObjekt, loopSum, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5);
+    objektEngageGate = OBJEKT_ENGAGED : si.smoo;
+    objektOut = objekt(dry, on0,og0, on1,og1, on2,og2, on3,og3);
+    harmonyBus     = harmonize(dry, loopSum, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5);
     dryWet         = harmonyBus : _,!;
     loopHarmonyWet = harmonyBus : !,_;
-    mainOut = (pitchStage(dryWithObjekt)*dryGate + dryWet) : microStage : filterStage : delayStage : reverbStage;
+    preChain = (pitchStage(dry)*dryGate + dryWet)*(1.0-objektEngageGate) + objektOut*objektEngageGate;
+    mainOut = preChain : microStage : filterStage : delayStage : reverbStage;
 };
