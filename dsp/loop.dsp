@@ -48,7 +48,7 @@ with {
     ring = rwtable(MAXLEN, 0.0, writeIdx, writeVal, readIdx0);
 
     wrapAbs(p, len) = p - floor(p / float(len)) * float(len);
-    armGridLen = ba.if(wrapLenEstablished > 0.5, float(wrapLen), masterLen);
+    armGridLen = ba.if(wrapLenEstablished > 0.5, min(float(wrapLen), gridStep), gridStep);
     armGridSnap = ba.if(armGridLen < 0.5, armMasterPhase,
                     floor(armMasterPhase / armGridLen + 0.5) * armGridLen);
     armPhaseBias = armMasterPhase - armGridSnap;
