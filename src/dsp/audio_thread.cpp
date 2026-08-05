@@ -530,21 +530,6 @@ static void* worker(void*) {
                 static int64_t lastLinkPhaseMicroBeats = -1;
                 float masterLen = g_params ? g_params->get("cmd/master_len", 0.0f) : 0.0f;
                 if (masterLen > 0.0f) {
-                    // controlTick() (src/main.cpp) republishes Link's phase
-                    // snapshot at only ~5Hz, but this branch used to re-derive
-                    // masterPhaseSamples from it EVERY block -- re-evaluating
-                    // the SAME cached snapshot for ~150 consecutive blocks
-                    // between control ticks, then hard-jumping the instant a
-                    // fresh snapshot lands (its own real-wall-clock capture
-                    // instant never lines up with the audio thread's
-                    // free-running accumulation). That produced a periodic
-                    // ~5Hz stepped discontinuity in masterPhase/absPos, worst
-                    // exactly when Link's tempo matches the recorded tempo
-                    // (varispeedActive is off then, so absPos drives playback
-                    // directly with no smoothing to mask it). Fix: free-run
-                    // every block like the non-Link branch, and only snap to
-                    // Link's live phase as a drift-correction the ONE block
-                    // where a genuinely NEW snapshot is observed.
                     if (linkDrivingLength && g_link) {
                         LinkSnapshot ls3 = g_link->audioRead();
                         bool freshSnapshot = ls3.phaseValid && ls3.quantumMicroBeats > 0 &&
@@ -589,17 +574,6 @@ static void* worker(void*) {
                     std::fill(masterPhaseBuf.begin(), masterPhaseBuf.end(), 0.0f);
                 }
                 std::fill(masterLenBuf.begin(), masterLenBuf.end(), masterLen);
-                // gridBeatIndex must track Link's OWN 16-beat quantum
-                // (kLinkQuantum, link_bridge.h) -- the real musical unit
-                // every peer syncs to -- never the first recorded loop's
-                // length. Deriving it from masterLen/16 instead made the
-                // beat-counter LEDs silently depend on whichever take
-                // happened to establish the phrase, drifting from the real
-                // Link quantum the instant a loop's length wasn't an exact
-                // 16-beat phrase. When Link is actually driving (synced,
-                // phase valid), read the quantum-relative phase fraction
-                // directly off the SAME LinkSnapshot read above rather than
-                // recomputing it from masterPhaseSamples/masterLen.
                 if (linkDrivingLength && g_link) {
                     LinkSnapshot lsBeat = g_link->audioRead();
                     if (lsBeat.phaseValid && lsBeat.quantumMicroBeats > 0) {
@@ -614,10 +588,6 @@ static void* worker(void*) {
                         g_telem.gridBeatIndex = -1;
                     }
                 } else if (masterLen > 0.0f) {
-                    // Standalone fallback (no Link quantum available at all):
-                    // the masterLen-derived 16-tick grid is the best
-                    // available substitute, matching armEdge's own
-                    // arm-quantization grid in dsp/loop.dsp.
                     double gridStep = (double)masterLen / 16.0;
                     int idx = (int)(masterPhaseSamples / gridStep);
                     if (idx < 0) idx = 0;

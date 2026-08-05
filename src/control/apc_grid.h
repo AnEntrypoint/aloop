@@ -1,10 +1,3 @@
-// aloop APC Key25 grid engine — public interface (impl in apc_grid.cpp).
-//
-// Ports looper's apcKey25Notes.cpp pad-grid + tap/hold + preset logic onto
-// aloop's ParamStore/named-target model. This is the part of the real hardware
-// surface config/controls.conf's flat note table cannot express: the 5x8 grid
-// (row*8+col), tap-vs-hold disambiguation, and 10-slot preset capture/recall.
-
 #ifndef ALOOP_APC_GRID_H
 #define ALOOP_APC_GRID_H
 
@@ -13,79 +6,42 @@
 
 namespace aloop {
 
-class Sampler;      // dsp/sampler/sampler.h -- forward-declared, ApcGrid only ever holds a pointer
-class AudioThread;  // dsp/audio_thread.h -- forward-declared, for ARM-quantization telemetry reads
-class Lv2Host;      // host/lv2_host.h -- forward-declared, for the permanent Core-3 guitar+lofi-fx bundle
+class Sampler;
+class AudioThread;
+class Lv2Host;
 
 constexpr int kApcRows = 5;
 constexpr int kApcCols = 8;
 constexpr int kLooperCount = 20;
 constexpr int kPresetCount = 10;
-constexpr int kTransposeVoices = 6;   // effects/home/faust/multitranspose.dsp NVOICES -- keep in sync
-constexpr int kObjektVoices = 4;      // effects/home/faust/objekt_synth.dsp NVOICES -- keep in sync
-constexpr unsigned kHoldEraseMs = 1000;   // apcKey25.h APC_HOLD_ERASE_MS
-constexpr int kSampleRate = 48000;        // dsp/loop.dsp's SR -- fixed throughout aloop, no runtime config path yet
-constexpr int kBlockSize  = 64;           // AudioThreadConfig::blockSize -- fixed, AGENTS.md "never add audio-path latency"
-constexpr int kMaxLoopSamples = 48000 * 60;  // dsp/loop.dsp's MAXLEN -- the delay ring's hard ceiling
-constexpr int kApcBtnShift = 0x62;         // apcKey25.h APC_BTN_SHIFT (98) -- channel 0 only, see onShiftPress
+constexpr int kTransposeVoices = 6;
+constexpr int kObjektVoices = 4;
+constexpr unsigned kHoldEraseMs = 1000;
+constexpr int kSampleRate = 48000;
+constexpr int kBlockSize  = 64;
+constexpr int kMaxLoopSamples = 48000 * 60;
+constexpr int kApcBtnShift = 0x62;
 
-// --- 3-bank fx control-surface indirection (LOFI feature) -------------------
-// The 8-button control row (transpose | sample | drum-sample | dub-fx |
-// guitar-fx | lofi-fx | varispeed | varispeed) as confirmed in a design
-// session: transpose/sample/drum-sample are the EXISTING onLiveEngageToggle/
-// onSamplerBtn65/onSamplerBtn66 buttons (unchanged, no new code). dub-fx/
-// guitar-fx/lofi-fx are 3 NEW, symmetric, tap-to-select bank buttons -- tap
-// switches which bank the 7 physical fx knobs (CC48/49/50/51/54/55/57, plus
-// CC53 formant, handled separately in onFormantCC) currently drive, radio-
-// button style (no cycling, no hold-preview). Each bank stores its OWN
-// independent value per knob position -- switching banks changes what the
-// physical controls currently MEAN without touching other banks' stored
-// values (confirmed explicitly, including the one exception: guitar bank's
-// "speed" knob and dub bank's "TIME" knob share the same physical CC/slot
-// but remain two independently-stored values).
 enum class FxBank : uint8_t { Dub = 0, Guitar = 1, LofiFx = 2 };
 constexpr int kFxBankCount = 3;
-// WITNESSED BUG (live, real Pi 4): originally assigned 87/88/89, picked from
-// an assumed-free note range above the microrepeat latch (82-86) WITHOUT
-// ever confirming what the real APC Key25 hardware actually transmits for
-// these 3 physical buttons -- the same class of mistake this codebase's own
-// controls.conf comments already warn about for halfspeed/doublespeed
-// (notes, not CCs, discovered only by watching real hardware). Live log
-// capture (real button presses, isolated one at a time, [midi] note decoded
-// lines read directly) showed the actual notes are 67/68/69, not 87/88/89 --
-// the 3 assumed-unused notes were never actually reached by any physical
-// press, so every bank-select press before this fix silently did nothing.
 constexpr int kApcBtnDubFx    = 67;
 constexpr int kApcBtnGuitarFx = 68;
 constexpr int kApcBtnLofiFx   = 69;
-// Per-bank Faust zone label for each of the 7 CC-mapped dub-bank knobs, so
-// ApcGrid can look up "whichever bank is active's stored value" generically.
-// index order matches config/controls.conf's cc48/49/50/51/54/55/57 bindings
-// (fx/reverb, fx/delay, fx/time, fx/hp, fx/lpres, fx/lp, fx/pitch).
 constexpr int kFxKnobCount = 7;
 
-// Slot layout per bank (7 physical knob positions, CC48/49/50/51/54/55/57).
-// See AGENTS.md's "Objekt-style granulator: hold-to-engage + patch morph"
-// entry for the LofiFx bank's patch-weight design.
-//   Dub:     fx/reverb, fx/delay, fx/time, fx/hp, fx/lpres, fx/lp, fx/pitch
-//   Guitar:  fx2/FLANGEAMT, fx2/TREMOLOAMT, fx2/BANKSPEED, fx2/PHASERAMT,
-//            [sampler attack ms], [sampler release ms], fx2/COMPRESSAMT
-//   LofiFx:  fx2/BITCRUSHAMT, then 6 granulator-patch morph weights
 enum class FxKnobKind : uint8_t { FaustZone, Lv2Control, SamplerAttackMs, SamplerReleaseMs,
                                    SamplerGranPatchWeight };
 struct FxKnobTarget {
     FxKnobKind kind;
-    const char* name;   // Faust zone name (FaustZone) or LV2 port symbol (Lv2Control); unused otherwise
+    const char* name;
 };
 
-// row*8+col grid index -> looper index (cols 2-5) or -1 (apcKey25Notes.cpp _looperFromPad)
 inline int gridLooperIndex(int row, int col) {
     if (row < 0 || row >= kApcRows) return -1;
     if (col < 2 || col > 5) return -1;
     int idx = row * 4 + (col - 2);
     return (idx >= 0 && idx < kLooperCount) ? idx : -1;
 }
-// row*8+col grid index -> preset index (cols 0-1) or -1 (apcKey25Notes.cpp _presetFromPad)
 inline int gridPresetIndex(int row, int col) {
     if (row < 0 || row >= kApcRows) return -1;
     if (col < 0 || col > 1) return -1;
@@ -93,202 +49,59 @@ inline int gridPresetIndex(int row, int col) {
     return (idx >= 0 && idx < kPresetCount) ? idx : -1;
 }
 
-// Owns the tap/hold state machine for the pad grid + the 10 preset slots, and
-// the continuous live-pitch (mod-wheel CC1 / CC52) state. `now_ms` is a
-// monotonic millisecond clock the caller supplies (from the same clock the
-// MIDI read loop uses) so this stays independent of any specific timer API.
 class ApcGrid {
 public:
-    // Register every target name this engine can ever write, ONCE, before the
-    // audio thread starts reading (called from runMidiLoop's startup, same
-    // moment controls.conf's bindings are registered). ParamStore::bind()
-    // takes bindMtx but setByName/get/forEach do NOT -- calling bind() from a
-    // hot dispatch path (onShiftPress, onFormantCC, etc, all reachable from
-    // the MIDI thread mid-flight) races the audio thread's unlocked forEach
-    // over the same unordered_map. Pre-binding here and never bind()ing again
-    // from onPadPress/onShiftPress/etc keeps the "bind at startup, read-only
-    // after" invariant midi.h's ParamStore doc actually promises.
     static void bindAll(ParamStore& ps);
 
-
-    // A pad (note 0..39, channel 0) was pressed. Writes commands into `ps`.
-    // `link` (may be null): the finish-recording transition proposes the
-    // just-established master phrase's tempo to the Link session (two-way
-    // integration -- see applyRecPlayCycle). `audio` (may be null):
-    // ARM-QUANTIZATION compensation -- reads the looper's TRUE elapsed
-    // sample count (dsp/loop.dsp's writeIdx telemetry) at the finish press,
-    // instead of estimating duration from wall-clock press-to-press timing
-    // (which would be biased by however long the grid-tick wait took).
     void onPadPress(int note, unsigned now_ms, ParamStore& ps, class LinkBridge* link = nullptr, class AudioThread* audio = nullptr);
-    // A pad (note 0..39, channel 0) was released. Writes commands into `ps`.
     void onPadRelease(int note, unsigned now_ms, ParamStore& ps, class LinkBridge* link = nullptr, class AudioThread* audio = nullptr);
-    // Poll for long-holds that must fire without waiting for release (erase
-    // trigger at >= kHoldEraseMs, and preset-capture at the same threshold).
-    // Call once per control-thread tick (e.g. on every MIDI byte, cheap).
     void pollHolds(unsigned now_ms, ParamStore& ps, class LinkBridge* link = nullptr, class AudioThread* audio = nullptr);
 
-    // Live pitch: CC1 (mod-wheel, deadzone 59-69) or CC52 (absolute 0-127).
-    void onModWheel(uint8_t data2, ParamStore& ps);     // CC1
-    void onAbsolutePitch(uint8_t data2, ParamStore& ps); // CC52
+    void onModWheel(uint8_t data2, ParamStore& ps);
+    void onAbsolutePitch(uint8_t data2, ParamStore& ps);
 
-    // Live-pitch master engage toggle (note 0x40/64, channel 0). Previously
-    // UNHANDLED entirely -- fell through to the flat controls.conf map (no
-    // binding for note64 exists there either) and was silently dropped. This
-    // is the button the user calls "transpose on/off" (apcKey25.cpp:97-102's
-    // m_liveEngaged): a master enable gating onModWheel/onAbsolutePitch --
-    // when off, live pitch stays disengaged regardless of mod-wheel/CC52
-    // position (looper: !m_liveEngaged forces m_livePitchSemitones=0).
     void onLiveEngageToggle(ParamStore& ps);
     bool liveEngaged() const { return m_liveEngaged; }
 
-    // Keybed (channel 1) note press: previously UNHANDLED entirely -- aloop's
-    // midi.cpp only ever inspected channel 0, so a keybed key had NO path to
-    // engage live-pitch at all. Confirmed via cross-codebase research against
-    // ../looper (apcKey25.cpp:103-125): "any keybed key press unconditionally
-    // sets m_liveEngaged=true" -- this is looper's PRIMARY way live-pitch
-    // actually gets engaged/played in practice (the note-64 button is more of
-    // a manual override), so its absence directly explains "keys didnt arm
-    // transpose". `sampler` (may be null) gates the routing exactly as looper
-    // does: a keybed key plays sampler content (chromatic pitched, or a drum
-    // one-shot if that key has its own loaded slot) when the sampler has
-    // content for it, otherwise falls through to live-pitch
-    // (apcKey25.cpp:110-125). The key's raw MIDI note number becomes that
-    // voice's fx/xpose{i}/note pitch-LOCK target (multitranspose.dsp derives
-    // the actual shift from the live-detected input pitch), not a fixed
-    // semitone offset -- see multitranspose.dsp's own header.
     void onKeybedNoteOn(int note, int vel, ParamStore& ps, Sampler* sampler);
     void onKeybedNoteOff(int note, ParamStore& ps, Sampler* sampler);
 
-    // Sampler record-arm buttons (channel 0): note 65 held records ONE shared
-    // chromatic sample; note 66 held arms drum-record-mode (while held, each
-    // keybed key records into THAT key's own drum slot). Direct port of
-    // apcKey25.cpp:104-125,157-168 -- previously entirely unimplemented
-    // (docs/DECISIONS.md ADR-012), now built per explicit user request.
     void onSamplerBtn65Press(Sampler* sampler);
     void onSamplerBtn65Release(Sampler* sampler);
     void onSamplerBtn66Press();
     void onSamplerBtn66Release(Sampler* sampler);
     bool drumRecordMode() const { return m_drumRecordMode; }
 
-    // SHIFT+STOP_ALL (note 0x51/81, channel 0): looper's
-    // LOOP_COMMAND_STOP_IMMEDIATE (apcKey25Notes.cpp:171) -- stops ALL
-    // playback AND aborts any in-progress recording (unshifted STOP_ALL only
-    // stops playback, matching audio_thread.cpp's existing cmd/stopall).
     void onStopImmediate(ParamStore& ps, class LinkBridge* link = nullptr);
 
-    // PLAY button (note 0x5B/91, channel 0) unshifted = CLEAR_ALL
-    // (LOOP_COMMAND_CLEAR_ALL, apcKey25Notes.cpp:175). WITNESSED live: this
-    // was previously routed ONLY through config/controls.conf's flat
-    // note91->cmd/clearall binding, which ApcGrid never observes -- the DSP
-    // (dsp/loop.dsp's `clear` button) wipes every looper's content, but
-    // ApcGrid's own local shadow state (m_looperHasContent/Playing/Recording,
-    // m_masterLenSamples) kept believing every looper still had content from
-    // before the clear, so a fresh press after clearing went straight to the
-    // pause/resume branches of applyRecPlayCycle instead of re-arming record
-    // on what the DSP now considers empty loopers -- exactly the reported
-    // "doing a new set didn't work" after clear. Reset all shadow state here.
     void onClearAll(bool held, ParamStore& ps, class LinkBridge* link = nullptr);
 
-    // Microrepeat latch notes 82-86 (channel 0 only); div in {1,2,4,8,16}, 0=off.
     void onMicrorepeatOn(int note, ParamStore& ps);
     void onMicrorepeatOff(int note, ParamStore& ps);
 
-    // SHIFT (channel 0 note APC_BTN_SHIFT, apcKey25.h 0x62/98). Mirrors looper's
-    // apcKey25.cpp:96,185 channel-0-only gating (the keybed's channel-1 note 98
-    // is a different physical key and must NOT be treated as SHIFT). Held-state,
-    // not a momentary trigger: onShiftPress/Release just flip m_shift and update
-    // the two things it gates (CC53 formant range, monitor-fold).
     void onShiftPress(ParamStore& ps);
     void onShiftRelease(ParamStore& ps);
     bool shiftHeld() const { return m_shift; }
 
-    // CC53 formant depth: looper apcKey25Filters.cpp:53-58 -- a deadzone around
-    // center with SHIFT roughly doubling the usable range. Intercepted here
-    // (not the flat controls.conf remap) because the SHIFT-dependent curve
-    // can't be expressed as a static 1:1 binding.
     void onFormantCC(uint8_t data2, ParamStore& ps);
 
-    // --- 3-bank fx control-surface (LOFI feature) ---------------------------
-    // dub-fx/lofi-fx are plain tap-to-select bank buttons -- no secondary
-    // gesture, unlike guitar-fx below. REDESIGN (Core-3 move): switching the
-    // active bank is now a PURE UI/state change -- it does NOT push any
-    // values anywhere. Every bank's 7 knob targets are their OWN permanent
-    // zones/ports/sampler-setters, already continuously live regardless of
-    // which bank is "selected" (confirmed: "Both guitar and lofi-fx always
-    // stack together with dub" / "bank buttons only select which knobs to
-    // edit"). The old design's eager re-push existed only because the 3
-    // banks used to SHARE one set of zones and only the active bank's write
-    // reached the audible chain -- that sharing no longer exists, so there is
-    // nothing left to re-push on a bank switch. `now_ms` starts the brief LED
-    // flash window (see bankFlashActive/pollHolds).
     void onDubFxPress(unsigned now_ms, ParamStore& ps);
-    // The granulator/objekt button (see AGENTS.md's "Objekt-style granulator"
-    // entry): tap vs hold, disambiguated on release by kGranulatorTapMs. Both
-    // are null-tolerant like onKeybedNoteOn.
     void onLofiFxPress(unsigned now_ms, ParamStore& ps, Sampler* sampler);
     void onLofiFxRelease(unsigned now_ms, ParamStore& ps, Sampler* sampler);
     bool granulatorHeld() const { return m_granulatorHeld; }
     bool granulatorLatched() const { return m_granulatorLatched; }
-    // True once a genuine hold (>= kGranulatorTapMs, still physically held)
-    // has switched the LofiFx button's second gesture from granulator-preview
-    // over to the objekt_synth.dsp modal-resonator engine -- see pollHolds.
-    // While true: keybed notes drive the 4 Objekt voices instead of the
-    // transpose/Sampler routing, and knob slots 1-6 drive Objekt's macros
-    // (fx/objekt/character etc) instead of the granulator patch blend.
     bool objektEngaged() const { return m_objektEngaged; }
-    // guitar-fx is a dual-gesture button: a quick tap (press+release with NO
-    // looper pad pressed in between) selects the guitar bank, exactly like
-    // dub-fx/lofi-fx above. HOLDING guitar-fx while pressing a looper pad
-    // instead toggles that looper's sidechain-pump SOURCE designation (see
-    // onSidechainLooperToggle) and suppresses the bank-select tap for this
-    // press, mirroring the EXISTING m_looperArmedOnPress press/release-
-    // suppression pattern this file already uses for the ARM-vs-tap
-    // disambiguation on the main pad grid.
     void onGuitarFxPress(unsigned now_ms, ParamStore& ps);
     void onGuitarFxRelease(ParamStore& ps);
-    // Dispatch for the 7 physical fx knobs (CC48/49/50/51/54/55/57 on real
-    // APC Key25 hardware, per config/controls.conf's own comment on why these
-    // moved out of the flat map) -- `ccNumber` must be one of those 7; writes
-    // the normalized (data2/127) value into the CURRENTLY ACTIVE bank's
-    // stored slot for that knob position, AND into that slot's own permanent
-    // target (Dub -> ParamStore Faust zone; Guitar/LofiFx -> homeFx's LV2
-    // control port or a native Sampler setter), per FxKnobTarget above --
-    // every bank's target is ALWAYS live now (Core-3 redesign), so writing a
-    // non-active bank's stored value still audibly applies, unlike the old
-    // "only the active bank reaches the chain" design. `sampler`/`homeFx` may
-    // be null (matches onKeybedNoteOn's existing null-tolerant convention);
-    // a null target for the knob's current bank is silently skipped.
-    // No-op if ccNumber isn't one of the 7 known knob CCs.
     void onFxKnobCC(int ccNumber, uint8_t data2, ParamStore& ps, Sampler* sampler, Lv2Host* homeFx);
     FxBank activeBank() const { return m_activeBank; }
-    // True only in the brief window right after a dub-fx/guitar-fx/lofi-fx
-    // press, for the LED module's flash-on-select feedback (confirmed scope:
-    // TRANSIENT indication during the act of selecting, not a persistent
-    // always-on "which bank is active" display) -- pollHolds clears this
-    // once the flash window elapses.
     bool bankFlashActive() const { return m_bankFlashReleaseAt != 0; }
     FxBank bankFlashWhich() const { return m_bankFlashWhich; }
 
-    // Called from onPadPress when guitar-fx is currently held (see
-    // onGuitarFxPress) instead of the normal ARM/FINISH pad dispatch --
-    // toggles looper `looper`'s sidechain-source designation (multiple
-    // simultaneous sources are allowed, confirmed in the design session).
-    // Persists after guitar-fx is released (not cleared on release).
     void onSidechainLooperToggle(int looper, ParamStore& ps);
     bool looperIsSidechainSource(int looper) const { return m_looperIsSidechainSource[looper]; }
-    // True while guitar-fx is held AND at least one looper press has already
-    // been consumed as a source-toggle this hold -- suppresses the matching
-    // bank-select tap on release, same shape as m_looperArmedOnPress.
     bool guitarFxHeldConsumedByLooper() const { return m_guitarFxConsumedByLooperPress; }
 
-    // Read-only state accessors for the LED module (apc_leds.h) — it needs the
-    // same per-pad classification ApcGrid already tracks (has this looper
-    // recorded anything, is it playing, is a preset slot used) to compute
-    // colors, without duplicating that state. Looper's own apcKey25.cpp reads
-    // its OWN member fields directly for the same reason (LED code and input
-    // dispatch share one class there); this keeps the split we already have
-    // between ApcGrid (input+state) and a new ApcLeds (output) while still
-    // letting ApcLeds see the state it needs.
     bool looperHasContent(int looper) const { return m_looperHasContent[looper]; }
     bool looperPlaying(int looper) const { return m_looperPlaying[looper]; }
     bool looperRecording(int looper) const { return m_looperRecording[looper]; }
@@ -298,23 +111,20 @@ public:
 private:
     bool m_looperHeld[kLooperCount] = {};
     unsigned m_looperHoldStart[kLooperCount] = {};
-    bool m_looperErased[kLooperCount] = {};      // true once the hold-erase fired this press
-    unsigned m_looperEraseReleaseAt[kLooperCount] = {};  // 0 = not pending; else wall-clock ms to release looperN/erase back to 0 (see pollHolds)
-    unsigned m_looperFinishReqReleaseAt[kLooperCount] = {};  // 0 = not pending; else wall-clock ms to release looperN/finishreq back to 0 (see pollHolds, same momentary-pulse pattern as erase)
-    bool m_looperArmedOnPress[kLooperCount] = {}; // suppress the release tap (armed on press)
-    bool m_looperPlaying[kLooperCount] = {};      // local shadow: last rec/play state we sent
-    bool m_looperHasContent[kLooperCount] = {};   // local shadow: has this looper recorded anything
-    bool m_looperRecording[kLooperCount] = {};    // true from arm-press until the DSP has ACTUALLY stopped writing (looperWriteIdx reaches finishtarget) -- see pollHolds' finish-extend resolution, not just the finish-press instant
-    float m_looperFinishTargetPending[kLooperCount] = {};  // this looper's finishtarget while a finish-extend is still in flight (0 = none pending)
-    unsigned m_recordStartMs[kLooperCount] = {};  // wall-clock ms at the ARM press, for computing actual recorded duration at finish
+    bool m_looperErased[kLooperCount] = {};
+    unsigned m_looperEraseReleaseAt[kLooperCount] = {};
+    unsigned m_looperFinishReqReleaseAt[kLooperCount] = {};
+    bool m_looperArmedOnPress[kLooperCount] = {};
+    bool m_looperPlaying[kLooperCount] = {};
+    bool m_looperHasContent[kLooperCount] = {};
+    bool m_looperRecording[kLooperCount] = {};
+    float m_looperFinishTargetPending[kLooperCount] = {};
+    unsigned m_recordStartMs[kLooperCount] = {};
     bool m_looperShiftHeldDuringTake[kLooperCount] = {};
-    // Last transport state we published to the Link session, so publishTransport
-    // only writes on a real edge instead of every call.
     bool m_lastPublishedPlaying = false;
-    // Inbound (peer-driven) transport, for Test Plan STARTSTOPSTATE-1.
     bool    m_lastSeenRemotePlaying = false;
-    bool    m_remoteStartPending    = false;   // start honored at next quantum boundary
-    int64_t m_lastRemotePhaseMicroBeats = 0;   // wrap detection on the shared phase
+    bool    m_remoteStartPending    = false;
+    int64_t m_lastRemotePhaseMicroBeats = 0;
 
     bool m_presetHeld[kPresetCount] = {};
     unsigned m_presetHoldStart[kPresetCount] = {};
@@ -324,58 +134,25 @@ private:
 
     uint8_t m_microRepeatDiv = 0;
     bool m_shift = false;
-    bool m_liveEngaged = false;   // master toggle for live pitch (note 64), apcKey25.cpp m_liveEngaged
-    bool m_drumRecordMode = false;   // note 66 held (apcKey25.cpp m_drumRecordMode)
+    bool m_liveEngaged = false;
+    bool m_drumRecordMode = false;
 
-    // Polyphonic live-pitch voice allocator: -1 = free slot. Index i maps to
-    // Faust signal inputs fx/xpose{i}/note and fx/xpose{i}/gate.
     int m_transposeVoiceNote[kTransposeVoices] = {-1, -1, -1, -1, -1, -1};
     uint32_t m_transposeVoiceOrder[kTransposeVoices] = {};
     uint32_t m_transposeVoiceCounter = 0;
     int allocateTransposeVoice(int note);
     void releaseTransposeVoice(int note, ParamStore& ps);
-    // Local master-phrase length in samples, established from the FIRST
-    // looper's own recorded duration (../looper loopClip.cpp:219-244:
-    // "ALWAYS defines the local master grid from its own recorded length,
-    // Link-synced or not") -- independent of any Ableton Link session, unlike
-    // audio_thread.cpp's Link-only length source. Published to ParamStore's
-    // "cmd/master_len" target so the audio thread can feed it into microrepeat's
-    // MLB zone when Link is not synced (previously: MLB was hard-forced to 0.0
-    // -- microrepeat entirely inert -- whenever no Link session was connected,
-    // even though looper's real hardware needs no Link at all for glitch/microrepeat).
-    // 0 = no master phrase established yet (mirrors looper's masterLoopBlocks==0).
     long m_masterLenSamples = 0;
 
-    // --- 3-bank fx control-surface state (LOFI feature) ---------------------
-    // Per-bank stored value for each of the 7 CC-mapped knobs -- [bank][knob],
-    // in raw 0..1 CC-normalized space regardless of target kind (Faust zone,
-    // LV2 control port, or Sampler-native setter -- see FxKnobTarget/
-    // applyFxKnobTarget in apc_grid.cpp for the per-kind range mapping).
-    // Defaults match the EXISTING dub-bank Faust zone defaults exactly (see
-    // midi.cpp's kFxDefaults table) for bank 0 (Dub); guitar/lofi-fx banks
-    // default every knob to whatever value makes THAT bank's own effect chain
-    // a byte-exact passthrough (0.0 for every new effect's "amount" control,
-    // per the confirmed guitar-fx-bank-defaults-passthrough / lofi-fx-bank-
-    // defaults-passthrough design requirement) -- verified against
-    // guitar_lofi_fx.dsp's real Faust defaults via the CLI harness.
-    // NOTE: these are only the STORED shadow values ApcGrid itself tracks for
-    // knob display/re-edit -- they are NOT pushed into the sampler at startup
-    // (see bindAll's comment: the sampler's attack/release/granulator knobs
-    // apply only once a knob is physically touched, so the legacy auto-
-    // scaled-attack/off-by-default-granulator behavior stays exactly
-    // unchanged until then).
     float m_fxBankValues[kFxBankCount][kFxKnobCount] = {
-        // Dub bank: fx/reverb, fx/delay, fx/time, fx/hp, fx/lpres, fx/lp, fx/pitch
         {0.0f, 0.0f, 0.5f, 0.0f, 0.0f, 1.0f, 0.0f},
-        // Guitar bank: flange, tremolo, speed, phaser, attack, release, compress
         {0.0f, 0.0f, 0.5f, 0.0f, 0.0f, 0.0f, 0.0f},
-        // Lofi-fx bank: bitcrush, then 6 granulator-patch morph weights
         {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
     };
     FxBank m_activeBank = FxBank::Dub;
-    unsigned m_bankFlashReleaseAt = 0;   // 0 = no flash pending; else wall-clock ms to clear bankFlashActive() (see pollHolds)
+    unsigned m_bankFlashReleaseAt = 0;
     FxBank m_bankFlashWhich = FxBank::Dub;
-    static constexpr unsigned kBankFlashMs = 150;   // brief, per the confirmed "flash only during selection" scope
+    static constexpr unsigned kBankFlashMs = 150;
 
     bool m_granulatorHeld = false;
     bool m_granulatorLatched = false;
@@ -392,9 +169,6 @@ private:
     void releaseObjektVoice(int note, ParamStore& ps);
     void releaseAllObjektVoices(ParamStore& ps);
 
-    // Sidechain-pump (guitar-fx hold + looper press): multiple simultaneous
-    // sources allowed, persists after guitar-fx release, auto-clears on
-    // erase/clear (all confirmed in the design session).
     bool m_guitarFxHeld = false;
     bool m_guitarFxConsumedByLooperPress = false;
     bool m_looperIsSidechainSource[kLooperCount] = {};
@@ -403,12 +177,9 @@ private:
     void capturePreset(int p, ParamStore& ps);
     void applyPreset(int p, ParamStore& ps);
     void forgetLooperFromPresets(int looper);
-    // Publish our transport (any looper playing) to the Link session on change.
     void publishTransport(class LinkBridge* link);
-    // Follow the session's transport (Test Plan STARTSTOPSTATE-1): quantized
-    // start, immediate stop. Called from pollHolds on the control thread.
     void applyRemoteTransport(ParamStore& ps, class LinkBridge* link);
 };
 
-} // namespace aloop
-#endif // ALOOP_APC_GRID_H
+}
+#endif

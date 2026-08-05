@@ -94,35 +94,15 @@ static double deriveTempoBpm(double seconds) { return deriveTempoQuant(seconds).
 
 constexpr long kShiftFoldBlockLatencySamples = 64;
 
-// Publish OUR transport to the Link session whenever it changes. Start-stop-sync
-// is enabled on both this project and ../esp-idf-link, but a peer that only ever
-// READS isPlaying is half-wired -- the ESP acts on a peer's transport (MIDI
-// Start/Stop + all-notes-off) and would never hear from us otherwise.
-// "Playing" for aloop = at least one looper is playing.
-// Ableton's own Test Plan, STARTSTOPSTATE-1: with Link + Start Stop Sync on, a
-// peer pressing Play must START this app "according to its quantization", and a
-// peer stopping must stop it. aloop previously only READ the session transport
-// into telemetry and acted on none of it, so it satisfied STARTSTOPSTATE-2
-// (sending) but failed -1 (listening).
-//
-// Precedence: a remote transport edge drives loopers that already have content;
-// it never arms a recording and never erases. A local pad press still wins for
-// the looper it touches, because publishTransport() immediately re-publishes our
-// resulting state to the session.
-//
-// Start is deferred to the next quantum boundary rather than applied instantly
-// -- that is what "according to its quantization" means, and it mirrors
-// ../esp-idf-link's own pending-realign-then-honor-at-phrase-boundary shape.
-// Stop is immediate: stopping late is audible, and no spec wants a stop to wait.
 void ApcGrid::applyRemoteTransport(ParamStore& ps, LinkBridge* link) {
     if (!link) return;
     LinkSnapshot ls = link->audioRead();
-    if (!ls.synced) return;              // no session, nothing to follow
+    if (!ls.synced) return;
 
     if (ls.isPlaying != m_lastSeenRemotePlaying) {
         m_lastSeenRemotePlaying = ls.isPlaying;
         if (ls.isPlaying) {
-            m_remoteStartPending = true;   // honored at the next quantum boundary
+            m_remoteStartPending = true;
         } else {
             for (int lp = 0; lp < kLooperCount; lp++) {
                 if (!m_looperPlaying[lp]) continue;
@@ -130,18 +110,16 @@ void ApcGrid::applyRemoteTransport(ParamStore& ps, LinkBridge* link) {
                 m_looperPlaying[lp] = false;
             }
             m_remoteStartPending = false;
-            m_lastPublishedPlaying = false;   // matches the session; don't re-emit
+            m_lastPublishedPlaying = false;
         }
         return;
     }
 
     if (!m_remoteStartPending) return;
-    // Honor the pending start once the shared phase wraps past the quantum start.
-    // beatPhaseMicroBeats counts 0..quantumMicroBeats; a wrap means a boundary.
     if (ls.quantumMicroBeats <= 0) return;
-    bool wrapped = (ls.beatPhaseMicroBeats < m_lastRemotePhaseMicroBeats);
+    bool wrappedPastQuantumStart = (ls.beatPhaseMicroBeats < m_lastRemotePhaseMicroBeats);
     m_lastRemotePhaseMicroBeats = ls.beatPhaseMicroBeats;
-    if (!wrapped) return;
+    if (!wrappedPastQuantumStart) return;
 
     m_remoteStartPending = false;
     for (int lp = 0; lp < kLooperCount; lp++) {
@@ -149,7 +127,7 @@ void ApcGrid::applyRemoteTransport(ParamStore& ps, LinkBridge* link) {
         setLooper(ps, lp, "play", 1.0f);
         m_looperPlaying[lp] = true;
     }
-    m_lastPublishedPlaying = true;        // matches the session; don't re-emit
+    m_lastPublishedPlaying = true;
 }
 
 void ApcGrid::publishTransport(LinkBridge* link) {
@@ -158,7 +136,7 @@ void ApcGrid::publishTransport(LinkBridge* link) {
     for (int lp = 0; lp < kLooperCount; lp++) {
         if (m_looperPlaying[lp]) { anyPlaying = true; break; }
     }
-    if (anyPlaying == m_lastPublishedPlaying) return;   // edge only
+    if (anyPlaying == m_lastPublishedPlaying) return;
     m_lastPublishedPlaying = anyPlaying;
     link->setTransportPlaying(anyPlaying);
 }
@@ -169,20 +147,6 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
         m_looperHasContent[looper] = true;
         m_looperPlaying[looper] = true;
         setLooper(ps, looper, "play", 1.0f);
-        fprintf(stderr, "[diag7] FINISH looper=%d now_ms=%u recordStart=%u elapsedMs=%u masterLen(before)=%ld erase_zone=%.2f\n",
-                looper, now_ms, m_recordStartMs[looper], now_ms - m_recordStartMs[looper], m_masterLenSamples,
-                ps.get("looper" + std::to_string(looper) + "/erase", -1.0f));
-        // Recording always taps prevFiltOut (audio_thread.cpp: prevFiltOut =
-        // rawFiltTap, assigned at the END of each block, so renderInto()'s
-        // NEXT block reads the PREVIOUS block's fully-effected output) --
-        // this is a genuine, fixed, ALWAYS-PRESENT one-block recording delay
-        // (kBlockSize samples), not a SHIFT-specific artifact. Previously
-        // only the SHIFT-fold's own ADDITIONAL block of lag
-        // (kShiftFoldBlockLatencySamples) was compensated, leaving every
-        // plain (no-SHIFT) recording playing back kBlockSize samples later
-        // than it was actually performed -- "a tiny fraction late". Every
-        // recording now gets the baseline block compensated; a SHIFT-held
-        // take gets the fold's extra block ON TOP of that baseline.
         long latencyBias = kBlockSize + (m_looperShiftHeldDuringTake[looper] ? kShiftFoldBlockLatencySamples : 0);
         setLooper(ps, looper, "latencybias", (float)latencyBias);
         m_masterLenSamples = (long)ps.get("cmd/master_len", 0.0f);
@@ -209,11 +173,6 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             setLooper(ps, looper, "finishtarget", (float)m_masterLenSamples);
             setLooper(ps, looper, "finishreq", 1.0f);
             m_looperFinishReqReleaseAt[looper] = now_ms + 50;
-            // First-establish recording: finishtarget == this take's own raw
-            // writeIdx (lenSamples came directly from telemetry above), so
-            // there is no real extend window -- the DSP has already written
-            // exactly finishtarget samples by this instant. Recording LED can
-            // clear immediately; ground truth and the press instant coincide.
             m_looperRecording[looper] = false;
         } else {
             long rawSamples;
@@ -224,48 +183,6 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
                 unsigned elapsedMs = now_ms - m_recordStartMs[looper];
                 rawSamples = (long)elapsedMs * kSampleRate / 1000;
             }
-            // rawSamples is writeIdx's real elapsed sample count -- always
-            // real-time, never varispeed-corrected (see loop.dsp's writeIdx,
-            // a plain +1/sample counter with no effSpeed dependency), and
-            // wrapLen/finishtarget MUST stay in that same real-sample space:
-            // the ring (`rwtable(MAXLEN,...,writeIdx,writeVal,readIdx0)`) is
-            // indexed at write time by real writeIdx, so readIdx0/readIdx1
-            // must land in the identical real-sample space or playback reads
-            // the wrong ring position entirely, not just the wrong speed.
-            //
-            // But m_masterLenSamples was sized in real samples AT THE TIME
-            // THE MASTER WAS RECORDED, and playback applies ONE shared
-            // effSpeed = recordedBpm/currentLinkBpm to every looper's read
-            // position (see AGENTS.md close-tempo phasing / audio_thread.cpp's
-            // linkSpeedRatio) to compensate for Link's CURRENT tempo having
-            // drifted from that original recorded tempo. If Link's tempo has
-            // already changed by the time THIS recording happens, rawSamples
-            // reflects the CURRENT (already-drifted) tempo -- comparing it
-            // directly against m_masterLenSamples (sized at the ORIGINAL
-            // tempo) picks the wrong quantize candidate, and this looper then
-            // also inherits the SAME playback-time effSpeed correction meant
-            // to compensate for a drift that doesn't apply to content already
-            // recorded at the current tempo. Fix: only the QUANTIZE DECISION
-            // (which power-of-2 candidate of m_masterLenSamples to snap to)
-            // is made in original-tempo-equivalent space; the stored
-            // wrapLen/finishtarget stays in real-sample space by converting
-            // the chosen candidate back.
-            // Real regression this session: Link ALWAYS reports a valid
-            // state.tempo() even completely standalone with zero peers
-            // (LinkSnapshot::synced is peerCount>0, but bpm is populated
-            // regardless) -- gating only on `link` being non-null (rather
-            // than also checking synced) meant every subsequent recording,
-            // even with NO Link peers at all, silently mis-scaled its own
-            // quantize decision against Link's local un-synced tempo instead
-            // of correctly treating tempoScale as 1.0. audio_thread.cpp's
-            // own effSpeed/linkSpeedRatio already gates on ls.synced
-            // (linkDrivingLength) and stays bit-exact 1.0 standalone -- this
-            // write-side computation must match that read-side gate exactly,
-            // or a looper's stored wrapLen gets quantized against a
-            // tempo-scale correction playback never actually applies,
-            // producing a wrapLen that doesn't cleanly multiple/divide into
-            // the master phrase -- progressive drift between loopers of
-            // different lengths, not a one-time offset.
             double tempoScale = 1.0;
             if (link && link->audioRead().synced) {
                 float recordedBpm = ps.get("cmd/recorded_bpm", 0.0f);
@@ -289,29 +206,12 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
                 double midpoint = std::sqrt(lowerCand * upperCand);
                 bestLen = (effectiveSamples >= midpoint) ? upperCand : lowerCand;
             }
-            // bestLen is in original-tempo-equivalent space (derived from
-            // m_masterLenSamples by powers of 2) -- convert back to real
-            // elapsed-sample space (matching writeIdx's own indexing) before
-            // storing as finishtarget/wrapLen.
             long quantized = (long)(bestLen / tempoScale + 0.5);
             if (quantized < 64) quantized = 64;
             if (quantized > kMaxLoopSamples) quantized = kMaxLoopSamples;
-            fprintf(stderr, "[diag9] QUANT looper=%d rawSamples=%ld effectiveSamples=%.0f lowerCand=%.0f upperCand=%.0f tempoScale=%.5f quantized=%ld ratio=%.4f\n",
-                    looper, rawSamples, effectiveSamples, lowerCand, upperCand, tempoScale, quantized, effectiveSamples / (double)m_masterLenSamples);
             setLooper(ps, looper, "finishtarget", (float)quantized);
             setLooper(ps, looper, "finishreq", 1.0f);
             m_looperFinishReqReleaseAt[looper] = now_ms + 50;
-            // Quantize-UP (extend) case: the DSP's recordingGate keeps
-            // writeIdx advancing PAST this press, ignoring rec's own
-            // release, until writeIdx reaches finishtarget ("wait when
-            // waiting is closer" -- dsp/loop.dsp). The recording-state LED
-            // must reflect that real, still-in-flight capture rather than
-            // clearing on the press instant -- see pollHolds, which resolves
-            // this via real looperWriteIdx telemetry once it catches up.
-            // Quantize-DOWN (backdate) case needs no such wait (writeIdx was
-            // already >= quantized the instant this fired), so this is a
-            // harmless no-op there -- pollHolds' very next tick observes
-            // writeIdx already caught up and clears immediately.
             m_looperFinishTargetPending[looper] = (float)quantized;
         }
     } else if (!m_looperHasContent[looper]) {
@@ -319,9 +219,6 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
         m_looperRecording[looper] = true;
         m_recordStartMs[looper] = now_ms;
         m_looperShiftHeldDuringTake[looper] = ps.get("fx/monitorfold", 0.0f) > 0.5f;
-        fprintf(stderr, "[diag7] ARM looper=%d now_ms=%u eraseReleaseAt=%u (pending=%d) masterLen=%ld cmd_masterlen=%.0f erase_zone=%.2f\n",
-                looper, now_ms, m_looperEraseReleaseAt[looper], (int)(m_looperEraseReleaseAt[looper] != 0),
-                m_masterLenSamples, ps.get("cmd/master_len", -1.0f), ps.get("looper" + std::to_string(looper) + "/erase", -1.0f));
     } else if (m_looperPlaying[looper]) {
         setLooper(ps, looper, "play", 0.0f);
         m_looperPlaying[looper] = false;
@@ -329,8 +226,6 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
         setLooper(ps, looper, "play", 1.0f);
         m_looperPlaying[looper] = true;
     }
-    // Every branch above can change whether ANY looper is playing (FINISH starts
-    // one, pause/resume toggles one). Publish the resulting transport to Link.
     publishTransport(link);
 }
 
@@ -356,8 +251,6 @@ void ApcGrid::onPadPress(int note, unsigned now_ms, ParamStore& ps, LinkBridge* 
         bool alreadyHeld = m_looperHeld[looper];
         m_looperHeld[looper] = true;
         if (alreadyHeld) {
-            fprintf(stderr, "[diag8] onPadPress REPEAT-SUPPRESSED looper=%d now_ms=%u recording=%d\n",
-                    looper, now_ms, (int)m_looperRecording[looper]);
             return;
         }
         m_looperErased[looper] = false;
@@ -414,13 +307,6 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps, LinkBridge* link, Audio
         ps.setByName("fx/objekt/engaged", 1.0f);
         if (audio && audio->sampler()) audio->sampler()->setGranulatorEnabled(false);
     }
-    // Resolve any in-flight finish-extend: the recording LED must track
-    // whether the DSP has ACTUALLY stopped writing (real looperWriteIdx
-    // telemetry reaching finishtarget), not the finish-press instant --
-    // see applyRecPlayCycle's quantize-UP branch, which leaves
-    // m_looperRecording true and m_looperFinishTargetPending set until this
-    // resolves it. Falls back to clearing immediately if no audio pointer
-    // is available (matches every other audio-optional fallback in this file).
     for (int looper = 0; looper < kLooperCount; looper++) {
         if (m_looperFinishTargetPending[looper] <= 0.0f) continue;
         bool reached;
@@ -435,8 +321,6 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps, LinkBridge* link, Audio
             m_looperFinishTargetPending[looper] = 0.0f;
         }
     }
-    // Follow the session's transport (Test Plan STARTSTOPSTATE-1). Runs on every
-    // control tick so a peer's start lands within one quantum boundary.
     applyRemoteTransport(ps, link);
     bool shiftHeldNow = ps.get("fx/monitorfold", 0.0f) > 0.5f;
     if (shiftHeldNow) {
@@ -447,8 +331,6 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps, LinkBridge* link, Audio
     for (int looper = 0; looper < kLooperCount; looper++) {
         if (m_looperEraseReleaseAt[looper] != 0 && now_ms >= m_looperEraseReleaseAt[looper]) {
             setLooper(ps, looper, "erase", 0.0f);
-            fprintf(stderr, "[diag6b] pollHolds ERASE-RELEASE looper=%d now_ms=%u releaseAt=%u\n",
-                    looper, now_ms, m_looperEraseReleaseAt[looper]);
             m_looperEraseReleaseAt[looper] = 0;
         }
     }
@@ -463,8 +345,6 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps, LinkBridge* link, Audio
         if (now_ms - m_looperHoldStart[looper] < kHoldEraseMs) continue;
         setLooper(ps, looper, "erase", 1.0f);
         m_looperEraseReleaseAt[looper] = now_ms + 50;
-        fprintf(stderr, "[diag6] pollHolds ERASE-FIRE looper=%d now_ms=%u holdStart=%u heldMs=%u releaseAt=%u\n",
-                looper, now_ms, m_looperHoldStart[looper], now_ms - m_looperHoldStart[looper], m_looperEraseReleaseAt[looper]);
         if (m_looperRecording[looper]) {
             setLooper(ps, looper, "rec", 0.0f);
             m_looperRecording[looper] = false;

@@ -1,12 +1,3 @@
-// aloop MIDI control — ALSA rawmidi input, driven by a REMAPPABLE control map
-// (config/controls.conf). No hardcoded CC→control table: every binding comes
-// from the config file, so the whole surface is re-mappable without recompiling.
-//
-// Flow: load the map (midi → target name) → read ALSA rawmidi → look up the
-// incoming CC/note in the map → write the target's value into the ParamStore,
-// keyed by TARGET NAME. The audio thread reads the store by name and sets the
-// matching Faust control zone (looperN/rec, fx/hp, …).
-
 #include "midi.h"
 #include "apc_grid.h"
 #include "apc_leds.h"
@@ -36,7 +27,6 @@
 
 namespace aloop {
 
-// Parse "cc51" / "note20" / "cc51.2" into (isNote, number, channel or -1).
 static bool parseMidiKey(const std::string& s, bool& isNote, int& num, int& ch) {
     ch = -1;
     std::string body = s;
@@ -47,8 +37,6 @@ static bool parseMidiKey(const std::string& s, bool& isNote, int& num, int& ch) 
     return false;
 }
 
-// The loaded map: a MIDI event key → the target control name (e.g. "looper3/rec").
-// Key packs (isNote<<16 | num<<1 | anychannel) — simple + fast.
 static uint32_t midiKey(bool isNote, int num) { return ((uint32_t)isNote << 8) | (uint32_t)(num & 0xFF); }
 
 static unsigned nowMs() {
@@ -57,11 +45,10 @@ static unsigned nowMs() {
 }
 
 void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBridge* link) {
-    // --- load the remappable control map ---
     std::unordered_map<uint32_t, std::string> map;
     const char* mapPath = "/etc/aloop-controls.conf";
     FILE* mf = fopen(mapPath, "r");
-    if (!mf) mf = fopen("config/controls.conf", "r");   // dev fallback
+    if (!mf) mf = fopen("config/controls.conf", "r");
     if (mf) {
         char line[256];
         while (fgets(line, sizeof line, mf)) {
@@ -79,71 +66,30 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
         fprintf(stderr, "[midi] no control map — controls unbound until %s exists\n", mapPath);
     }
 
-    // Publish each binding's target into the store's name index so the audio
-    // thread knows which Faust zones to set. (ParamStore holds a name→value map.)
-    // Seed each fx/* target with its Faust zone's OWN compiled-in default
-    // (dsp/effects_runtime.dsp) rather than a blanket 0.0 — see ParamStore::bind's
-    // comment for why: a bound target whose zone default is non-zero would
-    // otherwise be silently forced to 0.0 from the very first block, before any
-    // MIDI event ever touches it (WITNESSED: fx/lp forced LPCUT to 0.0 = total
-    // silence until the first physical knob turn). looper*/* and cmd/* targets
-    // correctly default to 0.0 (unarmed/released), so they need no entry here.
     static const std::unordered_map<std::string, float> kFxDefaults = {
-        {"fx/hp",      0.0f},   // HPCUT  0.0 = bypass (dsp/effects_runtime.dsp)
-        {"fx/lpres",   0.0f},   // LPRES  0.0 = no resonance
-        {"fx/lp",      1.0f},   // LPCUT  1.0 = fully open (bypass) -- THE bug
-        {"fx/reverb",  0.0f},   // REVAMT 0.0 = dry
-        {"fx/delay",   0.0f},   // DELAYAMT 0.0 = dry
-        {"fx/time",    0.5f},   // TIME   0.5 = the Faust default
-        {"fx/pitch",   0.0f},   // SEMIS  0.0 = unity
+        {"fx/hp",      0.0f},
+        {"fx/lpres",   0.0f},
+        {"fx/lp",      1.0f},
+        {"fx/reverb",  0.0f},
+        {"fx/delay",   0.0f},
+        {"fx/time",    0.5f},
+        {"fx/pitch",   0.0f},
     };
     for (auto& kv : map) {
         auto d = kFxDefaults.find(kv.second);
         ps.bind(kv.second, d != kFxDefaults.end() ? d->second : 0.0f);
     }
-    // ApcGrid's own targets (loopers, live-pitch, microrepeat, monitor-fold,
-    // formant) are NOT in controls.conf's flat map -- pre-bind them here, once,
-    // before any MIDI event can reach ApcGrid's dispatch methods. Those methods
-    // must never call ps.bind() themselves: bind() takes bindMtx but
-    // setByName/get/forEach do not, so a runtime bind() from the MIDI thread
-    // would race the audio thread's unlocked forEach over the same map.
     ApcGrid::bindAll(ps);
 
 #ifdef ALOOP_HAVE_ALSA
-    // HOTPLUG: a controller plugged in AFTER aloop already started (or
-    // unplugged/replugged mid-session) must still be picked up -- WITNESSED
-    // live: plugging the APC Key25 in after boot left it permanently
-    // unrecognized (the injection socket never even opened, confirming the
-    // whole MIDI thread had already exited) because the code below used to
-    // scan ONCE at thread startup and unconditionally `return` on failure,
-    // and the byte-read loop further down unconditionally fell through to
-    // the function's end (closing everything, thread exits) on ANY read
-    // failure, including a plain unplug. Neither case is actually fatal --
-    // a missing/disconnected controller is a normal, recoverable runtime
-    // state, not a startup precondition. Fixed by moving the scan-and-open
-    // step (and the byte-read loop that follows it) inside this outer
-    // for(;;), which rescans on a bounded interval whenever no device is
-    // open, and falls back into rescanning (rather than exiting) if the
-    // open device's read ever fails (unplug). ApcGrid/ApcLeds/the injection
-    // socket are constructed ONCE, above and outside this loop -- they are
-    // rig state, not per-device state, and must survive a reconnect intact
-    // (grid holds looper-content/hold-state, leds holds the last-drawn
-    // frame) exactly like a real hardware controller being unplugged and
-    // replugged wouldn't reset aloop's own understanding of the rig.
     ApcGrid grid;
     ApcLeds leds;
-    snd_rawmidi_t* out = nullptr;   // set fresh each successful (re)connect below
+    snd_rawmidi_t* out = nullptr;
     auto ledWrite = [&](int note, uint8_t vel) -> bool {
         if (!out) return false;
-        uint8_t msg[3] = { 0x90, (uint8_t)note, vel };   // Note On, channel 0 (looper: usbMidi.cpp)
+        uint8_t msg[3] = { 0x90, (uint8_t)note, vel };
         return snd_rawmidi_write(out, msg, 3) == 3;
     };
-    // Best-effort: a bind/listen failure here must never prevent real MIDI
-    // control from working, so failures just leave injection unavailable.
-    // Set up ONCE, before the reconnect loop -- a scripted-injection client
-    // must be able to reach this socket even while no physical controller
-    // is attached at all (that's the whole point of the synthetic-input
-    // path: reproducing button-press bugs without hardware in the loop).
     int injectListenFd = -1, injectConnFd = -1;
     {
         int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
@@ -162,38 +108,18 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
             }
         }
     }
-    bool warnedNoDevice = false;   // reset after each successful connect, so a later disconnect+re-fail-to-find prints again
-    for (;;) {   // one iteration per (re)connect attempt/session
-    // Open BOTH directions on the same device: the APC Key25's USB MIDI is one
-    // bidirectional endpoint (../looper usbMidi.cpp sends LED updates back out
-    // the SAME connection input arrives on, via SendPlainMIDI — no separate
-    // MIDI OUT device exists). `out` may legitimately fail to open even when
-    // `in` succeeds (a non-APC controller with no LEDs, or a device that only
-    // exposes a capture-only rawmidi substream) — LED output is best-effort:
-    // aloop still functions fully for control (the actual bug this whole
-    // module exists to fix was buttons doing nothing INTERNALLY, which is a
-    // separate, now-fixed issue; missing LEDs on non-APC hardware is expected,
-    // not an error).
+    bool warnedNoDevice = false;
+    for (;;) {
     snd_rawmidi_t* in = nullptr;
     out = nullptr;
     char devbuf[16] = {0};
-    // snd_rawmidi_open(&in, &out, ...) only succeeds if BOTH substreams open —
-    // a device with a capture-only rawmidi substream (no OUT at all) would
-    // fail the combined call even though the input-only open (the previous,
-    // working behavior) would have succeeded. Try combined first (gets LEDs
-    // when available); on failure retry input-only so a device that just
-    // lacks MIDI OUT doesn't lose CONTROL entirely for the sake of LEDs.
     if (device && strcmp(device, "auto")) {
-        // explicit device given (config/arg) — use it verbatim.
         snprintf(devbuf, sizeof devbuf, "%s", device);
         if (snd_rawmidi_open(&in, &out, devbuf, SND_RAWMIDI_SYNC) < 0) {
             in = nullptr; out = nullptr;
-            snd_rawmidi_open(&in, nullptr, devbuf, SND_RAWMIDI_SYNC);   // in stays nullptr on failure too
+            snd_rawmidi_open(&in, nullptr, devbuf, SND_RAWMIDI_SYNC);
         }
     } else {
-        // auto: SCAN for the first rawmidi input. The USB MIDI controller's ALSA
-        // card number is NOT guaranteed (the f_uac2 gadget + USB audio also take
-        // cards), so we probe hw:0..7,0,0 rather than assume card 1.
         for (int card = 0; card < 8 && !in; card++) {
             snprintf(devbuf, sizeof devbuf, "hw:%d,0,0", card);
             if (snd_rawmidi_open(&in, &out, devbuf, SND_RAWMIDI_SYNC) == 0) break;
@@ -203,12 +129,6 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
         }
     }
     if (!in) {
-        // No controller present right now -- normal, recoverable state (not
-        // yet plugged in, or unplugged mid-session). Rescan on a bounded 2s
-        // interval rather than busy-spinning; the injection socket (already
-        // listening, set up above) and pollHolds/leds keep working via the
-        // existing poll-loop-with-nullptr-`in` path below in the meantime by
-        // simply not being reached this iteration -- so re-loop directly.
         if (!warnedNoDevice) {
             fprintf(stderr, "[midi] no MIDI input found (probed hw:0..7) — params hold, will keep rescanning every 2s until one appears\n");
             warnedNoDevice = true;
@@ -220,25 +140,6 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
     warnedNoDevice = false;
     fprintf(stderr, "[midi] reading %s (remappable control map + APC grid engine)%s\n",
             devbuf, out ? " + LED output" : " (no MIDI OUT on this device — no LED feedback)");
-    // Hold-duration polling (erase >=1s, preset capture >=1s) must run on a
-    // WALL-CLOCK tick, not on MIDI-message arrival — a held pad with no other
-    // MIDI traffic in flight would otherwise never resolve (snd_rawmidi_read is
-    // SND_RAWMIDI_SYNC/blocking with no timeout; looper's own apcKey25::update()
-    // is likewise driven from the audio thread's periodic tick, not from MIDI
-    // events — audio.cpp:423). Use poll() on the rawmidi fd(s) with a 100ms
-    // timeout so pollHolds() runs regularly even with the port idle.
-    //
-    // The synthetic-input injection socket (TCP :9401 -- accepts raw MIDI
-    // bytes and feeds them into the EXACT SAME byte-parsing state machine
-    // below as real hardware input, so a scripted reproduction is
-    // indistinguishable from a real button press to every downstream
-    // consumer) is set up ONCE, above this outer reconnect loop -- see its
-    // own comment there for why.
-    //
-    // Fixed pollfd layout: [0..nfds) = real rawmidi fds, [nfds] = injection
-    // listen socket (always present if it opened; harmlessly polls -1
-    // otherwise, which poll() ignores), [nfds+1] = the current injection
-    // connection (-1/ignored when no client is connected).
     int realNfds = snd_rawmidi_poll_descriptors_count(in);
     int nfds = realNfds > 0 ? realNfds : 1;
     const int kListenSlot = nfds;
@@ -247,49 +148,10 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
     if (realNfds > 0) {
         snd_rawmidi_poll_descriptors(in, pfds.data(), (unsigned)realNfds);
     } else {
-        pfds[0].fd = -1;   // no real descriptor available -- poll() ignores fd<0 entries
+        pfds[0].fd = -1;
         pfds[0].events = 0;
     }
     uint8_t st = 0, d1 = 0, d2 = 0; int phase = 0; uint8_t b;
-    // HOTPLUG liveness probe state: a real USB device REMOVAL does not
-    // reliably deliver POLLHUP/POLLERR on this platform while `in`'s fd
-    // stays open -- WITNESSED live via a real sysfs USB unbind/bind cycle
-    // (simulating a genuine unplug/replug): the underlying /dev/snd/midiCxDx
-    // inode is deleted (confirmed via /proc/<pid>/fd showing "(deleted)"),
-    // but poll() on the still-open fd kept returning 0 (timeout) forever --
-    // never POLLHUP, never a read error -- so the disconnect `break` further
-    // down was never reached, and the thread stayed parked on the stale
-    // handle even after the device came back on a FRESH inode at the same
-    // path.
-    //
-    // A first attempt at this fix (WITNESSED, reverted) tried re-probing via
-    // a second snd_rawmidi_open() on the same device path -- this is WRONG:
-    // this driver's rawmidi devices are exclusive-open, so the probe itself
-    // fails against a device that is very much still there and already held
-    // open by `in`, producing a spurious disconnect roughly once per second
-    // (confirmed live: 51 false disconnect/reconnect cycles in under a
-    // minute with the real controller never touched).
-    //
-    // A second attempt (WITNESSED, corrected here) compared a stat() SNAPSHOT
-    // taken at open time against a fresh stat() on each probe tick -- this is
-    // ALSO unreliable: /dev is devtmpfs-backed, so a removed-then-replaced
-    // device node's inode number can be RECYLED for the fresh enumeration
-    // (small, densely-reused inode pool), producing a false "still the same
-    // device" match precisely in the rapid unbind-then-immediately-rebind
-    // case this fix exists to catch. The correct, still non-invasive check:
-    // fstat() the REAL open fd `in` is reading from (pfds[0].fd, the exact
-    // descriptor snd_rawmidi_poll_descriptors already extracted -- no new
-    // open, no snapshot to go stale) and compare it against a FRESH stat()
-    // of the well-known path on every probe tick. This directly answers "is
-    // the path I'd re-open still pointing at the SAME underlying device I'm
-    // currently reading from," with no open-time snapshot that can go stale
-    // relative to intervening churn. Only meaningful for the auto-scan path
-    // (devbuf = "hw:N,0,0" -- the underlying node is the well-known
-    // /dev/snd/midiCND0); an explicit config device string isn't
-    // necessarily even a card-number form, so this check is simply skipped
-    // (probeStatPath stays empty) for that case -- it still gets the
-    // read-error/no-poll-signal disconnect path from the prior fix, just
-    // not this extra liveness probe.
     char probeStatPath[32] = {0};
     {
         int probeCard = -1;
@@ -308,7 +170,7 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
         if (pr > 0 && injectListenFd >= 0 && (pfds[(size_t)kListenSlot].revents & POLLIN)) {
             int c = accept(injectListenFd, nullptr, nullptr);
             if (c >= 0) {
-                if (injectConnFd >= 0) close(injectConnFd);   // one injector at a time
+                if (injectConnFd >= 0) close(injectConnFd);
                 injectConnFd = c;
             }
         }
@@ -321,22 +183,6 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
         }
         bool realReady = false;
         for (int i = 0; i < nfds; i++) if (pfds[(size_t)i].revents & POLLIN) { realReady = true; break; }
-        // Liveness probe: runs on its OWN ~1s timer, independent of whether
-        // this particular poll cycle carried real/injected MIDI traffic --
-        // WITNESSED live: nesting this inside the `!gotInjectedByte` branch
-        // (as an earlier version of this fix did) meant a busy injection
-        // stream (e.g. this project's own test/hardware/midi-inject.js
-        // reproduction tooling, which sends real bytes on tcp/9401)
-        // permanently starved the probe from ever running -- confirmed via
-        // /proc/<pid>/fd showing the same disconnected device's fd held
-        // open indefinitely (mtime frozen) across multiple probe intervals'
-        // worth of wall-clock time while inject traffic kept flowing. A
-        // real controller unplugged while the user is still actively
-        // pressing OTHER buttons (real bytes still arriving on `in` itself,
-        // a distinct scenario from the injection-only case here but the
-        // same class of "probe starved by any traffic") must not silently
-        // disable disconnect detection either -- checking on every loop
-        // iteration regardless of `pr`/`gotInjectedByte` closes both.
         {
             unsigned n = nowMs();
             if (haveProbeStatPath && realNfds > 0 && n - lastLivenessProbeMs >= kLivenessProbeMs) {
@@ -346,91 +192,62 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
                     && stat(probeStatPath, &pathStat) == 0
                     && fdStat.st_ino == pathStat.st_ino
                     && fdStat.st_dev == pathStat.st_dev;
-                if (!stillThere) break;   // device genuinely gone/replaced -- fall through to disconnect cleanup below
+                if (!stillThere) break;
             }
         }
         if (!gotInjectedByte) {
             if (pr == 0) {
                 unsigned n = nowMs();
-                grid.pollHolds(n, ps, link, audio);   // timeout: no MIDI, just poll holds
+                grid.pollHolds(n, ps, link, audio);
                 auto t = audio ? audio->snapshotTelemetry() : AudioThread::Telemetry{};
                 leds.refresh(n, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr, audio ? t.gridBeatIndex : -1);
                 continue;
             }
             if (pr < 0) {
                 unsigned n = nowMs();
-                grid.pollHolds(n, ps, link, audio);   // interrupted/error: keep polling holds, retry read
+                grid.pollHolds(n, ps, link, audio);
                 auto t = audio ? audio->snapshotTelemetry() : AudioThread::Telemetry{};
                 leds.refresh(n, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr, audio ? t.gridBeatIndex : -1);
                 continue;
             }
-            if (!realReady) continue;   // only the listen socket (or nothing) was ready
+            if (!realReady) continue;
             if (snd_rawmidi_read(in, &b, 1) != 1) break;
         }
-        // `b` now holds either a real rawmidi byte or an injected synthetic
-        // byte -- both flow through the identical parse/dispatch below.
-        // Diagnostic: only log NOTE-related messages (0x8x/0x9x status), so CC
-        // traffic from working knobs doesn't drown out the button-press bytes
-        // we actually need to see. Capped generously since note events are rare
-        // compared to CC streams.
         static uint64_t noteLogCount = 0;
         bool isNoteStatusByte = (b & 0x80) && ((b & 0xF0) == 0x80 || (b & 0xF0) == 0x90);
         bool loggingThisMsg = isNoteStatusByte || (phase == 2 && ((st & 0xF0) == 0x80 || (st & 0xF0) == 0x90));
         if (loggingThisMsg && noteLogCount < 500) { fprintf(stderr, "[midi] note raw byte: 0x%02x (phase=%d)\n", b, phase); noteLogCount++; }
         if (b & 0x80) { st = b; phase = 1; continue; }
         if (phase == 1) { d1 = b; phase = 2; continue; }
-        // phase 2: full message
         d2 = b; phase = 1;
         uint8_t type = st & 0xF0;
         uint8_t channel = st & 0x0F;
         unsigned now = nowMs();
         if ((type == 0x80 || type == 0x90) && noteLogCount < 500)
             fprintf(stderr, "[midi] note decoded: st=0x%02x type=0x%02x ch=%d d1=%d d2=%d\n", st, type, channel, d1, d2);
-        grid.pollHolds(now, ps, link, audio);   // also check on every real event, for prompt response
+        grid.pollHolds(now, ps, link, audio);
         {
             auto t = audio ? audio->snapshotTelemetry() : AudioThread::Telemetry{};
-            leds.refresh(now, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr, audio ? t.gridBeatIndex : -1);   // self-throttled to ~30Hz internally
+            leds.refresh(now, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr, audio ? t.gridBeatIndex : -1);
         }
 
-        // --- real APC Key25 hardware surface (apcKey25.cpp/apcKey25Notes.cpp), channel 0 only ---
         if (channel == 0) {
-            // SHIFT (apcKey25.cpp:96,185): channel-0-only guard is this `if
-            // (channel == 0)` block itself -- the keybed's channel-1 note 98 never
-            // reaches here, so it is never mistaken for SHIFT (apcKey25.cpp:91-95).
             if (d1 == kApcBtnShift) {
                 if (type == 0x90 && d2 > 0) { grid.onShiftPress(ps); continue; }
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onShiftRelease(ps); continue; }
             }
-            if (d1 == kApcLiveLedNote && type == 0x90 && d2 > 0) { grid.onLiveEngageToggle(ps); continue; }  // note 64: live-pitch master engage toggle ("transpose on/off")
-            if (type == 0xB0 && d1 == 1)  { grid.onModWheel(d2, ps); continue; }       // CC1 mod-wheel live-pitch
-            if (type == 0xB0 && d1 == 52) { grid.onAbsolutePitch(d2, ps); continue; }  // CC52 absolute live-pitch
-            if (type == 0xB0 && d1 == 53) { grid.onFormantCC(d2, ps); continue; }      // CC53 formant (deadzone + SHIFT range)
-            // The 7 dub-bank fx knobs (CC48/49/50/51/54/55/57 -- fx/reverb,
-            // fx/delay, fx/time, fx/hp, fx/lpres, fx/lp, fx/pitch) used to hit
-            // the flat map at the bottom of this loop directly. The 3-bank fx
-            // control-surface feature (LOFI) removed that flat binding (see
-            // config/controls.conf's comment) so ApcGrid can redirect each
-            // turn to whichever bank -- Dub, Guitar, or Lofi-Fx -- is
-            // currently active. Must intercept here, before the flat-map
-            // fallback, since that fallback no longer has anything bound for
-            // these targets.
+            if (d1 == kApcLiveLedNote && type == 0x90 && d2 > 0) { grid.onLiveEngageToggle(ps); continue; }
+            if (type == 0xB0 && d1 == 1)  { grid.onModWheel(d2, ps); continue; }
+            if (type == 0xB0 && d1 == 52) { grid.onAbsolutePitch(d2, ps); continue; }
+            if (type == 0xB0 && d1 == 53) { grid.onFormantCC(d2, ps); continue; }
             if (type == 0xB0 && (d1 == 48 || d1 == 49 || d1 == 50 || d1 == 51 || d1 == 54 || d1 == 55 || d1 == 57)) {
                 grid.onFxKnobCC((int)d1, d2, ps, audio ? audio->sampler() : nullptr, audio ? audio->homeFx() : nullptr);
                 continue;
             }
-            if (d1 >= 82 && d1 <= 86) {                                                // microrepeat latch notes
+            if (d1 >= 82 && d1 <= 86) {
                 if (type == 0x90 && d2 > 0) { grid.onMicrorepeatOn((int)d1, ps); continue; }
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onMicrorepeatOff((int)d1, ps); continue; }
             }
-            // 3-bank fx control-surface bank-select buttons (LOFI feature,
-            // notes 87/88/89, positions 4/5/6 of the 8-button control row --
-            // see apc_grid.h's kApcBtnDubFx/GuitarFx/LofiFx). Tap-to-select,
-            // radio-button style. guitar-fx ALSO gates the sidechain-pump
-            // hold-modifier (see ApcGrid::onGuitarFxPress/Release and
-            // onPadPress's guitar-fx-held redirect) -- its release must
-            // always be dispatched (never `continue`d past) so
-            // m_guitarFxHeld correctly clears even after a sidechain-toggling
-            // hold, not just a plain bank-select tap.
             if (d1 == kApcBtnDubFx    && type == 0x90 && d2 > 0) { grid.onDubFxPress(now, ps); continue; }
             if (d1 == kApcBtnLofiFx) {
                 if (type == 0x90 && d2 > 0) { grid.onLofiFxPress(now, ps, audio ? audio->sampler() : nullptr); continue; }
@@ -440,10 +257,6 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
                 if (type == 0x90 && d2 > 0) { grid.onGuitarFxPress(now, ps); continue; }
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onGuitarFxRelease(ps); continue; }
             }
-            // Sampler record-arm buttons (apcKey25.cpp:157-168,198-208), built
-            // per explicit request -- previously entirely unimplemented
-            // (docs/DECISIONS.md ADR-012). 65 = chromatic record, 66 = arm
-            // drum-record-mode (gates channel-1 key routing below).
             if (d1 == 65) {
                 if (type == 0x90 && d2 > 0) { grid.onSamplerBtn65Press(audio ? audio->sampler() : nullptr); continue; }
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onSamplerBtn65Release(audio ? audio->sampler() : nullptr); continue; }
@@ -452,82 +265,37 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
                 if (type == 0x90 && d2 > 0) { grid.onSamplerBtn66Press(); continue; }
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onSamplerBtn66Release(audio ? audio->sampler() : nullptr); continue; }
             }
-            if (d1 < kApcRows * kApcCols) {                                            // 5x8 pad grid
+            if (d1 < kApcRows * kApcCols) {
                 if (type == 0x90 && d2 > 0) { grid.onPadPress((int)d1, now, ps, link, audio); continue; }
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onPadRelease((int)d1, now, ps, link, audio); continue; }
             }
-            // SHIFT-gated transport button reroute (apcKey25Notes.cpp:170-175):
-            // STOP_ALL (note 0x51/81) unshifted = quantized stop (aloop: the
-            // existing cmd/stopall flat binding below); shift+STOP_ALL =
-            // IMMEDIATE stop that ALSO aborts any in-progress recording
-            // (looper's LOOP_COMMAND_STOP_IMMEDIATE) -- previously aloop had
-            // no shift branch at all on this button, so "shift button
-            // rerouting didnt work" for transport controls specifically.
-            // shift+PLAY = LOOP_IMMEDIATE, which aloop's Faust feedback-delay
-            // engine has no addressable read head for (ADR-010/
-            // docs/COMMAND-SURFACE.md, a deliberate model difference) -- so
-            // shift+PLAY has nothing to reroute TO yet and is left unbound
-            // rather than silently doing the wrong thing.
             if (type == 0x90 && d2 > 0 && d1 == 0x51 && grid.shiftHeld()) { grid.onStopImmediate(ps, link); continue; }
-            // PLAY (note 0x5B/91) = CLEAR_ALL. Previously routed ONLY through
-            // controls.conf's flat note91->cmd/clearall binding, which
-            // ApcGrid never observed -- its own shadow state never got reset
-            // on clear, breaking every subsequent recording attempt
-            // (WITNESSED live: "doing a new set didn't work" after clearing).
-            // Now intercepted here so ApcGrid::onClearAll can reset its state
-            // in the same call that wipes the DSP-side content.
-            //
-            // WITNESSED bug (2nd generation): this used to be gated on
-            // `!grid.shiftHeld()`, matching looper's documented shift+PLAY =
-            // loop-immediate intent -- but loop-immediate is NOT wired (no
-            // addressable read head, ADR-010), so a PLAY press that happened
-            // to land while SHIFT was still held (e.g. mid-release of an
-            // adjacent gesture) fell through this whole channel-0 block
-            // entirely and hit controls.conf's flat map, which (before that
-            // line was removed) set cmd/clearall directly without ever
-            // calling onClearAll -- silently desyncing ApcGrid's shadow
-            // state from the DSP's actual (wiped) content, producing a
-            // "blank recording" on the very next press with no observable
-            // clear-all event in ApcGrid's own log. CLEAR_ALL must always be
-            // reachable regardless of shift state until loop-immediate is
-            // actually implemented.
             if (d1 == 0x5B) {
                 if (type == 0x90 && d2 > 0) { grid.onClearAll(true, ps, link); continue; }
                 if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onClearAll(false, ps, link); continue; }
             }
         }
 
-        // channel 1 (keybed): looper's apcKey25.cpp:103-125 -- any keybed key
-        // press engages live-pitch at that key's own semitone offset (or
-        // triggers the sampler if it has content for that key). Was
-        // completely unhandled (aloop only ever inspected channel 0),
-        // directly explaining "keys didnt arm transpose".
         if (channel == 1) {
             if (type == 0x90 && d2 > 0) { grid.onKeybedNoteOn((int)d1, (int)d2, ps, audio ? audio->sampler() : nullptr); continue; }
             if (type == 0x80 || (type == 0x90 && d2 == 0)) { grid.onKeybedNoteOff((int)d1, ps, audio ? audio->sampler() : nullptr); continue; }
         }
 
-        // --- everything else (filters, transport buttons, speed) via the flat remap ---
         uint32_t key = 0; float val = 0;
-        if (type == 0xB0) { key = midiKey(false, d1); val = d2 / 127.0f; }         // CC
-        else if (type == 0x90 && d2 > 0) { key = midiKey(true, d1); val = 1.0f; }  // note-on
-        else if (type == 0x80 || (type == 0x90 && d2 == 0)) { key = midiKey(true, d1); val = 0.0f; } // note-off
+        if (type == 0xB0) { key = midiKey(false, d1); val = d2 / 127.0f; }
+        else if (type == 0x90 && d2 > 0) { key = midiKey(true, d1); val = 1.0f; }
+        else if (type == 0x80 || (type == 0x90 && d2 == 0)) { key = midiKey(true, d1); val = 0.0f; }
         else continue;
         auto it = map.find(key);
-        if (it != map.end()) ps.setByName(it->second, val);   // apply per the MAP
+        if (it != map.end()) ps.setByName(it->second, val);
     }
-    // The inner read loop above only exits via the disconnect `break` (a
-    // failed snd_rawmidi_read) -- close this device's handles and loop back
-    // to the top of the outer for(;;) to rescan/reconnect, rather than
-    // falling through and ending the whole thread (see the outer loop's own
-    // HOTPLUG comment for why a disconnect must be recoverable, not fatal).
     fprintf(stderr, "[midi] %s disconnected -- will keep rescanning every 2s until a controller reappears\n", devbuf);
     snd_rawmidi_close(in);
     if (out) { snd_rawmidi_close(out); out = nullptr; }
-    }   // end outer for(;;) reconnect loop
+    }
 #else
     (void)ps;
 #endif
 }
 
-} // namespace aloop
+}
