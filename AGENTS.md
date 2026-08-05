@@ -2745,3 +2745,48 @@ dedicated post-fx Faust input", "`dsp/effects_runtime.dsp`'s old `fx/bank`
 3-way crossfade...", and "Faust `par()`-replicated UI controls silently
 duplicate per instance" above), so nothing was lost, only moved to where
 this policy says it belongs.
+
+## `dsp/loop.dsp` close-tempo phasing: the varispeed deadzone was exactly
+backwards -- absPos-lock (the "clean" state) was the bug, not varispeed
+
+WITNESSED live on a real Pi 4 with a real Link peer (a ticker/esp-idf-link
+box): with the Link session tempo close to but not identical to a
+recorded loop's own implied tempo, multiple loopers playing together
+produced a steady (non-sweeping) phasing/comb-filter artifact. Nudging
+the tempo clearly AWAY from the recorded tempo (unambiguous varispeed)
+fixed it; the artifact appeared specifically when the tempo mismatch was
+small. A single looper alone never showed the artifact -- only 2+
+loopers together.
+
+Root cause: `varispeedActive` gated whether a looper's read position used
+the pure clock-derived `absPos` formula (masterPhase-relative, assumes
+this looper's own `wrapLen` was quantized against the SAME tempo
+`masterPhase` is currently advancing at) or its own self-integrating
+accumulator (tracks this looper's own real rate independently). The old
+gate was `(effSpeed < 0.999) | (effSpeed > 1.001)` -- later widened to a
+hysteresis band, `.wfgy/lessons.md`-worthy dead end covered below -- which
+LOCKED effSpeed to a flat 1.0 read (discarding any tempo difference
+inside the band as "close enough") whenever the mismatch was small. But
+`absPos` is only correct when a looper's `wrapLen` genuinely divides
+evenly into the masterPhase cycle at the CURRENT session tempo; a real
+(if tiny) mismatch, silently discarded, desyncs loopers of different
+lengths from each other by different fractional amounts depending on
+each one's own `wrapLen`, producing a small PERMANENT phase offset
+between them -- steady, not sweeping (matches the report exactly), and
+only audible with 2+ loopers (a single looper has nothing to phase
+against). Two earlier hypotheses (effSpeed jitter thrashing the
+mode-switch every block; a bare mode-transition click) were both tested
+via DawDreamer simulation and disproven -- neither reproduces without a
+real Link peer, since the actual mechanism only manifests through
+`masterPhase`'s own Link-clock-driven advance, not through `effSpeed`
+alone.
+
+Fixed by removing the deadzone entirely: `varispeedActive = effSpeed !=
+1.0` (exact-equality check, not fragile float epsilon guessing --
+`g_manualSpeedMul`/`linkSpeedRatio` both stay bit-exact `1.0f` in the
+genuine no-tempo-signal case, audio_thread.cpp never perturbs them, so
+this correctly distinguishes "no mismatch at all" from "there IS a real,
+even if tiny, mismatch"). Confirmed by ear on real hardware: staying
+"close" no longer phases; single-looper and true-unity behavior are both
+unchanged (DawDreamer control render: identical noise-floor measurement
+between old and new code at true unity, zero regression).
