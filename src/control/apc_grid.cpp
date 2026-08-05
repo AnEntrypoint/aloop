@@ -411,6 +411,7 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps, LinkBridge* link, Audio
     }
     if (m_granulatorHeld && !m_objektEngaged && now_ms - m_granulatorPressAt >= kGranulatorTapMs) {
         m_objektEngaged = true;
+        ps.setByName("fx/objekt/engaged", 1.0f);
         if (audio && audio->sampler()) audio->sampler()->setGranulatorEnabled(false);
     }
     // Resolve any in-flight finish-extend: the recording LED must track
@@ -887,6 +888,7 @@ void ApcGrid::onLofiFxRelease(unsigned now_ms, ParamStore& ps, Sampler* sampler)
     if (m_objektEngaged) {
         releaseAllObjektVoices(ps);
         m_objektEngaged = false;
+        ps.setByName("fx/objekt/engaged", 0.0f);
     } else if (now_ms - m_granulatorPressAt < kGranulatorTapMs) {
         m_granulatorLatched = !m_granulatorLatched;
     }

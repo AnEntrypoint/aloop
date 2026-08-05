@@ -1,7 +1,7 @@
 declare name "ObjektSynth";
 declare author "aloop";
 declare license "GPLv3";
-declare description "4-voice modal-resonator instrument in the spirit of Reason Studios' Objekt -- an independent mode-filter-bank implementation, not a port of Objekt's own proprietary DSP. Architecture (shared exciter driving a bank of resonant modes per voice) ported from DawDreamer's examples/resonaut/resonaut.py (Resonaut, an from-scratch Objekt alternative already in this project's sibling DawDreamer repo), reduced from Resonaut's 3-object/8-mode/8-voice offline design to a single fixed STRING-like 4-mode object at 4 voices to fit aloop's real-time Pi 4 budget. note/gate are signal inputs, not hslider/button UI elements, matching multitranspose.dsp's own convention for momentary per-voice state.";
+declare description "4-voice modal-resonator instrument in the spirit of Reason Studios' Objekt -- an independent mode-filter-bank implementation, not a port of Objekt's own proprietary DSP. Architecture (shared exciter driving a bank of resonant modes per voice) ported from DawDreamer's examples/resonaut/resonaut.py (Resonaut, an from-scratch Objekt alternative already in this project's sibling DawDreamer repo), reduced from Resonaut's 3-object/8-mode/8-voice offline design to a single fixed STRING-like 4-mode object at 4 voices to fit aloop's real-time Pi 4 budget. exciteIn/note/gate are signal inputs, not hslider/button UI elements, matching multitranspose.dsp's own convention for momentary per-voice state and for feeding a live audio signal through as a control-rate-free wire.";
 
 import("stdfaust.lib");
 
@@ -17,10 +17,10 @@ strikeSharp = 0.7;
 bankPosition = 0.35;
 voiceGain = 0.5;
 
-exciteFor(gate) = impact*(1.0-character) + wash*character
+exciteFor(exciteIn, gate) = impact*(1.0-character) + wash*character
 with {
     impact = pm.strike(strikePos, strikeSharp, 1.0, gate) : fi.lowpass(2, tone);
-    wash   = no.noise : fi.lowpass(2, tone) : *(en.asr(0.02, 1.0, 0.3, gate));
+    wash   = exciteIn : fi.lowpass(2, tone) : *(en.asr(0.02, 1.0, 0.3, gate));
 };
 
 mode1(freqHz) = pm.modeFilter(freqHz*pow(1.0, 1.0+stretch), objDecay*pow(damping,0), 1.0*abs(sin(ma.PI*bankPosition*1)));
@@ -30,7 +30,7 @@ mode4(freqHz) = pm.modeFilter(freqHz*pow(4.0, 1.0+stretch), objDecay*pow(damping
 
 bank(freqHz, exc) = exc <: (mode1(freqHz), mode2(freqHz), mode3(freqHz), mode4(freqHz)) :> _;
 
-voice(note, gate) = bank(ba.midikey2hz(note), exciteFor(gate)) * voiceGain;
+voice(exciteIn, note, gate) = bank(ba.midikey2hz(note), exciteFor(exciteIn, gate)) * voiceGain;
 
-process(note0,gate0, note1,gate1, note2,gate2, note3,gate3) =
-    (voice(note0,gate0) + voice(note1,gate1) + voice(note2,gate2) + voice(note3,gate3)) : ma.tanh : *(objLevel);
+process(exciteIn, note0,gate0, note1,gate1, note2,gate2, note3,gate3) =
+    (voice(exciteIn,note0,gate0) + voice(exciteIn,note1,gate1) + voice(exciteIn,note2,gate2) + voice(exciteIn,note3,gate3)) : ma.tanh : *(objLevel);
