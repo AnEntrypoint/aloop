@@ -756,6 +756,7 @@ void ApcGrid::onDubFxPress(unsigned now_ms, ParamStore&) {
     m_bankFlashReleaseAt = nonZeroDeadline(now_ms, kBankFlashMs);
 }
 void ApcGrid::onLofiFxPress(unsigned now_ms, ParamStore&, Sampler* sampler) {
+    if (m_granulatorHeld) return;
     m_bankBeforeGranulatorHold = m_activeBank;
     m_activeBank = FxBank::LofiFx;
     m_bankFlashWhich = FxBank::LofiFx;
