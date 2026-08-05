@@ -354,14 +354,14 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
                 unsigned n = nowMs();
                 grid.pollHolds(n, ps, link, audio);   // timeout: no MIDI, just poll holds
                 auto t = audio ? audio->snapshotTelemetry() : AudioThread::Telemetry{};
-                leds.refresh(n, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr);
+                leds.refresh(n, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr, audio ? t.gridBeatIndex : -1);
                 continue;
             }
             if (pr < 0) {
                 unsigned n = nowMs();
                 grid.pollHolds(n, ps, link, audio);   // interrupted/error: keep polling holds, retry read
                 auto t = audio ? audio->snapshotTelemetry() : AudioThread::Telemetry{};
-                leds.refresh(n, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr);
+                leds.refresh(n, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr, audio ? t.gridBeatIndex : -1);
                 continue;
             }
             if (!realReady) continue;   // only the listen socket (or nothing) was ready
@@ -389,7 +389,7 @@ void runMidiLoop(ParamStore& ps, const char* device, AudioThread* audio, LinkBri
         grid.pollHolds(now, ps, link, audio);   // also check on every real event, for prompt response
         {
             auto t = audio ? audio->snapshotTelemetry() : AudioThread::Telemetry{};
-            leds.refresh(now, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr);   // self-throttled to ~30Hz internally
+            leds.refresh(now, grid, grid.liveEngaged(), ledWrite, audio ? t.looperLevel : nullptr, audio ? t.gridBeatIndex : -1);   // self-throttled to ~30Hz internally
         }
 
         // --- real APC Key25 hardware surface (apcKey25.cpp/apcKey25Notes.cpp), channel 0 only ---

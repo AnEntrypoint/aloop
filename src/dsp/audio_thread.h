@@ -186,6 +186,12 @@ public:
         // scripted test harness confirm read-position continuity across a
         // finishEdge/masterPhase-wrap boundary without listening to it.
         float    looperReadPos[kLoopers] = {};
+        // BEAT-GRID VISUALIZATION: which of the 16 grid ticks (dsp/loop.dsp's
+        // gridStep = masterLen/16, the same division armEdge quantizes
+        // recording-start against) masterPhase currently sits in, 0..15.
+        // -1 when no master phrase is established yet (masterLen==0).
+        // Drives apc_leds.cpp's 4-pad cumulative beat counter.
+        int      gridBeatIndex = -1;
     };
     Telemetry snapshotTelemetry() const;
 

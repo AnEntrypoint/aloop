@@ -562,6 +562,15 @@ static void* worker(void*) {
                     std::fill(masterPhaseBuf.begin(), masterPhaseBuf.end(), 0.0f);
                 }
                 std::fill(masterLenBuf.begin(), masterLenBuf.end(), masterLen);
+                if (masterLen > 0.0f) {
+                    double gridStep = (double)masterLen / 16.0;
+                    int idx = (int)(masterPhaseSamples / gridStep);
+                    if (idx < 0) idx = 0;
+                    if (idx > 15) idx = 15;
+                    g_telem.gridBeatIndex = idx;
+                } else {
+                    g_telem.gridBeatIndex = -1;
+                }
             }
             float inPeak = 0.0f;
             for (int i = 0; i < N; i++) {

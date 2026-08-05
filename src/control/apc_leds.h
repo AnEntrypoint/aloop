@@ -60,7 +60,7 @@ public:
     // subsystem, same as it's decoupled from ALSA specifics via WriteFn. Null
     // degrades PLAY color to a flat GREEN (the pre-metering behavior).
     template <typename WriteFn>
-    void refresh(unsigned now_ms, const ApcGrid& grid, bool liveEngaged, WriteFn&& write, const float* looperLevels = nullptr) {
+    void refresh(unsigned now_ms, const ApcGrid& grid, bool liveEngaged, WriteFn&& write, const float* looperLevels = nullptr, int gridBeatIndex = -1) {
         // Boot delay: looper waits APC_LED_BOOT_DELAY_MS (2000ms) after boot
         // before the first LED write, so the APC has fully enumerated/settled
         // (apcKey25.h:29, apcKey25.cpp:470-473). Without it, LED writes sent
@@ -77,6 +77,32 @@ public:
             for (int col = 0; col < kApcCols; col++) {
                 int note = row * kApcCols + col;
                 sendCoalesced(note, gridColor(row, col, grid, looperLevels), write);
+            }
+        }
+        // 16-beat grid visualization: 4 pads (col 7, rows 1-4 -- notes
+        // 15/23/31/39, the top-right unassigned column below row 0) show a
+        // cumulative bar-graph over dsp/loop.dsp's own 16-tick
+        // arm-quantization grid (gridStep = masterLen/16). Each pad covers 4
+        // of the 16 beats; a pad fully to the LEFT of the current beat shows
+        // its completed color (green -- that group of 4 has fully passed),
+        // the pad CONTAINING the current beat shows its in-progress color
+        // (blank/yellow/red/green for position 0/1/2/3 within its own group
+        // of 4), and every pad still AHEAD of the current beat stays blank.
+        // -1 (no master phrase established yet) blanks all 4 pads --
+        // overwrites the plain kLedOff cols-6-7 default the grid loop above
+        // already sent for this same note, since this write runs after it
+        // in the same tick.
+        {
+            static constexpr uint8_t kBeatDigitColors[4] = { kLedOff, kLedYellow, kLedRed, kLedGreen };
+            static constexpr int kBeatPadNotes[4] = { 15, 23, 31, 39 };
+            int activeGroup = gridBeatIndex >= 0 ? (gridBeatIndex >> 2) : -1;
+            int posInGroup  = gridBeatIndex >= 0 ? (gridBeatIndex & 0x3) : 0;
+            for (int g = 0; g < 4; g++) {
+                uint8_t color;
+                if (activeGroup < 0 || g > activeGroup)      color = kLedOff;
+                else if (g < activeGroup)                    color = kLedGreen;
+                else                                         color = kBeatDigitColors[posInGroup];
+                sendCoalesced(kBeatPadNotes[g], color, write);
             }
         }
         sendCoalesced(kApcBtnPlay, grid.shiftHeld() ? kLedYellow : kLedOff, write);
