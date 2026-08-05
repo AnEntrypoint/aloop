@@ -511,21 +511,10 @@ with {
     // pathological Link-tempo ratio or manual speed can never stall (0) or
     // explode (runaway) the read accumulator.
     speedClamped = max(0.1, min(8.0, effSpeed));
-    // VARISPEED INTERACTION: at effSpeed==1.0 (normal playback, the common
-    // case), position is ALWAYS the pure masterPhase-relative formula above
-    // -- zero drift by construction, never self-integrated. Varispeed
-    // (effSpeed != 1.0) is a deliberate, momentary DEVIATION from the
-    // master's own rate (that is what varispeed means -- playing faster or
-    // slower than the shared clock) -- while engaged, this looper falls
-    // back to its own self-integrating accumulator (the only way to express
-    // "play at a different rate than the master"), but the INSTANT effSpeed
-    // returns to 1.0, it re-snaps to the pure absPos formula on the very
-    // next sample, killing any drift accumulated while varispeed was held --
-    // mirrors ../looper's own m_playPos, which is likewise kept synced to
-    // the master-derived position every block while rate==1 and only
-    // self-integrates during an actual rate change (loopClipUpdate.cpp,
-    // confirmed via cross-codebase research this session).
-    varispeedActive = (effSpeed < 0.999) | (effSpeed > 1.001);
+    // See AGENTS.md "close-tempo phasing" entry: any effSpeed != 1.0, no
+    // matter how small, must use the self-integrating accumulator below --
+    // no deadzone/tolerance band that snaps back to absPos.
+    varispeedActive = effSpeed != 1.0;
     readPosStep(prev) = ba.if(armEdge | finishEdge, absPos,
                          ba.if(varispeedActive, wrapAbs(prev + speedClamped, wrapLen), absPos));
     // HISTORY (superseded, kept for context): this file previously carried
