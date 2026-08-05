@@ -586,7 +586,7 @@ void ApcGrid::releaseTransposeVoice(int note, ParamStore& ps) {
         return;
     }
 }
-void ApcGrid::onKeybedNoteOn(int note, ParamStore& ps, Sampler* sampler) {
+void ApcGrid::onKeybedNoteOn(int note, int vel, ParamStore& ps, Sampler* sampler) {
     if (sampler) {
         int keyIdx = Sampler::keyIndex(note);
         if (m_drumRecordMode) {
@@ -594,7 +594,7 @@ void ApcGrid::onKeybedNoteOn(int note, ParamStore& ps, Sampler* sampler) {
             return;
         }
         if (sampler->chromaticLoaded() || sampler->drumLoaded(keyIdx)) {
-            sampler->pushEvent(Sampler::EV_NOTE_ON, note, 127);
+            sampler->pushEvent(Sampler::EV_NOTE_ON, note, vel);
             return;
         }
     }
@@ -684,56 +684,60 @@ static const FxKnobTarget kGuitarTargets[kFxKnobCount] = {
     { FxKnobKind::SamplerReleaseMs, nullptr },
     { FxKnobKind::Lv2Control, "fx2/COMPRESSAMT" },
 };
-// "Super music granulator" (LOFI feature, user-requested rework): the
-// LofiFx bank keeps BITCRUSHAMT as its one surviving lofi audio-effect
-// knob (explicit "keep the bitcrusher" decision) and hands every other
-// knob position to the granulator, exposing all 6 of its meaningful
-// runtime parameters directly instead of the previous 3 (grain size/
-// density/scan rate only, with pitch-spray/position-jitter/reverse-
-// probability all fixed at their passthrough defaults). VINYLAMT/
-// FLUTTERAMT/SRRAMT are dropped from the bank's own control surface
-// (guitar_lofi_fx.dsp's Faust zones for them still exist and default to
-// their own passthrough values, so the DSP stages themselves are
-// unaffected -- only the physical knob no longer reaches them).
 static const FxKnobTarget kLofiFxTargets[kFxKnobCount] = {
-    { FxKnobKind::Lv2Control, "fx2/BITCRUSHAMT" },
-    { FxKnobKind::SamplerGrainSizeMs,       nullptr },
-    { FxKnobKind::SamplerGrainDensityHz,    nullptr },
-    { FxKnobKind::SamplerScanRate,          nullptr },
-    { FxKnobKind::SamplerPitchSprayCents,   nullptr },
-    { FxKnobKind::SamplerPositionJitterMs,  nullptr },
-    { FxKnobKind::SamplerReverseProb,       nullptr },
+    { FxKnobKind::Lv2Control,         "fx2/BITCRUSHAMT" },
+    { FxKnobKind::SamplerGranPatchWeight, nullptr },
+    { FxKnobKind::SamplerGranPatchWeight, nullptr },
+    { FxKnobKind::SamplerGranPatchWeight, nullptr },
+    { FxKnobKind::SamplerGranPatchWeight, nullptr },
+    { FxKnobKind::SamplerGranPatchWeight, nullptr },
+    { FxKnobKind::SamplerGranPatchWeight, nullptr },
 };
+
+struct GranPatch { float grainMs, grainRateHz, pitchSprayCents, posJitterMs, scanRate, reverseProb; };
+
+constexpr int kGranPatchCount = kFxKnobCount - 1;
+static const GranPatch kGranPatches[kGranPatchCount] = {
+    { 200.0f,   8.0f,  0.0f,   0.0f, 1.0f, 0.00f },
+    {  90.0f,  35.0f, 25.0f,  35.0f, 0.4f, 0.10f },
+    {  55.0f,  22.0f,  8.0f,   0.0f, 0.0f, 0.15f },
+    {  22.0f,  70.0f,  0.0f,   0.0f, 2.5f, 0.00f },
+    { 130.0f,  14.0f, 15.0f,  25.0f, 1.0f, 0.75f },
+    {  14.0f, 150.0f, 90.0f, 300.0f, 4.5f, 0.50f },
+};
+
+void ApcGrid::applyGranulatorMorph(Sampler* sampler) {
+    if (!sampler) return;
+    const float* weight = &m_fxBankValues[(int)FxBank::LofiFx][1];
+    float totalWeight = 0.0f;
+    for (int p = 0; p < kGranPatchCount; p++) totalWeight += weight[p];
+
+    GranPatch blend = kGranPatches[0];
+    if (totalWeight > 0.0001f) {
+        blend = GranPatch{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+        for (int p = 0; p < kGranPatchCount; p++) {
+            float wn = weight[p] / totalWeight;
+            blend.grainMs         += wn * kGranPatches[p].grainMs;
+            blend.grainRateHz     += wn * kGranPatches[p].grainRateHz;
+            blend.pitchSprayCents += wn * kGranPatches[p].pitchSprayCents;
+            blend.posJitterMs     += wn * kGranPatches[p].posJitterMs;
+            blend.scanRate        += wn * kGranPatches[p].scanRate;
+            blend.reverseProb     += wn * kGranPatches[p].reverseProb;
+        }
+    }
+    sampler->setGrainSizeMs(blend.grainMs);
+    sampler->setGrainDensityHz(blend.grainRateHz);
+    sampler->setPitchSprayCents(blend.pitchSprayCents);
+    sampler->setPositionJitterMs(blend.posJitterMs);
+    sampler->setScanRate(blend.scanRate);
+    sampler->setReverseProbability(blend.reverseProb);
+}
 
 static void applySamplerFxKnob(FxKnobKind kind, float v01, Sampler* sampler) {
     if (!sampler) return;
     switch (kind) {
-        case FxKnobKind::SamplerAttackMs:       sampler->setAttackMs(v01 * 2000.0f); break;
-        case FxKnobKind::SamplerReleaseMs:      sampler->setReleaseMs(v01 * 2000.0f); break;
-        case FxKnobKind::SamplerGrainSizeMs:
-            sampler->setGranulatorEnabled(true);
-            sampler->setGrainSizeMs(5.0f + v01 * 495.0f);
-            break;
-        case FxKnobKind::SamplerGrainDensityHz:
-            sampler->setGranulatorEnabled(true);
-            sampler->setGrainDensityHz(0.5f + v01 * 199.5f);
-            break;
-        case FxKnobKind::SamplerScanRate:
-            sampler->setGranulatorEnabled(true);
-            sampler->setScanRate(v01 * 8.0f);
-            break;
-        case FxKnobKind::SamplerPitchSprayCents:
-            sampler->setGranulatorEnabled(true);
-            sampler->setPitchSprayCents(v01 * 1200.0f);
-            break;
-        case FxKnobKind::SamplerPositionJitterMs:
-            sampler->setGranulatorEnabled(true);
-            sampler->setPositionJitterMs(v01 * 1000.0f);
-            break;
-        case FxKnobKind::SamplerReverseProb:
-            sampler->setGranulatorEnabled(true);
-            sampler->setReverseProbability(v01);
-            break;
+        case FxKnobKind::SamplerAttackMs:  sampler->setAttackMs(v01 * 2000.0f); break;
+        case FxKnobKind::SamplerReleaseMs: sampler->setReleaseMs(v01 * 2000.0f); break;
         default: break;
     }
 }
@@ -755,6 +759,10 @@ void ApcGrid::onFxKnobCC(int ccNumber, uint8_t data2, ParamStore& ps, Sampler* s
     if (knobIdx < 0) return;
     float v = (float)data2 / 127.0f;
     m_fxBankValues[(int)m_activeBank][knobIdx] = v;
+    if (m_activeBank == FxBank::LofiFx && knobIdx > 0) {
+        applyGranulatorMorph(sampler);
+        return;
+    }
     const FxKnobTarget* targets =
         m_activeBank == FxBank::Dub ? kDubTargets :
         m_activeBank == FxBank::Guitar ? kGuitarTargets : kLofiFxTargets;
@@ -771,15 +779,18 @@ void ApcGrid::onDubFxPress(unsigned now_ms, ParamStore&) {
     m_bankFlashWhich = FxBank::Dub;
     m_bankFlashReleaseAt = nonZeroDeadline(now_ms, kBankFlashMs);
 }
-void ApcGrid::onLofiFxPress(unsigned now_ms, ParamStore& ps, Sampler* sampler) {
-    bool shiftHeld = ps.get("fx/monitorfold", 0.0f) > 0.5f;
-    if (shiftHeld && sampler) {
-        sampler->setGranulatorEnabled(!sampler->granulatorEnabled());
-        return;
-    }
+void ApcGrid::onLofiFxPress(unsigned now_ms, ParamStore&, Sampler* sampler) {
+    m_bankBeforeGranulatorHold = m_activeBank;
     m_activeBank = FxBank::LofiFx;
     m_bankFlashWhich = FxBank::LofiFx;
     m_bankFlashReleaseAt = nonZeroDeadline(now_ms, kBankFlashMs);
+    m_granulatorHeld = true;
+    if (sampler) sampler->setGranulatorEnabled(true);
+}
+void ApcGrid::onLofiFxRelease(ParamStore&, Sampler* sampler) {
+    m_granulatorHeld = false;
+    m_activeBank = m_bankBeforeGranulatorHold;
+    if (sampler) sampler->setGranulatorEnabled(false);
 }
 void ApcGrid::onGuitarFxPress(unsigned now_ms, ParamStore&) {
     m_activeBank = FxBank::Guitar;

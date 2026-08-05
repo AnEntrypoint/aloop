@@ -63,35 +63,15 @@ constexpr int kApcBtnLofiFx   = 69;
 // (fx/reverb, fx/delay, fx/time, fx/hp, fx/lpres, fx/lp, fx/pitch).
 constexpr int kFxKnobCount = 7;
 
-// REDESIGN (Core-3 guitar+lofi-fx move): the OLD design had all 3 banks share
-// ONE 7-slot array of Faust zone names (kFxZoneNames in apc_grid.cpp), only
-// relabeling what each bank's stored value MEANT -- correct under the
-// abandoned in-Faust 3-way crossfade (only the "active" bank's write ever
-// reached the audible chain), wrong now that all 3 banks' effects are
-// simultaneously, permanently live (confirmed: "Both guitar and lofi-fx
-// always stack together with dub"). So guitar/lofi-fx no longer share dub's
-// fx/* zone identities at all -- each of their knob positions has its own
-// permanent target, resolved per-bank in onFxKnobCC/pushBankValuesToZones.
-//
-// Slot layout per bank (7 physical knob positions, CC48/49/50/51/54/55/57):
+// Slot layout per bank (7 physical knob positions, CC48/49/50/51/54/55/57).
+// See AGENTS.md's "Objekt-style granulator: hold-to-engage + patch morph"
+// entry for the LofiFx bank's patch-weight design.
 //   Dub:     fx/reverb, fx/delay, fx/time, fx/hp, fx/lpres, fx/lp, fx/pitch
-//            (unchanged Faust zones on Core 1, via ParamStore as always)
 //   Guitar:  fx2/FLANGEAMT, fx2/TREMOLOAMT, fx2/BANKSPEED, fx2/PHASERAMT,
 //            [sampler attack ms], [sampler release ms], fx2/COMPRESSAMT
-//            (guitar_lofi_fx.dsp's own LV2 control ports on Core 3, via
-//            Lv2Host::setControl; attack/release are native Sampler setters,
-//            not Faust/LV2 zones at all, per the confirmed "attack/release
-//            live natively in sampler.h" design)
-//   LofiFx:  fx2/BITCRUSHAMT, fx2/VINYLAMT, fx2/FLUTTERAMT, fx2/SRRAMT,
-//            [granulator grain size ms], [granulator grain density Hz],
-//            [granulator scan rate]
-//            (grid slots 4-6 are native Sampler granulator setters, not
-//            Faust/LV2 zones -- pitch-spray and position-jitter stay fixed at
-//            their passthrough defaults, per the confirmed 3-of-5 granulator
-//            knob mapping: only 7 physical knobs exist, no 8th slot)
+//   LofiFx:  fx2/BITCRUSHAMT, then 6 granulator-patch morph weights
 enum class FxKnobKind : uint8_t { FaustZone, Lv2Control, SamplerAttackMs, SamplerReleaseMs,
-                                   SamplerGrainSizeMs, SamplerGrainDensityHz, SamplerScanRate,
-                                   SamplerPitchSprayCents, SamplerPositionJitterMs, SamplerReverseProb };
+                                   SamplerGranPatchWeight };
 struct FxKnobTarget {
     FxKnobKind kind;
     const char* name;   // Faust zone name (FaustZone) or LV2 port symbol (Lv2Control); unused otherwise
@@ -175,7 +155,7 @@ public:
     // voice's fx/xpose{i}/note pitch-LOCK target (multitranspose.dsp derives
     // the actual shift from the live-detected input pitch), not a fixed
     // semitone offset -- see multitranspose.dsp's own header.
-    void onKeybedNoteOn(int note, ParamStore& ps, Sampler* sampler);
+    void onKeybedNoteOn(int note, int vel, ParamStore& ps, Sampler* sampler);
     void onKeybedNoteOff(int note, ParamStore& ps, Sampler* sampler);
 
     // Sampler record-arm buttons (channel 0): note 65 held records ONE shared
@@ -241,13 +221,13 @@ public:
     // nothing left to re-push on a bank switch. `now_ms` starts the brief LED
     // flash window (see bankFlashActive/pollHolds).
     void onDubFxPress(unsigned now_ms, ParamStore& ps);
-    // SHIFT (fx/monitorfold) held at press time toggles the granulator
-    // on/off instead of selecting the LofiFx bank -- lets the sample play
-    // back plain (non-granulated) without needing to zero every knob back
-    // to a passthrough value. A plain tap (SHIFT not held) still selects
-    // the bank exactly as before, matching guitar-fx's own dual-gesture
-    // precedent (tap = normal action, modifier-held = alternate action).
+    // The granulator button: a momentary hold-to-engage gesture (see AGENTS.md's
+    // "Objekt-style granulator" entry), not a tap-select like dub-fx/guitar-fx.
+    // Press switches the active bank to LofiFx and engages the granulator;
+    // release reverts both. Both are null-tolerant like onKeybedNoteOn.
     void onLofiFxPress(unsigned now_ms, ParamStore& ps, Sampler* sampler);
+    void onLofiFxRelease(ParamStore& ps, Sampler* sampler);
+    bool granulatorHeld() const { return m_granulatorHeld; }
     // guitar-fx is a dual-gesture button: a quick tap (press+release with NO
     // looper pad pressed in between) selects the guitar bank, exactly like
     // dub-fx/lofi-fx above. HOLDING guitar-fx while pressing a looper pad
@@ -381,13 +361,17 @@ private:
         {0.0f, 0.0f, 0.5f, 0.0f, 0.0f, 1.0f, 0.0f},
         // Guitar bank: flange, tremolo, speed, phaser, attack, release, compress
         {0.0f, 0.0f, 0.5f, 0.0f, 0.0f, 0.0f, 0.0f},
-        // Lofi-fx bank: bitcrush, vinyl, flutter, samplerate, grain size, grain density, scan rate
+        // Lofi-fx bank: bitcrush, then 6 granulator-patch morph weights
         {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
     };
     FxBank m_activeBank = FxBank::Dub;
     unsigned m_bankFlashReleaseAt = 0;   // 0 = no flash pending; else wall-clock ms to clear bankFlashActive() (see pollHolds)
     FxBank m_bankFlashWhich = FxBank::Dub;
     static constexpr unsigned kBankFlashMs = 150;   // brief, per the confirmed "flash only during selection" scope
+
+    bool m_granulatorHeld = false;
+    FxBank m_bankBeforeGranulatorHold = FxBank::Dub;
+    void applyGranulatorMorph(Sampler* sampler);
 
     // Sidechain-pump (guitar-fx hold + looper press): multiple simultaneous
     // sources allowed, persists after guitar-fx release, auto-clears on
