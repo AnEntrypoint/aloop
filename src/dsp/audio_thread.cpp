@@ -574,7 +574,7 @@ static void* worker(void*) {
                     std::fill(masterPhaseBuf.begin(), masterPhaseBuf.end(), 0.0f);
                 }
                 std::fill(masterLenBuf.begin(), masterLenBuf.end(), masterLen);
-                if (linkDrivingLength && g_link) {
+                if (g_link) {
                     LinkSnapshot lsBeat = g_link->audioRead();
                     if (lsBeat.phaseValid && lsBeat.quantumMicroBeats > 0) {
                         double frac = (double)lsBeat.beatPhaseMicroBeats / (double)lsBeat.quantumMicroBeats;
