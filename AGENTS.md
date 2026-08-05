@@ -1375,20 +1375,20 @@ content is wiped (long-hold erase or CLEAR_ALL).
 ## LofiFx/granulator button: two dual-mode gestures, tap-latch granulator vs real-hold Objekt-synth
 
 The LofiFx/granulator button (`kApcBtnLofiFx`, note 69) disambiguates tap vs
-hold via `kGranulatorTapMs` (250ms), `ApcGrid::m_granulatorPressAt` stamped in
+hold via `kGranulatorTapMs` (1000ms), `ApcGrid::m_granulatorPressAt` stamped in
 `onLofiFxPress`. Every press always switches the active bank to LofiFx and
 force-enables the granulator preview immediately on press (so a tap's
 eventual texture is instantly previewable) — what differs is what happens as
 the press continues:
 
-- **Quick tap (release before 250ms)**: flips `m_granulatorLatched`, a state
+- **Quick tap (release before 1000ms)**: flips `m_granulatorLatched`, a state
   that survives release. This is "pressing enables granulator" — a tap makes
   the grain engine a persistent, backgrounded part of the sound (playing with
   whatever patch blend is currently dialed in) exactly like pressing play on
   a texture, independent of whether the knobs are being touched. On release
   the bank reverts to whatever was active before the press and
   `setGranulatorEnabled` falls back to `m_granulatorLatched`.
-- **Real hold (still held at 250ms)**: `pollHolds` detects the press crossing
+- **Real hold (still held at 1000ms)**: `pollHolds` detects the press crossing
   `kGranulatorTapMs` while `m_granulatorHeld` is still true, sets
   `m_objektEngaged = true`, and disables the granulator preview
   (`setGranulatorEnabled(false)`) — the LofiFx button's second gesture is no
