@@ -76,6 +76,12 @@ has_ip() {
     ip -4 addr show dev "$IFACE" 2>/dev/null | grep -q "inet "
 }
 
+write_role_state() {
+    mkdir -p /run/aloop 2>/dev/null
+    printf '%s' "$1" > /run/aloop/wifi_role.tmp 2>/dev/null && \
+        mv /run/aloop/wifi_role.tmp /run/aloop/wifi_role 2>/dev/null
+}
+
 # Try to join the mesh as a station. Returns 0 only on association + IP.
 join_sta() {
     pkill dnsmasq 2>/dev/null || true
@@ -88,6 +94,7 @@ join_sta() {
     while [ "$waited" -lt "$ASSOC_WAIT" ]; do
         if sta_associated; then
             if udhcpc -i "$IFACE" -n -q >/dev/null 2>&1 || has_ip; then
+                write_role_state sta
                 return 0
             fi
         fi
@@ -112,8 +119,10 @@ start_ap() {
     ip link set "$IFACE" up
     if ! hostapd -B "$CONF_DIR/hostapd.conf"; then
         log "hostapd failed to start on $IFACE -- no mesh AP is being hosted"
+        write_role_state none
         return 1
     fi
+    write_role_state ap
     if ! dnsmasq -C "$CONF_DIR/dnsmasq.conf"; then
         log "dnsmasq failed to start -- peers can associate but will get no lease"
     fi
@@ -123,6 +132,7 @@ stop_ap() {
     pkill dnsmasq 2>/dev/null || true
     pkill hostapd 2>/dev/null || true
     ip addr flush dev "$IFACE" 2>/dev/null || true
+    write_role_state none
 }
 
 ap_has_clients() {

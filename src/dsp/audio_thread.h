@@ -130,7 +130,6 @@ public:
         // Session transport (start-stop-sync is enabled, so this is shared).
         bool     linkPlaying = false;
         double   bpm = 0.0;
-        bool     apMode = false;    // hosting AP vs joined STA
         bool     monitorMode = false;   // SHIFT held (apcKey25.cpp:361's p.monitorMode) -- loops folded into effects
         // GLITCH VERIFICATION: fx/microrepeat_div > 0 (glitch/microrepeat
         // engaged, notes 82-86 via apc_grid.cpp's onMicrorepeatOn/Off) --

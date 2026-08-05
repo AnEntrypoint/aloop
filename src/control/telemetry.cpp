@@ -94,6 +94,20 @@ void Telemetry::publish() {
     wraplens[wlp++] = ']'; wraplens[wlp] = 0;
     readposes[rpp++] = ']'; readposes[rpp] = 0;
 
+    // autoap.sh writes its current role atomically (tmp+rename) to this file on
+    // every AP/STA transition -- see AGENTS.md's wifi-role telemetry entry. A
+    // cheap fopen/fread each 5Hz tick, never a subprocess spawn (iw/ip) on this
+    // control loop. Falls back to "sta" (the pre-fix constant default) if the
+    // file is missing/empty, e.g. before autoap's first transition completes.
+    char wifiRole[8] = "sta";
+    FILE* rf = fopen("/run/aloop/wifi_role", "r");
+    if (rf) {
+        size_t rn = fread(wifiRole, 1, sizeof wifiRole - 1, rf);
+        wifiRole[rn] = 0;
+        fclose(rf);
+        if (rn == 0) { wifiRole[0] = 's'; wifiRole[1] = 't'; wifiRole[2] = 'a'; wifiRole[3] = 0; }
+    }
+
     char json[1280];
     int n = snprintf(json, sizeof json,
         "{\"core_busy\":[%.0f,%.0f,%.0f,%.0f],\"xruns\":%llu,"
@@ -107,7 +121,7 @@ void Telemetry::publish() {
         (unsigned long long)t.xruns,
         t.linkSynced ? "true" : "false", t.bpm,
         t.linkPeers, t.linkPlaying ? "true" : "false",
-        t.apMode ? "ap" : "sta",
+        wifiRole,
         t.monitorMode ? "true" : "false",
         t.glitchEngaged ? "true" : "false",
         t.usbRecording ? "true" : "false", (unsigned long long)t.usbRecOverruns,

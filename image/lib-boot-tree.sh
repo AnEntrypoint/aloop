@@ -228,14 +228,18 @@ SSHCFG
   _exec_paths="./opt/aloop/autoap.sh ./opt/aloop/usb-automount.sh \
       ./etc/local.d/10-rt-tune.start ./etc/local.d/20-usb-gadget.start ./etc/local.d/25-usb-automount.start \
       ./etc/init.d/aloop ./etc/init.d/autoap \
-      $(find usr/sbin -type f 2>/dev/null | sed 's|^|./|') \
-      $(find opt/aloop/test -type f -name '*.sh' 2>/dev/null | sed 's|^|./|')"
+      $(cd "$OVL" && find usr/sbin -type f 2>/dev/null | sed 's|^|./|') \
+      $(cd "$OVL" && find opt/aloop/test -type f -name '*.sh' 2>/dev/null | sed 's|^|./|')"
   if [ -f "$OVL/opt/aloop/aloop" ]; then
     _exec_paths="./opt/aloop/aloop $_exec_paths"
   fi
   ( cd "$OVL" && tar --mode='+x' -rf "$APKOVL_TAR" $_exec_paths )
   gzip -f "$APKOVL_TAR"
   cp "$_work/$APKOVL" "$_boot/$APKOVL"
+
+  # Extraction on Windows loses the exec bit regardless of what the archive
+  # stores (NTFS has no exec bit), so modes are always read from the tar
+  # LISTING here, never from an extracted copy -- see AGENTS.md.
   APKOVL_LASTMODE=$(tar -tzvf "$_work/$APKOVL" 2>/dev/null | grep 'opt/aloop/aloop$' | tail -1 | cut -c1-10)
   if [ "$APKOVL_LASTMODE" = "-rwxr-xr-x" ]; then
     echo "[boot-tree] apkovl -> $_boot/$APKOVL ($(du -h "$_work/$APKOVL" | cut -f1)) [aloop binary confirmed +x in archive]"
@@ -244,6 +248,16 @@ SSHCFG
   else
     echo "[boot-tree] ERROR: aloop binary is NOT executable in the built apkovl (last entry mode: $APKOVL_LASTMODE) — aloop service will crash-loop with 'Permission denied'"
   fi
+  for _x in usr/sbin/hostapd usr/sbin/dnsmasq; do
+    _m=$(tar -tzvf "$_work/$APKOVL" 2>/dev/null | grep "$_x\$" | tail -1 | cut -c1-10)
+    if [ -z "$_m" ]; then
+      echo "[boot-tree] WARNING: $_x missing from the apkovl — the ticker AP cannot start"
+    elif [ "$_m" = "-rwxr-xr-x" ]; then
+      echo "[boot-tree] $_x confirmed +x in archive"
+    else
+      echo "[boot-tree] ERROR: $_x is NOT executable in the apkovl (mode: $_m) — autoap will fail to host the ticker AP"
+    fi
+  done
 }
 
 boot_tree_config() {

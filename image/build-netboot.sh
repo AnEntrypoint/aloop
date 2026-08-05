@@ -38,14 +38,18 @@ NBOVL_TAR="$WORK/nbovl.tar"
 _nb_exec_paths="./opt/aloop/autoap.sh ./opt/aloop/usb-automount.sh \
     ./etc/local.d/10-rt-tune.start ./etc/local.d/20-usb-gadget.start ./etc/local.d/25-usb-automount.start \
     ./etc/init.d/aloop ./etc/init.d/autoap \
-    $(find usr/sbin -type f 2>/dev/null | sed 's|^|./|') \
-    $(find opt/aloop/test -type f -name '*.sh' 2>/dev/null | sed 's|^|./|')"
+    $(cd "$NBOVL" && find usr/sbin -type f 2>/dev/null | sed 's|^|./|') \
+    $(cd "$NBOVL" && find opt/aloop/test -type f -name '*.sh' 2>/dev/null | sed 's|^|./|')"
 if [ -f "$NBOVL/opt/aloop/aloop" ]; then
   _nb_exec_paths="./opt/aloop/aloop $_nb_exec_paths"
 fi
 ( cd "$NBOVL" && tar --mode='+x' -rf "$NBOVL_TAR" $_nb_exec_paths )
 gzip -f "$NBOVL_TAR"
 mv "$NBOVL_TAR.gz" "$BOOT/aloop.apkovl.tar.gz"
+
+# Extraction on Windows loses the exec bit regardless of what the archive
+# stores (NTFS has no exec bit), so modes are always read from the tar
+# LISTING here, never from an extracted copy -- see AGENTS.md.
 NB_LASTMODE=$(tar -tzvf "$BOOT/aloop.apkovl.tar.gz" 2>/dev/null | grep 'opt/aloop/aloop$' | tail -1 | cut -c1-10)
 if [ "$NB_LASTMODE" = "-rwxr-xr-x" ]; then
   echo "[netboot] overlay: added eth0 dhcp + networking service [aloop binary confirmed +x after repack]"
