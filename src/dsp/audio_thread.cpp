@@ -562,7 +562,35 @@ static void* worker(void*) {
                     std::fill(masterPhaseBuf.begin(), masterPhaseBuf.end(), 0.0f);
                 }
                 std::fill(masterLenBuf.begin(), masterLenBuf.end(), masterLen);
-                if (masterLen > 0.0f) {
+                // gridBeatIndex must track Link's OWN 16-beat quantum
+                // (kLinkQuantum, link_bridge.h) -- the real musical unit
+                // every peer syncs to -- never the first recorded loop's
+                // length. Deriving it from masterLen/16 instead made the
+                // beat-counter LEDs silently depend on whichever take
+                // happened to establish the phrase, drifting from the real
+                // Link quantum the instant a loop's length wasn't an exact
+                // 16-beat phrase. When Link is actually driving (synced,
+                // phase valid), read the quantum-relative phase fraction
+                // directly off the SAME LinkSnapshot read above rather than
+                // recomputing it from masterPhaseSamples/masterLen.
+                if (linkDrivingLength && g_link) {
+                    LinkSnapshot lsBeat = g_link->audioRead();
+                    if (lsBeat.phaseValid && lsBeat.quantumMicroBeats > 0) {
+                        double frac = (double)lsBeat.beatPhaseMicroBeats / (double)lsBeat.quantumMicroBeats;
+                        if (frac < 0.0) frac = 0.0;
+                        if (frac >= 1.0) frac = 0.0;
+                        int idx = (int)(frac * 16.0);
+                        if (idx < 0) idx = 0;
+                        if (idx > 15) idx = 15;
+                        g_telem.gridBeatIndex = idx;
+                    } else {
+                        g_telem.gridBeatIndex = -1;
+                    }
+                } else if (masterLen > 0.0f) {
+                    // Standalone fallback (no Link quantum available at all):
+                    // the masterLen-derived 16-tick grid is the best
+                    // available substitute, matching armEdge's own
+                    // arm-quantization grid in dsp/loop.dsp.
                     double gridStep = (double)masterLen / 16.0;
                     int idx = (int)(masterPhaseSamples / gridStep);
                     if (idx < 0) idx = 0;
