@@ -24,6 +24,7 @@ constexpr int kPresetCount = 10;
 constexpr int kTransposeVoices = 6;   // effects/home/faust/multitranspose.dsp NVOICES -- keep in sync
 constexpr unsigned kHoldEraseMs = 1000;   // apcKey25.h APC_HOLD_ERASE_MS
 constexpr int kSampleRate = 48000;        // dsp/loop.dsp's SR -- fixed throughout aloop, no runtime config path yet
+constexpr int kBlockSize  = 64;           // AudioThreadConfig::blockSize -- fixed, AGENTS.md "never add audio-path latency"
 constexpr int kMaxLoopSamples = 48000 * 60;  // dsp/loop.dsp's MAXLEN -- the delay ring's hard ceiling
 constexpr int kApcBtnShift = 0x62;         // apcKey25.h APC_BTN_SHIFT (98) -- channel 0 only, see onShiftPress
 

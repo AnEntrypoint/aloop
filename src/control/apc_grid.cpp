@@ -160,7 +160,18 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
         fprintf(stderr, "[diag7] FINISH looper=%d now_ms=%u recordStart=%u elapsedMs=%u masterLen(before)=%ld erase_zone=%.2f\n",
                 looper, now_ms, m_recordStartMs[looper], now_ms - m_recordStartMs[looper], m_masterLenSamples,
                 ps.get("looper" + std::to_string(looper) + "/erase", -1.0f));
-        long latencyBias = m_looperShiftHeldDuringTake[looper] ? kShiftFoldBlockLatencySamples : 0;
+        // Recording always taps prevFiltOut (audio_thread.cpp: prevFiltOut =
+        // rawFiltTap, assigned at the END of each block, so renderInto()'s
+        // NEXT block reads the PREVIOUS block's fully-effected output) --
+        // this is a genuine, fixed, ALWAYS-PRESENT one-block recording delay
+        // (kBlockSize samples), not a SHIFT-specific artifact. Previously
+        // only the SHIFT-fold's own ADDITIONAL block of lag
+        // (kShiftFoldBlockLatencySamples) was compensated, leaving every
+        // plain (no-SHIFT) recording playing back kBlockSize samples later
+        // than it was actually performed -- "a tiny fraction late". Every
+        // recording now gets the baseline block compensated; a SHIFT-held
+        // take gets the fold's extra block ON TOP of that baseline.
+        long latencyBias = kBlockSize + (m_looperShiftHeldDuringTake[looper] ? kShiftFoldBlockLatencySamples : 0);
         setLooper(ps, looper, "latencybias", (float)latencyBias);
         m_masterLenSamples = (long)ps.get("cmd/master_len", 0.0f);
         if (m_masterLenSamples == 0) {
