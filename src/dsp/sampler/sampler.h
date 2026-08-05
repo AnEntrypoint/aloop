@@ -330,6 +330,7 @@ private:
                              // false = drum one-shot (must keep its old fixed EDGE_FADE/LEAD_DECLICK/GAIN_STEP behavior untouched)
         bool   granular;    // true = this voice is rendered by the grain-cloud path instead of the plain _readInterp path
         double grainAccum;  // fractional grain-spawn accumulator (see renderInto's granular branch)
+        float  velGain;     // vel/127, clamped [0,1]; scales overall voice loudness and (granular only) grain spawn density
     };
 
     // A single active grain: an independent short-lived read into the SAME
@@ -446,8 +447,8 @@ private:
     {
         Voice &vo = m_voice[vSlot];
 
-        // Spawn-interval in scan-time samples, from density (grains/sec).
-        double spawnPeriod = (double)SR / (double)m_grainRateHz;
+        float densityFromVel = 0.4f + 0.6f * vo.velGain;
+        double spawnPeriod = (double)SR / ((double)m_grainRateHz * (double)densityFromVel);
 
         for (int i = 0; i < n; i++) {
             // Attack/release envelope reuses the same gain state machine as
@@ -612,7 +613,7 @@ private:
     // Returns the voice slot used, so callers can do post-spawn setup (e.g.
     // arming the granular grain cloud) without a second linear scan for "which
     // slot did we just steal/take".
-    int _spawnVoice(const short *M, int len, double rate, bool sustain, int note, bool isChrom)
+    int _spawnVoice(const short *M, int len, double rate, bool sustain, int note, bool isChrom, float velGain)
     {
         if (len <= 0) return -1;
         int slot = -1; unsigned oldest = 0xFFFFFFFF;
@@ -623,10 +624,11 @@ private:
         Voice &vo = m_voice[slot];
         vo.active = true; vo.M = M; vo.len = len;
         vo.pos = 0.0; vo.rate = rate; vo.sustain = sustain; vo.note = note;
-        vo.gain = 0.0f; vo.target = 1.0f; vo.age = ++m_ageCtr;
+        vo.gain = 0.0f; vo.target = velGain; vo.age = ++m_ageCtr;
         vo.isChrom = isChrom;
         vo.granular = false;
         vo.grainAccum = 0.0;
+        vo.velGain = velGain;
         // Stealing this slot orphans any grains it owned from a previous voice;
         // kill them so a stolen slot doesn't keep spawning/rendering grains
         // that think they belong to the new voice's buffer/rate.
@@ -665,12 +667,13 @@ private:
         return slot;
     }
 
-    void _noteOn(int note, int /*vel*/)
+    void _noteOn(int note, int vel)
     {
+        float velGain = (float)(vel < 1 ? 1 : (vel > 127 ? 127 : vel)) / 127.0f;
         int k = keyIndex(note);
         if (k >= 0 && m_drumLoaded[k]) {
             // Drum one-shot at original pitch (ignores note-off, plays to end).
-            int slot = _spawnVoice(m_drumM[k], m_drumLen[k], 1.0, false, -1, /*isChrom=*/false);
+            int slot = _spawnVoice(m_drumM[k], m_drumLen[k], 1.0, false, -1, /*isChrom=*/false, velGain);
             if (slot >= 0 && m_granOn) m_voice[slot].granular = true;
             return;
         }
@@ -682,7 +685,7 @@ private:
                 if (m_voice[v].active && m_voice[v].sustain && m_voice[v].note == note)
                     m_voice[v].target = 0.0f;
             double rate = pow(2.0, (double)(note - ROOT_NOTE) / 12.0);
-            int slot = _spawnVoice(m_chromM, m_chromLen, rate, true, note, /*isChrom=*/true);
+            int slot = _spawnVoice(m_chromM, m_chromLen, rate, true, note, /*isChrom=*/true, velGain);
             if (slot >= 0 && m_granOn) m_voice[slot].granular = true;
         }
     }

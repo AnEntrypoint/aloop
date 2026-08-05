@@ -1372,6 +1372,45 @@ never reaches the ARM/FINISH dispatch — it does not touch
 hold gesture. The sidechain-source designation auto-clears whenever that looper's
 content is wiped (long-hold erase or CLEAR_ALL).
 
+## Objekt-style granulator: hold-to-engage + patch morph
+
+The LofiFx bank (`kApcBtnLofiFx`, note 69) is a momentary hold gesture, not a
+tap-select bank button like dub-fx/guitar-fx. `onLofiFxPress` immediately
+switches the active bank to LofiFx and calls `setGranulatorEnabled(true)`;
+`onLofiFxRelease` reverts the active bank to whatever it was before the press
+and calls `setGranulatorEnabled(false)`. This replaces an earlier SHIFT+tap
+permanent toggle — the granular texture is now present only while the
+performer physically holds the button, matching how a real Objekt-style
+groovebox is played (press-and-hold a gesture, release to drop back to plain
+sample playback), and keeps the 7 physical knobs pointed at the granulator's
+own controls only for the duration of that hold.
+
+Knob slot 0 (`fx2/BITCRUSHAMT`) is unchanged. Slots 1-6 no longer map 1:1 to
+raw grain parameters (grain size/density/scan rate/pitch spray/position
+jitter/reverse probability) — turning six independent raw sliders to their
+extremes simultaneously produced an incoherent, un-musical result. Instead
+each slot is the BLEND WEIGHT of one of 6 fixed named patches
+(`kGranPatches` in `apc_grid.cpp`: Glass, Cloud, Freeze, Chop, Tape,
+Shatter — each a full point in grain-size/density/spray/jitter/scan/reverse
+space representing a distinct musical character). `applyGranulatorMorph`
+computes a weighted average across all 6 patches (weights normalized by
+their sum, a convex combination) and pushes the single resulting blended
+point into the Sampler's existing 6 setters. All weights at 0 falls back to
+patch 0 (Glass, closest to a plain/transparent read) rather than dividing by
+zero. This means turning up two patch dials together always yields a
+coherent midpoint texture instead of two raw parameters fighting each other,
+and dialing every patch to max still yields a bounded, sane blend (never the
+sum of six maxed-out raw parameters at once).
+
+Real MIDI velocity (previously hardcoded to 127 in `onKeybedNoteOn`, the real
+`d2` byte discarded at the `midi.cpp` call site) now reaches
+`Sampler::_noteOn` and scales `Voice::velGain`: overall voice loudness for
+every voice (granular and plain alike), plus (granular voices only) grain
+spawn density via `densityFromVel = 0.4 + 0.6*velGain` in
+`_renderGranularVoice` — a harder key press plays louder AND spawns a denser,
+brighter grain cloud, the dynamic-response feel real granular groovebox
+hardware has and this sampler never had.
+
 ## CC53 formant constants (must match `../looper` exactly)
 
 Deadzone 60-68, range ±1 unshifted / ±3 shifted, formula
