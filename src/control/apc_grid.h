@@ -157,7 +157,7 @@ private:
     bool m_granulatorHeld = false;
     bool m_granulatorLatched = false;
     unsigned m_granulatorPressAt = 0;
-    static constexpr unsigned kGranulatorTapMs = 250;
+    static constexpr unsigned kGranulatorTapMs = 1000;
     FxBank m_bankBeforeGranulatorHold = FxBank::Dub;
     void applyGranulatorMorph(Sampler* sampler);
 
