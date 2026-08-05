@@ -1137,6 +1137,22 @@ Its final `(ival*THRU + oval*LOOP*GATE) * MIX` hard-clip is already covered by
 `rawGlitchTap` was removed from `effects_runtime.dsp`/`aloop.dsp`/`audio_thread.cpp`
 (`fouts[4]` → `fouts[3]`) as a confirmed-dead output.
 
+## `pitch.dsp` re-applies its params every sample instead of calling them separately
+
+`pitchTick = ffunction(float dubfx_pitch_tick(float, float, float, float), ...)` takes
+the sample AND `scale`/`FORMANT`/`ENGAGED` together in one call
+(`process = _, scale, FORMANT, ENGAGED : pitchTick`) rather than a separate
+params-only ffunction call before the per-sample one, even though
+`dubfx_pitch_tick` applies params idempotently on every call. A separate
+params-only call site would receive only compile-time-constant-shaped inputs on
+some paths and Faust would constant-fold it away, silently freezing the engine's
+params at their first-seen value. Riding the params in on the same call as the
+sample forces every call to be genuinely per-sample.
+
+This is why the stage is bit-identical to `../looper`'s `EngineSoladSnac`: the
+pitched sample is produced by that real C++ engine via the ffunction bridge, not
+a Faust-side approximation of it.
+
 ## DawDreamer verification harness
 
 Numeric/behavioral verification of `.dsp` changes uses
@@ -1431,10 +1447,13 @@ the press continues:
   voices (`allocateObjektVoice`/`releaseObjektVoice`, oldest-steal allocator
   identical in shape to `allocateTransposeVoice`) via `fx/objektvoice{v}/note`
   and `fx/objektvoice{v}/gate` signal inputs instead of the transpose/Sampler
-  routing, and knob slots 1-6 drive Objekt's own macros
-  (`applyObjektKnob`/`kObjektKnobRanges`: character, tone, decay, damping,
-  stretch, level — Faust zones `fx/objekt/*`) instead of the granulator patch
-  blend below. Releasing the button releases every Objekt voice
+  routing, and knob slots 1-6 drive Objekt's own controls instead of the
+  granulator patch blend below: slots 1-4 are named-patch blend weights
+  (`applyObjektPatchMorph`/`kObjektPatches` — Percussive, Metal/Glass,
+  Strings, Dance Bass; see "Objekt named sweetspot patches" below), slots 5-6
+  are direct performative dials (`applyObjektDirectKnob`/
+  `kObjektDirectKnobRanges`: tone brightness, level — Faust zones
+  `fx/objekt/*`). Releasing the button releases every Objekt voice
   (`releaseAllObjektVoices`) and reverts the bank; `onClearAll` also releases
   all Objekt voices (mirroring the existing transpose-voice release there),
   since a stuck `fx/objektvoice{v}/gate` would be the same class of bug
@@ -1462,18 +1481,31 @@ conditionally), not a regression to fix.
 
 **Objekt is a real-input-excited resonator ("reactor mode"), not a
 self-contained synth voice, and must REPLACE dry, never layer over it.**
-`objekt_synth.dsp`'s `exciteFor(exciteIn, gate)` blends a synthetic
-percussive `impact` (`pm.strike`, unchanged) with a `wash` term that is now
-the live `dry` signal itself (filtered by `tone`, gated per-voice by
-`en.asr(...,gate)`) — WITNESSED bug: `wash` used to be `no.noise`, a
-self-contained synthetic exciter with no live-input path at all, directly
-contradicting "excite via the mic" (the button's whole "reactor mode"
-premise). `effects_runtime.dsp` passes the raw `dry` bus into
+`objekt_synth.dsp`'s `exciteFor(exciteIn, note, gate)` is the live `dry`
+signal ALONE (filtered by `tone`, gated per-voice by `en.asr(...,xgate)`) —
+there is no synthetic exciter anywhere in the signal path. An earlier
+revision blended a synthetic percussive `impact` (`pm.strike`, triggered by
+the key gate) under a `character` knob; that impact term was removed
+entirely (per direct user request: keys must never play the exciter, only
+the mic may) rather than left as a blendable option, since any nonzero
+`character` toward `impact` meant a held key with silent input still made
+sound — a synthetic voice wearing the resonator's face. A key held with no
+live input now renders bit-exact silence (verified via the DawDreamer JIT
+harness, `test/objekt-sweetspot/`). The `impact` term's own predecessor bug
+is historical color only: `wash` (now the whole exciter) used to be
+`no.noise`, a self-contained synthetic wash with no live-input path at all,
+directly contradicting "excite via the mic" before it was fixed to read the
+real `dry` bus.
+
+`effects_runtime.dsp` passes the raw `dry` bus into
 `objekt(dry, on0,og0, ...)` as this excitation signal; each voice only picks
 it up while ITS OWN gate is held (the ASR envelope), so the live input is
 "playing normally into" the resonator continuously but is only audible
 through a voice while that voice's key is down — matches "only allowing
-playback via the keys".
+playback via the keys". The `character` hslider was repurposed rather than
+removed: it now drives `position` (see "Objekt named sweetspot patches"
+below), a real physical excitation-position parameter that was previously a
+hardcoded `bankPosition = 0.35` constant.
 
 A second, independent WITNESSED bug in the same feature: `objektOut` used to
 be summed INTO `dry` (`dryWithObjekt = dry + objektOut`) and that combined
@@ -1678,6 +1710,66 @@ playable register below the guard band: every existing regression scenario
 (idle, fresh onset, mid-range notes, the voice-steal fix above) renders
 bit-exact against the pre-guard DSP, since none of their mode frequencies
 approach the last 5% of Nyquist.
+
+## Objekt named sweetspot patches (`kObjektPatches`)
+
+Once the exciter became mic-only (see "Objekt is a real-input-excited
+resonator" above), `character` no longer had a blend to control — it was
+repurposed into `position`, and `objekt_synth.dsp`'s four material-identity
+parameters (`position`, `decay`, `damping`, `stretch`) were moved off direct
+1:1 knob mapping (`applyObjektKnob`) onto a named-patch convex-blend surface
+(`applyObjektPatchMorph`), mirroring the granulator's own `kGranPatches`
+mechanism (see "Super music granulator" above) exactly: knobs 1-4 are patch
+weights, normalized by their sum and blended into a single point, falling
+back to patch 0 when every weight is 0. `tone` (brightness) and `level`
+(loudness) stay direct dials on knobs 5-6 (`applyObjektDirectKnob`,
+`kObjektDirectKnobRanges`) rather than being folded into the patches —
+those two are genuinely performative, something a player rides live while
+holding a note, unlike `position`/`decay`/`damping`/`stretch`, which define
+what the resonator is made of and are better dialed in as a single named
+identity than four independent sliders fought into alignment by hand.
+
+**The four patches were found empirically, not hand-guessed.** The
+DawDreamer JIT harness at `test/objekt-sweetspot/` (`sweep.py` +
+`select_patches.py`) grid-searched `position`/`decay`/`damping`/`stretch`
+(5 levels each, 625 renders total; `objekt_synth.dsp` compiles standalone
+against a single multi-channel `make_playback_processor` feeding all 9
+declared inputs by channel order — no `ffunction`/`pitch.dsp` stub needed,
+same as the voice-steal/alias-guard harnesses above) against a synthetic
+mic excitation (a short filtered-noise burst, decaying over ~3ms, then
+silence — a generic stand-in for a real tap/pluck/vocal transient) and
+scored each render's measured features (RMS-envelope decay time to -24dB,
+an early/late RMS transient ratio, magnitude-squared-weighted spectral
+centroid over a 100-400ms post-onset window, and the fraction of that
+window's energy below 1.5x the fundamental) against a hand-authored target
+direction per voice. `stretch` itself (not a measured feature) is used
+directly as an inharmonicity proxy in the scoring, since the FFT
+peak-vs-nearest-integer-harmonic `inharmonicity` feature the harness also
+computes is systematically biased toward small values at high partial
+numbers (nearest-integer rounding error shrinks as 1/k) and isn't reliable
+enough to rank by on its own — a real limitation of that specific metric,
+not of the sweep methodology.
+
+Final picks (`position, decay, damping, stretch`), each spot-verified at a
+bass note (36) and a high note (84) to confirm the alias guard keeps every
+patch's output finite and sane across the whole keybed:
+
+| Patch (knob 1-4 slot) | position | decay | damping | stretch | Measured character |
+|---|---|---|---|---|---|
+| Percussive | 0.08 | 0.15 | 0.80 | -0.10 | 60ms decay, transient ratio ~34 (sharp tap) |
+| Metal/Glass | 0.08 | 7.00 | 0.97 | 1.20 | ~2.5s ring, centroid ~1.8kHz, only 26% of energy below 1.5x f0 (bright, inharmonic) |
+| Strings | 0.08 | 7.00 | 0.97 | -0.10 | ~2.5s ring, centroid ~2-3x f0, harmonic partials audibly present (not a bare sine) |
+| Dance Bass | 0.42 | 7.00 | 0.15 | -0.10 | ~2.5s ring, centroid pinned at f0, >99% of energy at the fundamental (clean low end) |
+
+Metal/Glass and Strings share `position`/`decay`/`damping` and differ only
+in `stretch` — the sweep independently rediscovered that inharmonicity
+(`stretch`) is the one parameter that actually separates "bell-like" from
+"string-like" once decay and damping are both maxed toward a long, lightly-
+damped ring; `position`'s effect on the mode-gain weights
+(`abs(sin(pi*position*k))`) turned out to be far less intuitive than its
+name suggests (0.08 doesn't favor the fundamental — it gives roughly equal
+weight across all 4 modes) and the optimizer's empirical answer overrode
+any hand-authored assumption about it.
 
 ## `ApcGrid::bindAll` must `ps.bind()` every internal flag a C++ path later `setByName`s
 

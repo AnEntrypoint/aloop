@@ -673,10 +673,10 @@ struct ObjektPatch { float position, decay, damping, stretch; };
 
 constexpr int kObjektPatchCount = 4;
 static const ObjektPatch kObjektPatches[kObjektPatchCount] = {
-    { 0.080f, 0.350f, 0.350f,  0.000f },
-    { 0.650f, 5.500f, 0.940f,  1.050f },
-    { 0.300f, 3.200f, 0.800f,  0.050f },
-    { 0.150f, 3.000f, 0.550f, -0.300f },
+    { 0.080f, 0.150f, 0.800f, -0.100f },
+    { 0.080f, 7.000f, 0.970f,  1.200f },
+    { 0.080f, 7.000f, 0.970f, -0.100f },
+    { 0.420f, 7.000f, 0.150f, -0.100f },
 };
 
 struct ObjektDirectKnobRange { const char* zone; float lo; float hi; };

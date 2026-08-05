@@ -9,10 +9,10 @@ RESULTS_PATH = Path(__file__).resolve().parent / "sweep_results.jsonl"
 FEATURE_KEYS = ["decayTimeMs", "transientRatio", "spectralCentroidHz", "lowFreqEnergyRatio", "inharmonicity"]
 
 TARGET_DIRECTION = {
-    "Percussive":  {"decayTimeMs": -1, "transientRatio": +1, "spectralCentroidHz":  0, "lowFreqEnergyRatio":  0, "inharmonicity": -1},
-    "MetalGlass":  {"decayTimeMs": +1, "transientRatio": -1, "spectralCentroidHz": +1, "lowFreqEnergyRatio": -1, "inharmonicity": +1},
-    "Strings":     {"decayTimeMs": +1, "transientRatio": -1, "spectralCentroidHz":  0, "lowFreqEnergyRatio":  0, "inharmonicity": -1},
-    "DanceBass":   {"decayTimeMs": +1, "transientRatio": -1, "spectralCentroidHz": -1, "lowFreqEnergyRatio": +1, "inharmonicity": -1},
+    "Percussive":  {"decayTimeMs": -1.0, "transientRatio": +1.0, "spectralCentroidHz":  0.0, "lowFreqEnergyRatio":  0.0, "stretchBonus": 0.0, "stretchAbsPenalty": 0.0},
+    "MetalGlass":  {"decayTimeMs": +0.6, "transientRatio": -0.4, "spectralCentroidHz": +1.0, "lowFreqEnergyRatio": -1.0, "stretchBonus": 1.5, "stretchAbsPenalty": 0.0},
+    "Strings":     {"decayTimeMs": +0.5, "transientRatio": -0.4, "spectralCentroidHz": +0.15, "lowFreqEnergyRatio": -0.6, "stretchBonus": 0.0, "stretchAbsPenalty": 1.0},
+    "DanceBass":   {"decayTimeMs": +0.2, "transientRatio": +0.1, "spectralCentroidHz": -1.0, "lowFreqEnergyRatio": +1.0, "stretchBonus": 0.0, "stretchAbsPenalty": 0.6},
 }
 
 
@@ -38,14 +38,14 @@ def zscore_table(rows):
     return z, mean, std
 
 
-def score(z_row, target):
+def score(z_row, stretch_value, target):
     s = 0.0
     for i, k in enumerate(FEATURE_KEYS):
-        d = target[k]
-        if d == 0:
-            s -= abs(z_row[i]) * 0.3
-        else:
-            s += d * z_row[i]
+        if k not in target:
+            continue
+        s += target[k] * z_row[i]
+    s += target.get("stretchBonus", 0.0) * stretch_value
+    s -= target.get("stretchAbsPenalty", 0.0) * abs(stretch_value)
     return s
 
 
@@ -65,7 +65,7 @@ def main():
 
     chosen = {}
     for name, target in TARGET_DIRECTION.items():
-        scores = np.array([score(z[i], target) for i in range(len(rows))])
+        scores = np.array([score(z[i], rows[i]["params"]["stretch"], target) for i in range(len(rows))])
         order = np.argsort(-scores)
         top = order[:5]
         print(f"=== {name} top 5 ===")
