@@ -237,8 +237,24 @@ void ApcGrid::applyRecPlayCycle(int looper, unsigned now_ms, ParamStore& ps, Lin
             // is made in original-tempo-equivalent space; the stored
             // wrapLen/finishtarget stays in real-sample space by converting
             // the chosen candidate back.
+            // Real regression this session: Link ALWAYS reports a valid
+            // state.tempo() even completely standalone with zero peers
+            // (LinkSnapshot::synced is peerCount>0, but bpm is populated
+            // regardless) -- gating only on `link` being non-null (rather
+            // than also checking synced) meant every subsequent recording,
+            // even with NO Link peers at all, silently mis-scaled its own
+            // quantize decision against Link's local un-synced tempo instead
+            // of correctly treating tempoScale as 1.0. audio_thread.cpp's
+            // own effSpeed/linkSpeedRatio already gates on ls.synced
+            // (linkDrivingLength) and stays bit-exact 1.0 standalone -- this
+            // write-side computation must match that read-side gate exactly,
+            // or a looper's stored wrapLen gets quantized against a
+            // tempo-scale correction playback never actually applies,
+            // producing a wrapLen that doesn't cleanly multiple/divide into
+            // the master phrase -- progressive drift between loopers of
+            // different lengths, not a one-time offset.
             double tempoScale = 1.0;
-            if (link) {
+            if (link && link->audioRead().synced) {
                 float recordedBpm = ps.get("cmd/recorded_bpm", 0.0f);
                 double curBpm = link->audioRead().bpm;
                 if (recordedBpm > 1.0f && curBpm > 1.0) {
