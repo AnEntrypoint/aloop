@@ -51,35 +51,44 @@ depends on how long it's held:
   state that survives release — a tap turns the grain engine into a
   persistent, backgrounded texture layered under everything else.
 - **Real hold** (still held past 1 second): switches the instrument entirely
-  to **Objekt**, a 4-voice modal-resonator synth in the spirit of a classic
-  hardware physical-modeling instrument. While engaged:
-  - The keybed drives up to 4 Objekt voices (round-robin/oldest-steal
-    allocation, same shape as the pitch-lock voice allocator below).
-  - Knob slots 1–6 drive Objekt's own macros instead of the granulator blend:
-    **character, tone, decay, damping, stretch, level**.
-  - Objekt is excited by the *live input signal* ("reactor mode"), not a
+  to **Resonode**, a 4-voice, 6-mode-per-voice modal-resonator synth in the
+  spirit of a classic hardware physical-modeling instrument. While engaged:
+  - The keybed drives up to 4 Resonode voices (round-robin/oldest-steal
+    allocation, same shape as the pitch-lock voice allocator below), each
+    carrying its own real MIDI velocity into the exciter's gain — a harder
+    key press rings out louder.
+  - Knob slots 1–4 are the blend weight of one of 4 named material patches —
+    **Percussive, Metal/Glass, Strings, Dance Bass** — each a full point in
+    position/decay/damping/stretch space, blended as a convex combination
+    exactly like the granulator's own patch surface below. Knob slots 5–6 are
+    direct performative dials: **tone** (exponential-taper brightness) and
+    **level** (output loudness).
+  - Resonode is excited by the *live input signal* ("reactor mode"), not a
     synthetic oscillator — it only sounds through a voice while that voice's
     key is held, and it fully **replaces** the dry/pitch-lock signal while
     engaged rather than layering under it.
-  - Releasing the pad releases every held Objekt voice and reverts to the
+  - Releasing the pad releases every held Resonode voice and reverts to the
     bank that was active before the press.
 
-LED feedback on the pad itself: blinking red once Objekt is actually engaged,
-blinking green during the pre-threshold granulator preview, solid green while
-latched-on in the background, off otherwise.
+LED feedback on the pad itself: blinking red once Resonode is actually
+engaged, blinking green during the pre-threshold granulator preview, solid
+green while latched-on in the background, off otherwise.
 
-### Granulator: 6 named patches, blended, not 6 raw sliders
+### Granulator and Resonode: named patches, blended, never raw sliders
 
-When Objekt is *not* engaged, knob slots 1–6 are the blend weight of one of 6
-fixed named grain patches — **Glass, Cloud, Freeze, Chop, Tape, Shatter** —
+When Resonode is *not* engaged, knob slots 1–6 are the blend weight of one of
+6 fixed named grain patches — **Glass, Cloud, Freeze, Chop, Tape, Shatter** —
 each a full point in grain-size/density/pitch-spray/position-jitter/scan-rate/
 reverse-probability/envelope-shape space representing a distinct musical
-character. Turning up multiple patch dials together produces a coherent
-convex-combination blend, never independent raw parameters fighting each
-other; all weights at zero falls back to Glass (the closest to a plain,
-transparent read). Real key velocity scales both overall grain-voice loudness
-and (for granular voices) grain spawn density, so a harder key press plays
-louder and spawns a denser, brighter grain cloud.
+character. When Resonode *is* engaged, knob slots 1–4 blend the 4 named
+material patches above instead. Both surfaces share the same convex-
+combination discipline: turning up multiple patch dials together produces a
+coherent blend, never independent raw parameters fighting each other, and all
+weights at zero falls back to the first named patch (Glass for the granulator,
+Percussive for Resonode) rather than dividing by zero. Real key velocity
+scales overall voice loudness for both instruments, and (for granular voices
+only) grain spawn density, so a harder key press plays louder — and for the
+granulator, spawns a denser, brighter grain cloud.
 
 ## 6-voice polyphonic pitch-lock (SHIFT + keybed)
 
@@ -110,7 +119,7 @@ beat index), read from `AudioThread::Telemetry::gridBeatIndex`.
 ## 3-bank FX knob surface
 
 The knob row is one shared set of 6 CCs whose target table depends on which
-bank is active — **Dub**, **Guitar**, or **LofiFx** (granulator/Objekt, above).
+bank is active — **Dub**, **Guitar**, or **LofiFx** (granulator/Resonode, above).
 A bank-select press only flips which target table the next knob CC reaches
 and starts a brief LED flash; it never re-pushes state to the DSP.
 

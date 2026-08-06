@@ -58,7 +58,7 @@ public:
             sendCoalesced(kApcBtnGuitarFx, (flash && which == FxBank::Guitar) ? kLedGreen : kLedOff, write);
         }
         sendCoalesced(kApcBtnLofiFx,
-            grid.objektEngaged()     ? kLedRedBlink :
+            grid.resonodeEngaged()   ? kLedRedBlink :
             grid.granulatorHeld()    ? kLedGreenBlink :
             grid.granulatorLatched() ? kLedGreen :
                                         kLedOff,

@@ -13,7 +13,7 @@ Read in this order:
 5. `DECISIONS.md` — the append-only decision log (rationale + evidence per
    choice).
 6. `CONTROLS.md` — the current control-surface reference (loopers, pitch-lock,
-   Objekt, granulator, grid-beat visualization).
+   Resonode, granulator, grid-beat visualization).
 7. `GLOSSARY.md` — every domain term defined.
 8. `BOOT.md`, `RT-TUNING.md` — runtime + tuning detail.
 

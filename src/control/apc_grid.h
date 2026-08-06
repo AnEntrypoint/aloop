@@ -15,7 +15,7 @@ constexpr int kApcCols = 8;
 constexpr int kLooperCount = 20;
 constexpr int kPresetCount = 10;
 constexpr int kTransposeVoices = 6;
-constexpr int kObjektVoices = 4;
+constexpr int kResonodeVoices = 4;
 constexpr unsigned kHoldEraseMs = 1000;
 constexpr int kSampleRate = 48000;
 constexpr int kBlockSize  = 64;
@@ -90,7 +90,7 @@ public:
     void onLofiFxRelease(unsigned now_ms, ParamStore& ps, Sampler* sampler);
     bool granulatorHeld() const { return m_granulatorHeld; }
     bool granulatorLatched() const { return m_granulatorLatched; }
-    bool objektEngaged() const { return m_objektEngaged; }
+    bool resonodeEngaged() const { return m_resonodeEngaged; }
     void onGuitarFxPress(unsigned now_ms, ParamStore& ps);
     void onGuitarFxRelease(ParamStore& ps);
     void onFxKnobCC(int ccNumber, uint8_t data2, ParamStore& ps, Sampler* sampler, Lv2Host* homeFx);
@@ -161,14 +161,14 @@ private:
     FxBank m_bankBeforeGranulatorHold = FxBank::Dub;
     void applyGranulatorMorph(Sampler* sampler);
 
-    bool m_objektEngaged = false;
-    int m_objektVoiceNote[kObjektVoices] = {-1, -1, -1, -1};
-    uint32_t m_objektVoiceOrder[kObjektVoices] = {};
-    uint32_t m_objektVoiceCounter = 0;
-    int allocateObjektVoice(int note);
-    void releaseObjektVoice(int note, ParamStore& ps);
-    void releaseAllObjektVoices(ParamStore& ps);
-    void applyObjektPatchMorph(ParamStore& ps);
+    bool m_resonodeEngaged = false;
+    int m_resonodeVoiceNote[kResonodeVoices] = {-1, -1, -1, -1};
+    uint32_t m_resonodeVoiceOrder[kResonodeVoices] = {};
+    uint32_t m_resonodeVoiceCounter = 0;
+    int allocateResonodeVoice(int note);
+    void releaseResonodeVoice(int note, ParamStore& ps);
+    void releaseAllResonodeVoices(ParamStore& ps);
+    void applyResonodePatchMorph(ParamStore& ps);
 
     bool m_guitarFxHeld = false;
     bool m_guitarFxConsumedByLooperPress = false;

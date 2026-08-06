@@ -9,7 +9,7 @@ import numpy as np
 import dawdreamer as daw
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DSP_PATH = REPO_ROOT / "effects" / "home" / "faust" / "objekt_synth.dsp"
+DSP_PATH = REPO_ROOT / "effects" / "home" / "faust" / "resonode_synth.dsp"
 OUT_PATH = Path(__file__).resolve().parent / "sweep_results.jsonl"
 
 SAMPLE_RATE = 48000
@@ -37,23 +37,23 @@ def build_dsp_text(params):
     text = DSP_PATH.read_text()
     text = substitute_once(
         text,
-        r'hslider\("fx/objekt/position", [^,]+,',
-        f'hslider("fx/objekt/position", {params["position"]},',
+        r'hslider\("fx/resonode/position", [^,]+,',
+        f'hslider("fx/resonode/position", {params["position"]},',
     )
     text = substitute_once(
         text,
-        r'hslider\("fx/objekt/decay", [^,]+,',
-        f'hslider("fx/objekt/decay", {params["decay"]},',
+        r'hslider\("fx/resonode/decay", [^,]+,',
+        f'hslider("fx/resonode/decay", {params["decay"]},',
     )
     text = substitute_once(
         text,
-        r'hslider\("fx/objekt/damping", [^,]+,',
-        f'hslider("fx/objekt/damping", {params["damping"]},',
+        r'hslider\("fx/resonode/damping", [^,]+,',
+        f'hslider("fx/resonode/damping", {params["damping"]},',
     )
     text = substitute_once(
         text,
-        r'hslider\("fx/objekt/stretch", [^,]+,',
-        f'hslider("fx/objekt/stretch", {params["stretch"]},',
+        r'hslider\("fx/resonode/stretch", [^,]+,',
+        f'hslider("fx/resonode/stretch", {params["stretch"]},',
     )
     return text
 
@@ -83,6 +83,7 @@ def render_case(params, note=TEST_NOTE):
 
     note_sig = np.full(n, float(note), dtype=np.float64)
     gate_sig = np.ones(n, dtype=np.float64)
+    vel_sig = np.ones(n, dtype=np.float64)
     zero_sig = np.zeros(n, dtype=np.float64)
 
     inputs = np.stack(
@@ -90,6 +91,10 @@ def render_case(params, note=TEST_NOTE):
             excite,
             note_sig,
             gate_sig,
+            vel_sig,
+            zero_sig,
+            zero_sig,
+            zero_sig,
             zero_sig,
             zero_sig,
             zero_sig,
@@ -102,7 +107,7 @@ def render_case(params, note=TEST_NOTE):
 
     playback = engine.make_playback_processor("in", inputs)
 
-    faust = engine.make_faust_processor("objekt")
+    faust = engine.make_faust_processor("resonode")
     faust.set_dsp_string(dsp_text)
     faust.compile_flags = ["-vec", "-fun", "-dfs", "-vs", "32", "-ct", "0"]
     if not faust.compile():

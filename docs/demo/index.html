@@ -174,7 +174,7 @@ const DIVS = [1,2,4,8,16];
 const KNOB_CC = [48,49,50,51,54,55,57];
 const VU_MID = 0.32, VU_HIGH = 0.62;
 const GRAN_PATCHES = ['Glass','Cloud','Freeze','Chop','Tape','Shatter'];
-const OBJEKT_PATCHES = ['Percussive','Metal/Glass','Strings','Dance Bass'];
+const RESONODE_PATCHES = ['Percussive','Metal/Glass','Strings','Dance Bass'];
 const DUB_LABELS = ['Reverb','Delay','Time','HP Cut','LP Res','LP Cut','Pitch'];
 const GUITAR_LABELS = ['Flange','Tremolo','Bank Spd','Phaser','Attack','Release','Compress'];
 
@@ -196,11 +196,11 @@ const state = {
   guitarFxHeld: false,
   granHeld: false,
   granLatched: false,
-  objektEngaged: false,
+  resonodeEngaged: false,
   bankBeforeHold: 'dub',
   knobs: { dub: [0,0,0.5,0,0,1,0], guitar: [0,0,0.5,0,0,0,0], lofi: [0,0,0,0,0,0,0] },
   transposeVoices: Array(6).fill(null),
-  objektVoices: Array(4).fill(null),
+  resonodeVoices: Array(4).fill(null),
   modWheel: 0.5,
   formant: 0.5,
   bpm: 120,
@@ -279,16 +279,16 @@ function pressLofiFxDown() {
   state.granHeld = true;
   render();
   granTimer = setTimeout(() => {
-    if (state.granHeld) { state.objektEngaged = true; render(); }
+    if (state.granHeld) { state.resonodeEngaged = true; render(); }
   }, 1000);
 }
 function pressLofiFxUp() {
   clearTimeout(granTimer);
   state.granHeld = false;
-  if (state.objektEngaged) {
-    state.objektEngaged = false;
+  if (state.resonodeEngaged) {
+    state.resonodeEngaged = false;
     state.transposeVoices.fill(null);
-    state.objektVoices.fill(null);
+    state.resonodeVoices.fill(null);
   } else {
     state.granLatched = !state.granLatched;
   }
@@ -308,8 +308,8 @@ function knobLabel(idx) {
   if (state.bank === 'dub') return DUB_LABELS[idx];
   if (state.bank === 'guitar') return GUITAR_LABELS[idx];
   if (idx === 0) return 'Bitcrush';
-  if (state.objektEngaged) {
-    if (idx >= 1 && idx <= 4) return OBJEKT_PATCHES[idx - 1];
+  if (state.resonodeEngaged) {
+    if (idx >= 1 && idx <= 4) return RESONODE_PATCHES[idx - 1];
     if (idx === 5) return 'Tone';
     if (idx === 6) return 'Level';
   } else {
@@ -338,14 +338,14 @@ const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 function noteName(n) { return NOTE_NAMES[n % 12] + (Math.floor(n / 12) - 1); }
 
 function keyDown(note) {
-  if (state.objektEngaged) allocVoice(state.objektVoices, note);
+  if (state.resonodeEngaged) allocVoice(state.resonodeVoices, note);
   else if (state.shift) allocVoice(state.transposeVoices, note);
   state.keysDownSet = state.keysDownSet || new Set();
   state.keysDownSet.add(note);
   render();
 }
 function keyUp(note) {
-  if (state.objektEngaged) releaseVoice(state.objektVoices, note);
+  if (state.resonodeEngaged) releaseVoice(state.resonodeVoices, note);
   else if (state.shift) releaseVoice(state.transposeVoices, note);
   if (state.keysDownSet) state.keysDownSet.delete(note);
   render();
@@ -457,7 +457,7 @@ function xbtn(label, {on, ledClass, onclick, onmousedown, onmouseup, onmouseleav
 }
 
 function transportRow() {
-  const lofiLed = state.objektEngaged ? 'on-red blink' : state.granHeld ? 'on-green blink' : state.granLatched ? 'on-green' : '';
+  const lofiLed = state.resonodeEngaged ? 'on-red blink' : state.granHeld ? 'on-green blink' : state.granLatched ? 'on-green' : '';
   return h('div', {class: 'btnrow'},
     xbtn('Stop All', {onclick: pressStopAll}),
     xbtn('Clear All / Play', {ledClass: state.shift ? 'on-yellow' : '', onclick: pressClearAll}),
@@ -465,7 +465,7 @@ function transportRow() {
     xbtn('Live', {on: state.live, ledClass: state.live ? 'on-green' : '', onclick: toggleLive}),
     xbtn('Dub FX', {on: state.bank === 'dub', ledClass: (state.bankFlashWhich === 'dub' && performance.now() < state.bankFlashUntil) ? 'on-green' : '', onclick: pressDubFx}),
     xbtn('Guitar FX' + (state.guitarFxHeld ? ' (held)' : ''), {on: state.bank === 'guitar', ledClass: state.guitarFxHeld ? 'on-yellow' : (state.bankFlashWhich === 'guitar' && performance.now() < state.bankFlashUntil) ? 'on-green' : '', onclick: toggleGuitarFxHeld}),
-    xbtn('LofiFx / Objekt', {on: state.bank === 'lofi', ledClass: lofiLed, onmousedown: pressLofiFxDown, onmouseup: pressLofiFxUp}),
+    xbtn('LofiFx / Resonode', {on: state.bank === 'lofi', ledClass: lofiLed, onmousedown: pressLofiFxDown, onmouseup: pressLofiFxUp}),
   );
 }
 
@@ -507,8 +507,8 @@ function keybed() {
 }
 
 function voiceStrip() {
-  const active = state.objektEngaged ? state.objektVoices : state.transposeVoices;
-  const label = state.objektEngaged ? 'Objekt voices' : 'Pitch-lock voices (hold Shift)';
+  const active = state.resonodeEngaged ? state.resonodeVoices : state.transposeVoices;
+  const label = state.resonodeEngaged ? 'Resonode voices' : 'Pitch-lock voices (hold Shift)';
   return h('div', {},
     h('div', {class: 'knob-label', style: 'text-align:left;margin-top:10px'}, label),
     h('div', {class: 'voice-strip'},
@@ -552,7 +552,7 @@ function view() {
       'it exists so the gestures are readable at a glance. Click a looper pad to arm/finish/pause/resume it, ' +
       'press-and-hold ~1s to erase, toggle Shift (a mouse can’t hold two controls at once, so it latches here ' +
       'instead of requiring a continuous hold) and play the keybed to pitch-lock, ' +
-      'tap LofiFx to latch the granulator or hold it 1s to switch to the Objekt resonator synth.'
+      'tap LofiFx to latch the granulator or hold it 1s to switch to the Resonode resonator synth.'
     ),
     h('div', {class: 'rack'},
       h('h3', {}, 'Telemetry (status.json)'),

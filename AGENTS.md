@@ -1423,7 +1423,7 @@ original press. This is a direct mechanism for "recording came out blank".
 `onPadPress` tracks `m_looperHeld` per pad and treats a repeat note-on as a no-op.
 
 **The same retrigger hits `kApcBtnLofiFx`, and this instance is worse: it makes
-the Objekt hold-gesture structurally unreachable, not just occasionally
+the Resonode hold-gesture structurally unreachable, not just occasionally
 mistimed.** `onLofiFxPress` had no analogous guard — every repeat note-on for an
 already-held LofiFx button re-ran unconditionally, stamping
 `m_granulatorPressAt = now_ms` again on each retrigger. `pollHolds`'s engage
@@ -1431,7 +1431,7 @@ check (`now_ms - m_granulatorPressAt >= kGranulatorTapMs`) and
 `onLofiFxRelease`'s tap-vs-hold classification both measure elapsed time against
 that same continuously-reset timestamp, so on real hardware the elapsed time
 never accumulates past a few tens of ms regardless of how long the button is
-physically held — Objekt's 1000ms threshold can never be crossed, and every
+physically held — Resonode's 1000ms threshold can never be crossed, and every
 release reads as a fresh tap (toggling `m_granulatorLatched` on every retrigger
 interval, not just on a genuine quick tap). The same retrigger also re-stamps
 `m_bankBeforeGranulatorHold = m_activeBank` every cycle; once the bank has
@@ -1439,7 +1439,7 @@ already flipped to `FxBank::LofiFx` from the first press, later retriggers
 capture `LofiFx` itself as "the bank before the hold", so release could leave
 `m_activeBank` stuck on LofiFx instead of reverting. WITNESSED as "pressing the
 granulator button doesn't activate the granulator controls, and holding it
-never engages the Objekt synth" — silent, no error, matching this class of bug
+never engages the Resonode synth" — silent, no error, matching this class of bug
 exactly. Fixed the same way as the grid pads: `onLofiFxPress` now returns
 immediately if `m_granulatorHeld` is already true, so only the true 0→1 edge
 touches `m_granulatorPressAt`/`m_bankBeforeGranulatorHold`. `onDubFxPress`/
@@ -1457,7 +1457,7 @@ never reaches the ARM/FINISH dispatch — it does not touch
 hold gesture. The sidechain-source designation auto-clears whenever that looper's
 content is wiped (long-hold erase or CLEAR_ALL).
 
-## LofiFx/granulator button: two dual-mode gestures, tap-latch granulator vs real-hold Objekt-synth
+## LofiFx/granulator button: two dual-mode gestures, tap-latch granulator vs real-hold Resonode-synth
 
 The LofiFx/granulator button (`kApcBtnLofiFx`, note 69) disambiguates tap vs
 hold via `kGranulatorTapMs` (1000ms), `ApcGrid::m_granulatorPressAt` stamped in
@@ -1475,56 +1475,59 @@ the press continues:
   `setGranulatorEnabled` falls back to `m_granulatorLatched`.
 - **Real hold (still held at 1000ms)**: `pollHolds` detects the press crossing
   `kGranulatorTapMs` while `m_granulatorHeld` is still true, sets
-  `m_objektEngaged = true`, and disables the granulator preview
+  `m_resonodeEngaged = true`, and disables the granulator preview
   (`setGranulatorEnabled(false)`) — the LofiFx button's second gesture is no
   longer a granulator-morph dial surface, it SWITCHES the instrument entirely
-  to `effects/home/faust/objekt_synth.dsp`, a 4-voice modal-resonator synth
-  in the spirit of Reason Studios' Objekt (architecture ported from
-  DawDreamer's own `examples/resonaut/resonaut.py`, an independent from-
-  scratch Objekt alternative already living in the sibling DawDreamer repo —
-  see that file's own header for the mode-bank/exciter design it mirrors;
-  Resonaut's 3-object/8-mode/8-voice offline design is reduced to a single
-  fixed STRING-like 4-mode object at 4 voices to fit the Pi 4's real-time
+  to `effects/home/faust/resonode_synth.dsp`, a 4-voice, 6-mode-per-voice
+  modal-resonator synth (architecture ported from DawDreamer's own
+  `examples/resonaut/resonaut.py`, an independent from-scratch modal-resonator
+  instrument already living in the sibling DawDreamer repo — see that file's
+  own header for the mode-bank/exciter design it mirrors; Resonaut's
+  3-object/8-mode/8-voice offline design is reduced to a single fixed
+  STRING-like object at 4 voices x 6 modes to fit the Pi 4's real-time
   budget, verified against DawDreamer's real libfaust JIT before shipping).
-  While engaged: the keybed (`onKeybedNoteOn`/`Off`) drives the 4 Objekt
-  voices (`allocateObjektVoice`/`releaseObjektVoice`, oldest-steal allocator
-  identical in shape to `allocateTransposeVoice`) via `fx/objektvoice{v}/note`
-  and `fx/objektvoice{v}/gate` signal inputs instead of the transpose/Sampler
-  routing, and knob slots 1-6 drive Objekt's own controls instead of the
-  granulator patch blend below: slots 1-4 are named-patch blend weights
-  (`applyObjektPatchMorph`/`kObjektPatches` — Percussive, Metal/Glass,
-  Strings, Dance Bass; see "Objekt named sweetspot patches" below), slots 5-6
-  are direct performative dials (`applyObjektDirectKnob`/
-  `kObjektDirectKnobRanges`: tone brightness, level — Faust zones
-  `fx/objekt/*`). Releasing the button releases every Objekt voice
-  (`releaseAllObjektVoices`) and reverts the bank; `onClearAll` also releases
-  all Objekt voices (mirroring the existing transpose-voice release there),
-  since a stuck `fx/objektvoice{v}/gate` would be the same class of bug
+  While engaged: the keybed (`onKeybedNoteOn`/`Off`) drives the 4 Resonode
+  voices (`allocateResonodeVoice`/`releaseResonodeVoice`, oldest-steal
+  allocator identical in shape to `allocateTransposeVoice`) via
+  `fx/resonodevoice{v}/note`, `fx/resonodevoice{v}/gate`, and
+  `fx/resonodevoice{v}/vel` signal inputs instead of the transpose/Sampler
+  routing — `vel` (real MIDI velocity, `onKeybedNoteOn`'s existing parameter)
+  scales that voice's exciter gain, so a harder key press rings out louder.
+  Knob slots 1-6 drive Resonode's own controls instead of the granulator
+  patch blend below: slots 1-4 are named-patch blend weights
+  (`applyResonodePatchMorph`/`kResonodePatches` — Percussive, Metal/Glass,
+  Strings, Dance Bass; see "Resonode named sweetspot patches" below), slots
+  5-6 are direct performative dials (`applyResonodeDirectKnob`/
+  `kResonodeDirectKnobRanges`: tone brightness, level — Faust zones
+  `fx/resonode/*`). Releasing the button releases every Resonode voice
+  (`releaseAllResonodeVoices`) and reverts the bank; `onClearAll` also releases
+  all Resonode voices (mirroring the existing transpose-voice release there),
+  since a stuck `fx/resonodevoice{v}/gate` would be the same class of bug
   AGENTS.md's "every momentary Faust gate must be explicitly released" entry
   warns about.
 
 A latch-on (from an earlier tap) plus a later real hold is a legitimate
 combo: the granulator stays audible in the background (from the latch) while
-the hold plays the Objekt synth over it, and once released, playback returns
+the hold plays the Resonode synth over it, and once released, playback returns
 to whatever the latch left it on. LED feedback on the button itself
-(`apc_leds.h`): blinking red once Objekt is actually engaged, blinking green
+(`apc_leds.h`): blinking red once Resonode is actually engaged, blinking green
 while still in the pre-threshold granulator-preview window, solid green while
 latched-on in the background, off otherwise — pulled out of the shared
 dub-fx/guitar-fx bank-select flash block since this button now carries
 persistent state, not just a transient selection flash.
 
-Objekt is wired into the ALWAYS-ON home Faust stack (Core 1, `dsp/aloop.dsp`
+Resonode is wired into the ALWAYS-ON home Faust stack (Core 1, `dsp/aloop.dsp`
 via `effects_runtime.dsp`), the same signal-input convention
 `multitranspose.dsp` uses for its own per-voice note/gate state (see "Faust
 has no runtime branching" / `par()`-replicated-controls entries above). Like
-`multitranspose.dsp`'s 6 voices, the 4 Objekt voices are computed every block
+`multitranspose.dsp`'s 6 voices, the 4 Resonode voices are computed every block
 whether or not the button is ever held — this is the established, accepted
 cost model in this codebase (Faust has no in-DSP way to skip a stage's cost
 conditionally), not a regression to fix.
 
-**Objekt is a real-input-excited resonator ("reactor mode"), not a
+**Resonode is a real-input-excited resonator ("reactor mode"), not a
 self-contained synth voice, and must REPLACE dry, never layer over it.**
-`objekt_synth.dsp`'s `exciteFor(exciteIn, note, gate)` is the live `dry`
+`resonode_synth.dsp`'s `exciteFor(exciteIn, note, gate)` is the live `dry`
 signal ALONE (filtered by `tone`, gated per-voice by `en.asr(...,xgate)`) —
 there is no synthetic exciter anywhere in the signal path. An earlier
 revision blended a synthetic percussive `impact` (`pm.strike`, triggered by
@@ -1534,45 +1537,45 @@ the mic may) rather than left as a blendable option, since any nonzero
 `character` toward `impact` meant a held key with silent input still made
 sound — a synthetic voice wearing the resonator's face. A key held with no
 live input now renders bit-exact silence (verified via the DawDreamer JIT
-harness, `test/objekt-sweetspot/`). The `impact` term's own predecessor bug
+harness, `test/resonode-sweetspot/`). The `impact` term's own predecessor bug
 is historical color only: `wash` (now the whole exciter) used to be
 `no.noise`, a self-contained synthetic wash with no live-input path at all,
 directly contradicting "excite via the mic" before it was fixed to read the
 real `dry` bus.
 
 `effects_runtime.dsp` passes the raw `dry` bus into
-`objekt(dry, on0,og0, ...)` as this excitation signal; each voice only picks
-it up while ITS OWN gate is held (the ASR envelope), so the live input is
-"playing normally into" the resonator continuously but is only audible
+`resonode(dry, on0,og0,ov0, ...)` as this excitation signal; each voice only
+picks it up while ITS OWN gate is held (the ASR envelope), so the live input
+is "playing normally into" the resonator continuously but is only audible
 through a voice while that voice's key is down — matches "only allowing
 playback via the keys". The `character` hslider was repurposed rather than
-removed: it now drives `position` (see "Objekt named sweetspot patches"
+removed: it now drives `position` (see "Resonode named sweetspot patches"
 below), a real physical excitation-position parameter that was previously a
 hardcoded `bankPosition = 0.35` constant.
 
-A second, independent WITNESSED bug in the same feature: `objektOut` used to
-be summed INTO `dry` (`dryWithObjekt = dry + objektOut`) and that combined
+A second, independent WITNESSED bug in the same feature: `resonodeOut` used to
+be summed INTO `dry` (`dryWithResonode = dry + resonodeOut`) and that combined
 signal was then run through the UNCHANGED `pitchStage`/`harmonize` dry-passthrough
 machinery — `dryGate` there is driven only by the multitranspose voices'
-gates (`g0..g5`), which Objekt never touches, so `dryGate` always stayed
-near 1 (fully open) while Objekt was engaged. The result: raw `dry` (and
+gates (`g0..g5`), which Resonode never touches, so `dryGate` always stayed
+near 1 (fully open) while Resonode was engaged. The result: raw `dry` (and
 `harmonize`'s own separate dry-passthrough term `dryWet`) kept reaching the
-output completely UNMUTED the whole time Objekt was held — audibly "the
-button engages Objekt, but the ordinary pass-through/pitch-lock signal is
+output completely UNMUTED the whole time Resonode was held — audibly "the
+button engages Resonode, but the ordinary pass-through/pitch-lock signal is
 still there too", which is exactly the failure mode "Locked pitch must
 REPLACE, never layer over, the original" (above) already named for the
-transpose engine, just never extended to Objekt. Fix: a new
-`checkbox("fx/objekt/engaged")` control (`OBJEKT_ENGAGED` in
+transpose engine, just never extended to Resonode. Fix: a new
+`checkbox("fx/resonode/engaged")` control (`RESONODE_ENGAGED` in
 `effects_runtime.dsp`, set from `ApcGrid::pollHolds`/`onLofiFxRelease`
-alongside the existing `m_objektEngaged` C++ flag — `targetToZone()` needs no
-change since it already passes any `fx/objekt/...`-prefixed target through
-verbatim) drives a smoothed `objektEngageGate` that CROSSFADES the entire
-`(pitchStage(dry)*dryGate + dryWet)` term against `objektOut` right before
+alongside the existing `m_resonodeEngaged` C++ flag — `targetToZone()` needs no
+change since it already passes any `fx/resonode/...`-prefixed target through
+verbatim) drives a smoothed `resonodeEngageGate` that CROSSFADES the entire
+`(pitchStage(dry)*dryGate + dryWet)` term against `resonodeOut` right before
 the shared `microStage:filterStage:delayStage:reverbStage` tail, rather than
-summing `objektOut` into `dry` upstream of that machinery. At
-`OBJEKT_ENGAGED=0` this is bit-for-bit the pre-fix formula (objektOut is
+summing `resonodeOut` into `dry` upstream of that machinery. At
+`RESONODE_ENGAGED=0` this is bit-for-bit the pre-fix formula (resonodeOut is
 silent there anyway, since voices are never gated unless
-`m_objektEngaged`), so the disengaged path has zero behavioral change.
+`m_resonodeEngaged`), so the disengaged path has zero behavioral change.
 Verified via the DawDreamer JIT harness (pitch.dsp stubbed to a bare
 passthrough per the "DawDreamer verification harness" section below): engaged
 + a held voice decorrelates the output from the raw dry input (r≈0.07 vs
@@ -1580,7 +1583,7 @@ r≈0.997 disengaged) while producing real excited-resonator amplitude; engaged
 with no voice held decays to near-silence within one `si.smoo` time constant
 of the engage edge.
 
-Knob slot 0 (`fx2/BITCRUSHAMT`) is unchanged in both gestures. When Objekt
+Knob slot 0 (`fx2/BITCRUSHAMT`) is unchanged in both gestures. When Resonode
 is NOT engaged, slots 1-6 map to the granulator patch blend as before; they
 no longer map 1:1 to
 raw grain parameters (grain size/density/scan rate/pitch spray/position
@@ -1639,18 +1642,18 @@ spawn density via `densityFromVel = 0.4 + 0.6*velGain` in
 brighter grain cloud, the dynamic-response feel real granular groovebox
 hardware has and this sampler never had.
 
-## Objekt voice-steal must retrigger the exciter AND glide the resonator frequency
+## Resonode voice-steal must retrigger the exciter AND glide the resonator frequency
 
-`allocateObjektVoice` (like `allocateTransposeVoice`) steals the oldest voice
-slot when all `kObjektVoices` are already held, reassigning that slot's
-`fx/objektvoice{v}/note` to the new key while leaving
-`fx/objektvoice{v}/gate` at 1.0 the whole time (both `onKeybedNoteOn`'s
+`allocateResonodeVoice` (like `allocateTransposeVoice`) steals the oldest voice
+slot when all `kResonodeVoices` are already held, reassigning that slot's
+`fx/resonodevoice{v}/note` to the new key while leaving
+`fx/resonodevoice{v}/gate` at 1.0 the whole time (both `onKeybedNoteOn`'s
 steal path and its fresh-allocation path write `gate=1.0` unconditionally,
 since there is no cheap race-free way to force a genuine 0→1 edge from the
 control thread without the `pollHolds`-deadline machinery `erase`/`finishreq`
 need — see "Every momentary Faust gate must be explicitly released" above).
 
-WITNESSED via the DawDreamer JIT harness (`objekt_synth.dsp` compiles
+WITNESSED via the DawDreamer JIT harness (`resonode_synth.dsp` compiles
 standalone, no `pitch.dsp`/`ffunction` stub needed): feeding a synthetic
 9-channel input (`exciteIn, note0,gate0, ..., note3,gate3`) that holds
 `gate0=1` continuously while stepping `note0` from 60 to 72 mid-ring —
@@ -1696,7 +1699,7 @@ Fix, both parts verified together and independently before landing:
 Both changes are additive/no-ops outside the steal case: every
 idle-silence, fresh-onset (including the realistic case where `note` and
 `gate` both change in the same control tick, matching
-`onKeybedNoteOn`/`allocateObjektVoice`'s real write pattern), sustained
+`onKeybedNoteOn`/`allocateResonodeVoice`'s real write pattern), sustained
 single-note, release, and 4-simultaneous-distinct-voice scenario rendered
 bit-exact (or within float32 rounding, see below) against the pre-fix DSP.
 With the fix applied, the same steal scenario's peak derivative (0.34-0.41,
@@ -1732,11 +1735,11 @@ touched), these three exponents are LITERAL INTEGERS baked into the source
 text, independent of any hslider — `pow(x,1)` is mathematically always `x`;
 `pow(x,2)`/`pow(x,3)` are exactly `x*x`/`x*x*x`, computable with plain
 multiplies instead of a full transcendental `pow()` call. Since `bank()`
-computes all 4 modes for all 4 voices every sample unconditionally (Objekt
+computes all 4 modes for all 4 voices every sample unconditionally (Resonode
 has no runtime branching, same as every other always-on stage in this file —
 see "Faust has no runtime branching" above), this was 3 wasted-relative-to-
 multiplication `pow()` calls x 4 voices = 12 calls/sample, permanently, not
-gated by whether Objekt is even engaged.
+gated by whether Resonode is even engaged.
 
 Fixed: `pow(damping,1)` -> `damping`, `pow(damping,2)` -> `damping*damping`,
 `pow(damping,3)` -> `damping*damping*damping`. Verified via the DawDreamer JIT
@@ -1745,7 +1748,7 @@ harness across 6 cases spanning the full position/decay/damping/stretch range
 0.000e+00 max absolute difference in every case** — stronger than `mode1`'s
 own fix (which had a 1.477e-06 float32-rounding residual), since multiplying
 a value by itself introduces no more rounding than the `pow()` call it
-replaces. `test/objekt-sweetspot/verify_musical_controls.py`'s existing
+replaces. `test/resonode-sweetspot/verify_musical_controls.py`'s existing
 `tone_taper`/`morph_glide_click`/`no_fadein_regression` checks all still pass
 unchanged. No `faust2bench` figure is available for this change (this
 environment has DawDreamer's JIT bindings only, not the standalone `faust`
@@ -1755,7 +1758,7 @@ same-environment JIT render-time A/B (20s render, x86_64, not a substitute for
 improvement, in line with removing 12 `pow()` calls/sample from an always-hot
 path.
 
-## Objekt's higher modes must mute, not alias, once their frequency exceeds Nyquist
+## Resonode's higher modes must mute, not alias, once their frequency exceeds Nyquist
 
 `pm.modeFilter(freq,t60,gain) = fi.tf2(...)*gain` computes `a1 =
 -2*r*cos(2*ma.PI*freq/ma.SR)`, which is trigonometrically well-defined (and
@@ -1790,28 +1793,95 @@ playable register below the guard band: every existing regression scenario
 bit-exact against the pre-guard DSP, since none of their mode frequencies
 approach the last 5% of Nyquist.
 
-## Objekt named sweetspot patches (`kObjektPatches`)
+## Resonode's mode bank is 6 modes/voice with real per-voice velocity, not 4 modes with no dynamics
 
-Once the exciter became mic-only (see "Objekt is a real-input-excited
+The original design fixed the mode bank at 4 modes/voice with no velocity
+input at all — every note-on played at the same fixed exciter gain regardless
+of how hard the key was struck. Both were expanded together: `bank()` grew
+mode5/mode6 (ratios 5 and 6, same `freqHz*pow(k,1.0+stretch)`/`aliasGuard`
+pattern as modes 2-4, gain weights 0.22/0.16 continuing the existing
+1.00/0.60/0.40/0.30 geometric-ish falloff), and `resonode_synth.dsp`'s
+`process()` gained a third per-voice signal input (`vel0..vel3`, alongside
+`note`/`gate`) that scales `exciteFor`'s envelope output directly (`velGain(vel)
+= max(0.0, min(1.0, vel))`, a plain clamp, no curve) — `apc_grid.cpp`'s
+`onKeybedNoteOn` already receives real MIDI velocity for other purposes
+(`Sampler::_noteOn`'s own `velGain`), it simply was never wired into this
+instrument. `damping`'s exponent chain from the strength-reduction fix above
+was extended the same way: `dp4 = dp3*damping`, `dp5 = dp4*damping`, computed
+once inside `bank()`'s own `with{}` rather than as separate `mode5`/`mode6`
+top-level functions (the whole mode bank was restructured from 6 separate
+`modeN(freqHz)` top-level functions into 6 local definitions — `m1..m6` — inside
+one `with{}` block, so `dp2..dp5`/`f2..f6` are each computed once and shared,
+not recomputed per mode).
+
+**A velocity-driven exciter-BRIGHTNESS coupling was tried, measured, and
+REJECTED before shipping — this is the load-bearing lesson, not the feature
+itself.** The natural-looking design multiplies the exciter's pre-resonator
+lowpass cutoff by a per-voice brightness term (`fi.lowpass(2,
+tone*brightnessMul(vel))` instead of the shipped `fi.lowpass(2, tone)`).
+WITNESSED via a same-environment JIT render-time A/B (12s render, x86_64 —
+not `faust2bench`, not real Pi 4 hardware, a proxy only, per the
+"Compiling clean proves nothing about runtime safety" rule above): this
+change alone pushed total render time from ~0.286s (6-mode + velocity-GAIN
+only) to ~0.597s median — nearly DOUBLING total instrument cost — while the
+measured acoustic effect was negligible (spectral centroid within 2% across
+vel 0.2/0.6/1.0). Root cause: all 4 voices previously called `fi.lowpass(2,
+tone)` against the textually IDENTICAL `tone` signal, letting Faust's
+compiler share that one coefficient computation (a `tan()`-bearing biquad
+design formula) across all 4 voices; giving each voice a UNIQUE
+`tone*brightnessMul(velN)` argument made the 4 calls textually distinct,
+forcing 4 independent coefficient recomputations where there used to be
+effectively 1 shared one. The acoustic payoff was near-zero for the same
+underlying reason the tone-taper fix above already names: once the
+pre-resonator lowpass cutoff clears the resonator bank's own highest mode
+frequency, the resonator's own mode-frequency selectivity — not the exciter's
+pre-filter — is what actually shapes the timbre, so varying that pre-filter
+per-voice bought almost nothing. **Any future per-voice control that feeds a
+signal ALL VOICES currently share identically (like `tone` here) should be
+assumed to defeat this cross-voice sharing and be measured, not assumed
+cheap, before shipping.** Velocity-driven GAIN was kept instead: a plain
+multiply on the exciter's envelope OUTPUT (never touching a shared filter
+argument), cost-neutral, and it produces a real, large loudness range (RMS
+0.222/0.415/0.504 across vel 0.2/0.6/1.0 at the shared default patch).
+
+`test/resonode-sweetspot/verify_musical_controls.py` gained four checks
+covering this expansion: `velocity_response` (RMS/centroid monotonic in vel),
+`silent_without_live_input` (the mic-only-exciter invariant still holds at 6
+modes), `new_mode_alias_guard` (mode5/mode6 specifically fold to silence, not
+an aliased peak, once their ratio pushes them past Nyquist), and
+`voice_steal_with_velocity_change` (a steal that changes `vel` in the same
+control tick as `note` produces no extra click beyond the existing
+steal-derivative baseline).
+
+`audio_thread.cpp`'s `kTransposeVoices`/`kResonodeVoices` constants and
+`apc_grid.h`'s own copies of the same names must be kept in sync with
+`multitranspose.dsp`'s/`resonode_synth.dsp`'s real declared voice count by
+hand — nothing ties them together at compile time (a Faust `.dsp` file and a
+C++ constant have no shared type system), so a voice-count change in either
+file needs the matching constant updated in both places.
+
+## Resonode named sweetspot patches (`kResonodePatches`)
+
+Once the exciter became mic-only (see "Resonode is a real-input-excited
 resonator" above), `character` no longer had a blend to control — it was
-repurposed into `position`, and `objekt_synth.dsp`'s four material-identity
+repurposed into `position`, and `resonode_synth.dsp`'s four material-identity
 parameters (`position`, `decay`, `damping`, `stretch`) were moved off direct
-1:1 knob mapping (`applyObjektKnob`) onto a named-patch convex-blend surface
-(`applyObjektPatchMorph`), mirroring the granulator's own `kGranPatches`
+1:1 knob mapping (`applyResonodeKnob`) onto a named-patch convex-blend surface
+(`applyResonodePatchMorph`), mirroring the granulator's own `kGranPatches`
 mechanism (see "Super music granulator" above) exactly: knobs 1-4 are patch
 weights, normalized by their sum and blended into a single point, falling
 back to patch 0 when every weight is 0. `tone` (brightness) and `level`
-(loudness) stay direct dials on knobs 5-6 (`applyObjektDirectKnob`,
-`kObjektDirectKnobRanges`) rather than being folded into the patches —
+(loudness) stay direct dials on knobs 5-6 (`applyResonodeDirectKnob`,
+`kResonodeDirectKnobRanges`) rather than being folded into the patches —
 those two are genuinely performative, something a player rides live while
 holding a note, unlike `position`/`decay`/`damping`/`stretch`, which define
 what the resonator is made of and are better dialed in as a single named
 identity than four independent sliders fought into alignment by hand.
 
 **The four patches were found empirically, not hand-guessed.** The
-DawDreamer JIT harness at `test/objekt-sweetspot/` (`sweep.py` +
+DawDreamer JIT harness at `test/resonode-sweetspot/` (`sweep.py` +
 `select_patches.py`) grid-searched `position`/`decay`/`damping`/`stretch`
-(5 levels each, 625 renders total; `objekt_synth.dsp` compiles standalone
+(5 levels each, 625 renders total; `resonode_synth.dsp` compiles standalone
 against a single multi-channel `make_playback_processor` feeding all 9
 declared inputs by channel order — no `ffunction`/`pitch.dsp` stub needed,
 same as the voice-steal/alias-guard harnesses above) against a synthetic
@@ -1850,10 +1920,10 @@ name suggests (0.08 doesn't favor the fundamental — it gives roughly equal
 weight across all 4 modes) and the optimizer's empirical answer overrode
 any hand-authored assumption about it.
 
-## Objekt's `tone` knob needs a logarithmic taper, not a linear Hz sweep
+## Resonode's `tone` knob needs a logarithmic taper, not a linear Hz sweep
 
-`applyObjektDirectKnob` originally mapped the knob 0..1 straight onto
-`fx/objekt/tone`'s 200..18000Hz range linearly. WITNESSED via the DawDreamer
+`applyResonodeDirectKnob` originally mapped the knob 0..1 straight onto
+`fx/resonode/tone`'s 200..18000Hz range linearly. WITNESSED via the DawDreamer
 JIT harness (broadband-noise excitation, measured post-onset spectral
 centroid): across every note tested (48/60/72/84), 85-99% of the knob's
 total brightness change landed in the first 10-20% of its physical travel,
@@ -1865,19 +1935,19 @@ defect as any linear-Hz filter-cutoff control: nearly the whole audible
 range is compressed into a sliver of the knob.
 
 Fixed by an exponential (`lo * pow(hi/lo, v01)`) taper in
-`applyObjektDirectKnob` (`ObjektDirectKnobRange::logTaper`), which stretches
+`applyResonodeDirectKnob` (`ResonodeDirectKnobRange::logTaper`), which stretches
 the perceptually-relevant low end across most of the knob and compresses the
 already-inert top end into a small slice at the far end — re-measured
 post-fix, the first 10% of knob travel drops to 0-15% of the total
 brightness change (was 85-99%). `level` stays on the plain linear taper
 (`logTaper=false`) — its dB response was already reasonably even across the
-knob (`test/objekt-sweetspot/verify_musical_controls.py`'s
+knob (`test/resonode-sweetspot/verify_musical_controls.py`'s
 `check_tone_taper`/measurements), and a taper only helps a control that has
 a demonstrated dead zone, not every control by default.
 
-## Objekt's morph knobs (position/decay/damping/stretch/tone/level) needed glide, not bare hsliders
+## Resonode's morph knobs (position/decay/damping/stretch/tone/level) needed glide, not bare hsliders
 
-Every one of `objekt_synth.dsp`'s six controls was a bare `hslider` feeding
+Every one of `resonode_synth.dsp`'s six controls was a bare `hslider` feeding
 straight into `pm.modeFilter`'s per-sample coefficient recompute (`position`/
 `decay`/`damping`/`stretch`) or `fi.lowpass`'s biquad (`tone`) — the same
 "raw coefficient jump" failure class already fixed once in this file for
@@ -1887,8 +1957,8 @@ naively stepping `position`/`stretch`/`tone` mid-ring while the resonator is
 actively decaying produces a real sample-to-sample derivative spike several
 times the local background (position: ~2.8-9x, worse right after a fresh
 strike) — an audible click every time a performer morphs the patch-blend or
-tone/level knobs while a note is ringing, since `applyObjektPatchMorph`/
-`applyObjektDirectKnob` write the full blended value on every single MIDI CC
+tone/level knobs while a note is ringing, since `applyResonodePatchMorph`/
+`applyResonodeDirectKnob` write the full blended value on every single MIDI CC
 tick with no interpolation on either the C++ or Faust side.
 
 Fixed with the same `si.smooth`-style one-pole idiom `multitranspose.dsp`
@@ -1911,24 +1981,24 @@ signal graph, reproducible even with `-vec` disabled and with the dead
 bug) against the unsmoothed DSP when parameters are never touched, and the
 first-5ms onset RMS ratio (smoothed/raw) at 1.000.
 
-`test/objekt-sweetspot/verify_musical_controls.py` codifies both fixes:
+`test/resonode-sweetspot/verify_musical_controls.py` codifies both fixes:
 `check_tone_taper` (linear vs exponential brightness-spread measurement),
 `check_morph_glide_click` (raw vs smoothed derivative-spike ratio at a
 mid-ring parameter jump), and `check_no_fadein_regression` (first-5ms onset
 loudness parity at static default params) — run after any further change to
-`objekt_synth.dsp`'s control declarations.
+`resonode_synth.dsp`'s control declarations.
 
 ## `ApcGrid::bindAll` must `ps.bind()` every internal flag a C++ path later `setByName`s
 
 `ParamStore::setByName` only writes into a slot `bind()` already created — it never
 creates one itself (`bind()` is the only path that inserts into the `slot` map).
-`pollHolds`/`onLofiFxRelease` call `ps.setByName("fx/objekt/engaged", ...)` on the
-hold-threshold and release edges, but `fx/objekt/engaged` was never added to the
-`ps.bind("fx/objekt/...")` block in `bindAll` (only `character`/`tone`/`decay`/
+`pollHolds`/`onLofiFxRelease` call `ps.setByName("fx/resonode/engaged", ...)` on the
+hold-threshold and release edges, but `fx/resonode/engaged` was never added to the
+`ps.bind("fx/resonode/...")` block in `bindAll` (only `character`/`tone`/`decay`/
 `damping`/`stretch`/`level` were). Those `setByName` calls were therefore silent
 no-ops on every real device: the WITNESSED symptom was "holding the LofiFx button
-past the 1s threshold never produces the Objekt sound" even though
-`m_objektEngaged` flips correctly and the per-voice `fx/objektvoice{v}/note`/`gate`
+past the 1s threshold never produces the Resonode sound" even though
+`m_resonodeEngaged` flips correctly and the per-voice `fx/resonodevoice{v}/note`/`gate`
 slots (which ARE bound) work fine, so notes visibly retune/gate but nothing
 resonator-like is ever audible.
 
@@ -1937,15 +2007,15 @@ Root cause is downstream of the missing bind, not in `targetToZone` or the DSP:
 `audio_thread.cpp`) is rebuilt by iterating `g_params->forEach(...)`, which only
 visits BOUND names. An unbound target is invisible to that cache regardless of
 `targetToZone` returning a valid zone string for it, so the Faust
-`OBJEKT_ENGAGED = checkbox("fx/objekt/engaged")` in `effects_runtime.dsp` never
-leaves its compiled-in default of 0, `objektEngageGate` stays 0, and
-`preChain`'s crossfade never picks up `objektOut` — permanently silent, no error
+`RESONODE_ENGAGED = checkbox("fx/resonode/engaged")` in `effects_runtime.dsp` never
+leaves its compiled-in default of 0, `resonodeEngageGate` stays 0, and
+`preChain`'s crossfade never picks up `resonodeOut` — permanently silent, no error
 anywhere. This is a different failure shape than the "`targetToZone()` must have a
 case for every control target" entry above (that one is a missing zone-name
 mapping; this one is a missing ParamStore slot for a target `targetToZone` already
-handles correctly via its `fx/objekt/`-prefix passthrough).
+handles correctly via its `fx/resonode/`-prefix passthrough).
 
-Fix: `ps.bind("fx/objekt/engaged", 0.0f)` alongside the other `fx/objekt/*` binds
+Fix: `ps.bind("fx/resonode/engaged", 0.0f)` alongside the other `fx/resonode/*` binds
 in `bindAll`. Any future internal (non-MIDI-mapped) C++ flag that reaches Faust via
 `setByName` needs the same audit — grep `setByName` targets against `bind()` calls
 before trusting a new flag "should just work" because `targetToZone` has a case for
