@@ -50,10 +50,11 @@ landed. In roughly chronological order (see `git log` for exact commits):
 - Continuous USB-drive ring recording of the fully-effected mix.
 - A 3-bank FX control surface (dub / guitar / lofi) with per-bank knob
   targets.
-- **Objekt**: a 4-voice modal-resonator synth excited by the live input,
-  reachable via a real-hold gesture on the LofiFx pad, replacing (never
-  layering over) the dry/pitch-lock signal while engaged, with alias-guarded
-  higher modes and click-free voice stealing.
+- **Resonode**: a 4-voice, 6-mode-per-voice modal-resonator synth excited by
+  the live input, reachable via a real-hold gesture on the LofiFx pad,
+  replacing (never layering over) the dry/pitch-lock signal while engaged,
+  with velocity-scaled exciter gain, alias-guarded higher modes, and
+  click-free voice stealing.
 - A 6-patch granulator (Glass/Cloud/Freeze/Chop/Tape/Shatter) blended as a
   convex morph, with velocity-sensitive grain density and a grain
   envelope-shape parameter.

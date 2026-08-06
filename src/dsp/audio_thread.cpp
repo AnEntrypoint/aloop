@@ -121,8 +121,8 @@ aloop::Lv2Host* g_homeFx = nullptr;
 aloop::UsbRecorder* g_usbRecorder = nullptr;
 
 float g_manualSpeedMul = 1.0f;
-constexpr int kTransposeVoices = 6;   // apc_grid.h kTransposeVoices / multitranspose.dsp NVOICES -- keep in sync
-constexpr int kObjektVoices = 4;      // apc_grid.h kObjektVoices / objekt_synth.dsp NVOICES -- keep in sync
+constexpr int kTransposeVoices = 6;
+constexpr int kResonodeVoices = 4;
 
 
 static std::string targetToZone(const std::string& target) {
@@ -144,7 +144,7 @@ static std::string targetToZone(const std::string& target) {
     if (target == "fx/formant") return "FORMANT";
     if (target == "fx/pitch")   return "SEMIS";
     if (target == "fx/bank")    return "fx/bank";
-    if (target.rfind("fx/objekt/", 0) == 0) return target;
+    if (target.rfind("fx/resonode/", 0) == 0) return target;
     return "";
 }
 
@@ -207,13 +207,15 @@ static void* worker(void*) {
         xposeNoteBuf[v].assign((size_t)N, 0.0f);
         xposeGateBuf[v].assign((size_t)N, 0.0f);
     }
-    std::vector<float> objektNoteBuf[kObjektVoices];
-    std::vector<float> objektGateBuf[kObjektVoices];
-    for (int v = 0; v < kObjektVoices; v++) {
-        objektNoteBuf[v].assign((size_t)N, 0.0f);
-        objektGateBuf[v].assign((size_t)N, 0.0f);
+    std::vector<float> resonodeNoteBuf[kResonodeVoices];
+    std::vector<float> resonodeGateBuf[kResonodeVoices];
+    std::vector<float> resonodeVelBuf[kResonodeVoices];
+    for (int v = 0; v < kResonodeVoices; v++) {
+        resonodeNoteBuf[v].assign((size_t)N, 0.0f);
+        resonodeGateBuf[v].assign((size_t)N, 0.0f);
+        resonodeVelBuf[v].assign((size_t)N, 1.0f);
     }
-    float* fins[28] = {
+    float* fins[32] = {
         fin.data(), prevFiltOut.data(), clearBuf.data(), speedBuf.data(), masterPhaseBuf.data(), masterLenBuf.data(), sidechainEnvBuf.data(),
         freeXposeBuf.data(),
         xposeNoteBuf[0].data(), xposeGateBuf[0].data(),
@@ -222,10 +224,10 @@ static void* worker(void*) {
         xposeNoteBuf[3].data(), xposeGateBuf[3].data(),
         xposeNoteBuf[4].data(), xposeGateBuf[4].data(),
         xposeNoteBuf[5].data(), xposeGateBuf[5].data(),
-        objektNoteBuf[0].data(), objektGateBuf[0].data(),
-        objektNoteBuf[1].data(), objektGateBuf[1].data(),
-        objektNoteBuf[2].data(), objektGateBuf[2].data(),
-        objektNoteBuf[3].data(), objektGateBuf[3].data(),
+        resonodeNoteBuf[0].data(), resonodeGateBuf[0].data(), resonodeVelBuf[0].data(),
+        resonodeNoteBuf[1].data(), resonodeGateBuf[1].data(), resonodeVelBuf[1].data(),
+        resonodeNoteBuf[2].data(), resonodeGateBuf[2].data(), resonodeVelBuf[2].data(),
+        resonodeNoteBuf[3].data(), resonodeGateBuf[3].data(), resonodeVelBuf[3].data(),
     };
     int sidechainSrcSlot[AudioThread::Telemetry::kLoopers];
     for (int lp = 0; lp < AudioThread::Telemetry::kLoopers; lp++) sidechainSrcSlot[lp] = -1;
@@ -268,15 +270,18 @@ static void* worker(void*) {
             xposeGateSlot[v] = g_params ? g_params->getSlot(z) : -1;
         }
     }
-    int objektNoteSlot[kObjektVoices];
-    int objektGateSlot[kObjektVoices];
+    int resonodeNoteSlot[kResonodeVoices];
+    int resonodeGateSlot[kResonodeVoices];
+    int resonodeVelSlot[kResonodeVoices];
     {
         char z[32];
-        for (int v = 0; v < kObjektVoices; v++) {
-            snprintf(z, sizeof z, "fx/objektvoice%d/note", v);
-            objektNoteSlot[v] = g_params ? g_params->getSlot(z) : -1;
-            snprintf(z, sizeof z, "fx/objektvoice%d/gate", v);
-            objektGateSlot[v] = g_params ? g_params->getSlot(z) : -1;
+        for (int v = 0; v < kResonodeVoices; v++) {
+            snprintf(z, sizeof z, "fx/resonodevoice%d/note", v);
+            resonodeNoteSlot[v] = g_params ? g_params->getSlot(z) : -1;
+            snprintf(z, sizeof z, "fx/resonodevoice%d/gate", v);
+            resonodeGateSlot[v] = g_params ? g_params->getSlot(z) : -1;
+            snprintf(z, sizeof z, "fx/resonodevoice%d/vel", v);
+            resonodeVelSlot[v] = g_params ? g_params->getSlot(z) : -1;
         }
     }
     std::vector<float> rawLoopSum((size_t)N, 0.0f);
@@ -454,9 +459,10 @@ static void* worker(void*) {
                     std::fill(xposeNoteBuf[v].begin(), xposeNoteBuf[v].end(), g_params->getBySlot(xposeNoteSlot[v]));
                     std::fill(xposeGateBuf[v].begin(), xposeGateBuf[v].end(), g_params->getBySlot(xposeGateSlot[v]));
                 }
-                for (int v = 0; v < kObjektVoices; v++) {
-                    std::fill(objektNoteBuf[v].begin(), objektNoteBuf[v].end(), g_params->getBySlot(objektNoteSlot[v]));
-                    std::fill(objektGateBuf[v].begin(), objektGateBuf[v].end(), g_params->getBySlot(objektGateSlot[v]));
+                for (int v = 0; v < kResonodeVoices; v++) {
+                    std::fill(resonodeNoteBuf[v].begin(), resonodeNoteBuf[v].end(), g_params->getBySlot(resonodeNoteSlot[v]));
+                    std::fill(resonodeGateBuf[v].begin(), resonodeGateBuf[v].end(), g_params->getBySlot(resonodeGateSlot[v]));
+                    std::fill(resonodeVelBuf[v].begin(), resonodeVelBuf[v].end(), g_params->getBySlot(resonodeVelSlot[v]));
                 }
                 std::fill(freeXposeBuf.begin(), freeXposeBuf.end(), g_params->get("fx/monitorfold") > 0.5f ? 1.0f : 0.0f);
                 float staticSemis = g_params->get("fx/pitch");

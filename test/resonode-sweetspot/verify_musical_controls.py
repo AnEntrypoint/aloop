@@ -6,7 +6,7 @@ import numpy as np
 import dawdreamer as daw
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DSP_PATH = REPO_ROOT / "effects" / "home" / "faust" / "objekt_synth.dsp"
+DSP_PATH = REPO_ROOT / "effects" / "home" / "faust" / "resonode_synth.dsp"
 
 SAMPLE_RATE = 48000
 BLOCK_SIZE = 64
@@ -15,10 +15,10 @@ COMPILE_FLAGS = ["-vec", "-fun", "-dfs", "-vs", "32", "-ct", "0"]
 VARNAME = {
     "position": "position",
     "tone": "tone",
-    "decay": "objDecay",
+    "decay": "decayTime",
     "damping": "damping",
     "stretch": "stretch",
-    "level": "objLevel",
+    "level": "outLevel",
 }
 
 
@@ -34,8 +34,12 @@ def compile_processor(engine, dsp_text, name):
 def make_inputs(n, note, excite):
     note_sig = np.full(n, float(note))
     gate_sig = np.ones(n)
+    vel_sig = np.ones(n)
     zero = np.zeros(n)
-    return np.stack([excite, note_sig, gate_sig, zero, zero, zero, zero, zero, zero], axis=0)
+    return np.stack(
+        [excite, note_sig, gate_sig, vel_sig, zero, zero, zero, zero, zero, zero, zero, zero, zero],
+        axis=0,
+    )
 
 
 def burst_excitation(n, seed):
@@ -53,7 +57,7 @@ def render(dsp_text, note=60, dur=0.3, seed=7):
     excite = burst_excitation(n, seed)
     inputs = make_inputs(n, note, excite)
     playback = engine.make_playback_processor("in", inputs)
-    faust = compile_processor(engine, dsp_text, "objekt")
+    faust = compile_processor(engine, dsp_text, "resonode")
     engine.load_graph([(playback, []), (faust, ["in"])])
     engine.render(dur)
     return engine.get_audio()[0]
@@ -71,8 +75,8 @@ def spectral_centroid(x, sr, warmup_s=0.2):
 
 def render_tone_at_hz(tone_hz, note):
     text = re.sub(
-        r'hslider\("fx/objekt/tone", [^,]+,',
-        f'hslider("fx/objekt/tone", {tone_hz},',
+        r'hslider\("fx/resonode/tone", [^,]+,',
+        f'hslider("fx/resonode/tone", {tone_hz},',
         DSP_PATH.read_text(),
     )
     audio = render(text, note=note, dur=1.0, seed=1)
@@ -106,7 +110,7 @@ def check_tone_taper():
 def build_stepped_variant(param, before, after, jump_sample, smoothed):
     varname = VARNAME[param]
     text = DSP_PATH.read_text()
-    pattern = rf'{varname}\s*=\s*hslider\("fx/objekt/{param}", [^)]+\)(?: : morphGlide)?;'
+    pattern = rf'{varname}\s*=\s*hslider\("fx/resonode/{param}", [^)]+\)(?: : morphGlide)?;'
     m = re.search(pattern, text)
     if not m:
         raise RuntimeError(f"no hslider match for {param}")
@@ -156,11 +160,122 @@ def check_no_fadein_regression():
     return ratio > 0.9
 
 
+def render_custom(dsp_text, inputs, dur):
+    engine = daw.RenderEngine(SAMPLE_RATE, BLOCK_SIZE)
+    playback = engine.make_playback_processor("in", inputs)
+    faust = compile_processor(engine, dsp_text, "resonode")
+    engine.load_graph([(playback, []), (faust, ["in"])])
+    engine.render(dur)
+    return engine.get_audio()[0]
+
+
+def voice_inputs(n, note0=0.0, gate0=0.0, vel0=0.0, excite=None):
+    if excite is None:
+        excite = np.zeros(n)
+    zero = np.zeros(n)
+    note_sig = np.full(n, float(note0)) if np.ndim(note0) == 0 else note0
+    gate_sig = np.full(n, float(gate0)) if np.ndim(gate0) == 0 else gate0
+    vel_sig = np.full(n, float(vel0)) if np.ndim(vel0) == 0 else vel0
+    return np.stack(
+        [excite, note_sig, gate_sig, vel_sig, zero, zero, zero, zero, zero, zero, zero, zero, zero],
+        axis=0,
+    )
+
+
+def check_velocity_response():
+    print("=== velocity -> loudness/brightness check ===")
+    dsp_text = DSP_PATH.read_text()
+    n = int(0.5 * SAMPLE_RATE)
+    excite = burst_excitation(n, seed=3)
+    ok = True
+    prev_rms, prev_centroid = None, None
+    for vel in (0.2, 0.6, 1.0):
+        inputs = voice_inputs(n, note0=60.0, gate0=1.0, vel0=vel, excite=excite)
+        audio = render_custom(dsp_text, inputs, n / SAMPLE_RATE)
+        rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)) + 1e-20)
+        centroid = spectral_centroid(audio, SAMPLE_RATE, warmup_s=0.05)
+        print(f"vel={vel:.1f} rms={rms:.5f} centroid={centroid:8.1f}Hz")
+        if prev_rms is not None and not (rms >= prev_rms * 0.98):
+            ok = False
+        if prev_centroid is not None and not (centroid >= prev_centroid * 0.98):
+            ok = False
+        prev_rms, prev_centroid = rms, centroid
+    return ok
+
+
+def check_silent_without_live_input():
+    print("=== mic-only exciter regression check (gate held, zero live input) ===")
+    dsp_text = DSP_PATH.read_text()
+    n = int(0.3 * SAMPLE_RATE)
+    inputs = voice_inputs(n, note0=60.0, gate0=1.0, vel0=1.0, excite=np.zeros(n))
+    audio = render_custom(dsp_text, inputs, n / SAMPLE_RATE)
+    peak = float(np.max(np.abs(audio)))
+    print(f"peak amplitude with a held key and silent input: {peak:.3e}")
+    return peak < 1e-5
+
+
+def check_new_mode_alias_guard():
+    print("=== mode5/mode6 alias-guard check ===")
+    sr = SAMPLE_RATE
+    note = 108
+    f0 = 440.0 * (2.0 ** ((note - 69) / 12.0))
+    print(f"note={note} f0={f0:.1f}Hz mode5={5*f0:.1f}Hz mode6={6*f0:.1f}Hz nyquist={sr/2:.0f}Hz")
+    dsp_text = DSP_PATH.read_text()
+    n = int(1.0 * sr)
+    rng = np.random.default_rng(5)
+    excite = rng.uniform(-1.0, 1.0, size=n) * 0.5
+    inputs = voice_inputs(n, note0=float(note), gate0=1.0, vel0=1.0, excite=excite)
+    audio = render_custom(dsp_text, inputs, n / sr)
+    seg = audio[int(0.2 * sr) :]
+    windowed = seg * np.hanning(len(seg))
+    spec = np.abs(np.fft.rfft(windowed))
+    freqs = np.fft.rfftfreq(len(seg), 1.0 / sr)
+    aliased5 = sr - 5 * f0
+    aliased6 = sr - 6 * f0
+    peak_mag = float(np.max(spec))
+    ok = True
+    for label, alias_hz in (("mode5", aliased5), ("mode6", aliased6)):
+        if alias_hz <= 0 or alias_hz >= sr / 2:
+            continue
+        band = (freqs > alias_hz - 100) & (freqs < alias_hz + 100)
+        band_peak = float(np.max(spec[band])) if np.any(band) else 0.0
+        ratio = band_peak / (peak_mag + 1e-20)
+        print(f"{label} alias-fold target {alias_hz:.0f}Hz: relative magnitude {ratio:.4f}")
+        if ratio > 0.05:
+            ok = False
+    return ok
+
+
+def check_voice_steal_with_velocity_change():
+    print("=== voice-steal + velocity-change click check ===")
+    dsp_text = DSP_PATH.read_text()
+    n = int(0.05 * SAMPLE_RATE)
+    steal_at = n // 2
+    note_sig = np.full(n, 60.0)
+    note_sig[steal_at:] = 72.0
+    gate_sig = np.ones(n)
+    vel_sig = np.full(n, 1.0)
+    vel_sig[steal_at:] = 0.3
+    rng = np.random.default_rng(9)
+    excite = rng.uniform(-1.0, 1.0, size=n) * 0.6
+    inputs = voice_inputs(n, note0=note_sig, gate0=gate_sig, vel0=vel_sig, excite=excite)
+    audio = render_custom(dsp_text, inputs, n / SAMPLE_RATE)
+    d = np.abs(np.diff(audio.astype(np.float64)))
+    at_steal = d[steal_at - 1]
+    background = np.median(d[max(0, steal_at - 300) : steal_at - 5])
+    print(f"derivative at steal instant: {at_steal:.4f}, local background median: {background:.4f}")
+    return at_steal < 0.5
+
+
 def main():
     results = {
         "tone_taper": check_tone_taper(),
         "morph_glide_click": check_morph_glide_click(),
         "no_fadein_regression": check_no_fadein_regression(),
+        "velocity_response": check_velocity_response(),
+        "silent_without_live_input": check_silent_without_live_input(),
+        "new_mode_alias_guard": check_new_mode_alias_guard(),
+        "voice_steal_with_velocity_change": check_voice_steal_with_velocity_change(),
     }
     print()
     print("=== summary ===")

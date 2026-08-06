@@ -9,8 +9,8 @@ Right-to-repair is not a marketing label here — it is the actual architecture:
 
 - **The DSP is Faust source, not a firmware blob.** Every algorithm — the loop
   engine (`dsp/loop.dsp`), the effects chain, the polyphonic pitch-lock
-  (`multitranspose.dsp`), the Objekt modal-resonator synth
-  (`objekt_synth.dsp`), the granulator patches — is readable, editable `.dsp`
+  (`multitranspose.dsp`), the Resonode modal-resonator synth
+  (`resonode_synth.dsp`), the granulator patches — is readable, editable `.dsp`
   text a repair tech or a curious musician can open, change, and recompile.
   There is no sealed DSP core.
 - **The control surface is a plain-text mapping, not a hardcoded binding.**
@@ -41,7 +41,7 @@ hardware/DSP/build constraints from real device testing live in
 Raspberry Pi 4  ·  Alpine Linux (diskless/RAM)  ·  PREEMPT_RT kernel
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ Core 0  USB audio I/O   — kernel f_uac2 gadget (Pi is a USB audio device) │
-│ Core 1  home stack      — loop/pitch-lock/Objekt/granulator/FX, compiled  │  compiled into
+│ Core 1  home stack      — loop/pitch-lock/Resonode/granulator/FX, compiled  │  compiled into
 │                           straight into the binary, no dynamic loading   │  the aloop binary
 │ Core 3  user-FX LV2     — drop your own .lv2 on flash, hot-swapped        │─┐ in-process
 │ Core 2  control         — Ableton Link · WiFi/AP (autoAP) · MIDI · telem  │─┘ host, NO graph
@@ -70,11 +70,11 @@ punch-in-live performance instrument:
 - **6-voice polyphonic pitch-lock** (`multitranspose.dsp`) — a Whammy/Manipulator-
   style harmonizer that locks the input to held keys, with round-robin voice
   stealing and pitch-synchronous shift windows.
-- **Objekt** — a 4-voice modal-resonator synth, excited by the live input signal
-  rather than a synthetic oscillator, engaged by holding the LofiFx pad past a
-  1-second threshold (a quick tap instead latches a background granulator
-  texture). Both live in the always-on home stack, never gated behind an
-  LV2 host round-trip.
+- **Resonode** — a 4-voice, 6-mode-per-voice modal-resonator synth, excited by
+  the live input signal rather than a synthetic oscillator, engaged by holding
+  the LofiFx pad past a 1-second threshold (a quick tap instead latches a
+  background granulator texture). Both live in the always-on home stack, never
+  gated behind an LV2 host round-trip.
 - **A 6-patch granulator** (Glass/Cloud/Freeze/Chop/Tape/Shatter) blended as a
   continuous convex morph across 6 knob slots, with real velocity-sensitive
   grain density.
@@ -93,7 +93,7 @@ of these.
 The user-extension slot is a **plain LV2 plugin directory on flash**, not
 compiled into the firmware:
 
-- The **home stack** (loop engine, pitch-lock, Objekt, granulator, the verified
+- The **home stack** (loop engine, pitch-lock, Resonode, granulator, the verified
   [dubfx](../dubfx)-derived effects chain) is Faust source compiled straight
   into the `aloop` binary and runs on Core 1 every block.
 - **You** drop your own `.lv2` bundle into `/effects/user/` on the SD card and it
@@ -116,7 +116,7 @@ firmware image.
 | [`docs/`](docs/) | The design record — architecture, the migration map, the decision log, the control-surface reference, and the feasibility study that justifies it all |
 | [`AGENTS.md`](AGENTS.md) | The living technical-constraints reference — hardware quirks, DSP gotchas, deploy/netboot mechanics, all discovered through real-device testing |
 | [`src/`](src/) | The audio thread, in-process LV2 host, Link integration, WiFi/AP control, MIDI/control-surface handling |
-| [`dsp/`](dsp) + [`effects/`](effects/) | The Faust source for the home stack (loop engine, pitch-lock, Objekt, granulator, effects) and the user-drop-in LV2 directory |
+| [`dsp/`](dsp) + [`effects/`](effects/) | The Faust source for the home stack (loop engine, pitch-lock, Resonode, granulator, effects) and the user-drop-in LV2 directory |
 | [`image/`](image/) | The Alpine diskless image build, multi-board (Pi 3/4/5, Orange Pi Prime) |
 | [`kernel/`](kernel/) | PREEMPT_RT kernel config + RT tuning |
 | [`ci/`](ci/) + [`.github/workflows/`](.github/workflows/) | GitHub Actions that build the LV2 bundles, cross-compile the binary, and assemble each board's image |
@@ -125,7 +125,7 @@ firmware image.
 
 The original Circle→Linux migration (steps 1–11 of the original build plan) is
 long done and running on real Pi 4 hardware — the codebase has moved well past
-"migrated" into active feature iteration: the pitch-lock, Objekt synth,
+"migrated" into active feature iteration: the pitch-lock, Resonode synth,
 granulator, grid-LED visualization, and USB ring-recording work above all
 shipped *after* the migration, each as its own real-hardware-tested change (see
 `git log` for the full history, and [`docs/PLAN.md`](docs/PLAN.md) for the

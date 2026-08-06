@@ -132,12 +132,13 @@ this is the accepted cost model here, not a regression to fix.
   a pitch tracker plus 6 crossfaded-delay-line shifter voices, each gated by a
   held key. Locked output *replaces* the dry signal via a dedicated gate, it
   never layers over it.
-- **Objekt** (`effects/home/faust/objekt_synth.dsp`) — a 4-voice modal
-  resonator synth excited by the live input signal, with alias-guarded higher
-  modes (a mode above Nyquist fades to silence rather than folding back into
-  an unrelated frequency) and click-free voice stealing (a stolen voice gets a
-  synthetic one-sample gate dip to re-trigger its envelopes, plus a
-  frequency-glide to avoid a biquad-coefficient discontinuity).
+- **Resonode** (`effects/home/faust/resonode_synth.dsp`) — a 4-voice, 6-mode-
+  per-voice modal resonator synth excited by the live input signal, with
+  velocity-scaled exciter gain, alias-guarded higher modes (a mode above
+  Nyquist fades to silence rather than folding back into an unrelated
+  frequency), and click-free voice stealing (a stolen voice gets a synthetic
+  one-sample gate dip to re-trigger its envelopes, plus a frequency-glide to
+  avoid a biquad-coefficient discontinuity).
 - **The granulator** lives in `Sampler` (C++, not Faust — it needs dynamic
   grain scheduling that doesn't fit Faust's static dataflow model), sharing the
   same post-fx capture tap as loop recording.

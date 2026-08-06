@@ -32,20 +32,22 @@ void ApcGrid::bindAll(ParamStore& ps) {
         snprintf(xposeName, sizeof xposeName, "fx/xpose%d/gate", v);
         ps.bind(xposeName, 0.0f);
     }
-    char objektVoiceName[28];
-    for (int v = 0; v < kObjektVoices; v++) {
-        snprintf(objektVoiceName, sizeof objektVoiceName, "fx/objektvoice%d/note", v);
-        ps.bind(objektVoiceName, 0.0f);
-        snprintf(objektVoiceName, sizeof objektVoiceName, "fx/objektvoice%d/gate", v);
-        ps.bind(objektVoiceName, 0.0f);
+    char resonodeVoiceName[28];
+    for (int v = 0; v < kResonodeVoices; v++) {
+        snprintf(resonodeVoiceName, sizeof resonodeVoiceName, "fx/resonodevoice%d/note", v);
+        ps.bind(resonodeVoiceName, 0.0f);
+        snprintf(resonodeVoiceName, sizeof resonodeVoiceName, "fx/resonodevoice%d/gate", v);
+        ps.bind(resonodeVoiceName, 0.0f);
+        snprintf(resonodeVoiceName, sizeof resonodeVoiceName, "fx/resonodevoice%d/vel", v);
+        ps.bind(resonodeVoiceName, 1.0f);
     }
-    ps.bind("fx/objekt/engaged", 0.0f);
-    ps.bind("fx/objekt/position", 0.35f);
-    ps.bind("fx/objekt/tone", 6000.0f);
-    ps.bind("fx/objekt/decay", 1.2f);
-    ps.bind("fx/objekt/damping", 0.85f);
-    ps.bind("fx/objekt/stretch", 0.0f);
-    ps.bind("fx/objekt/level", 0.8f);
+    ps.bind("fx/resonode/engaged", 0.0f);
+    ps.bind("fx/resonode/position", 0.35f);
+    ps.bind("fx/resonode/tone", 6000.0f);
+    ps.bind("fx/resonode/decay", 1.2f);
+    ps.bind("fx/resonode/damping", 0.85f);
+    ps.bind("fx/resonode/stretch", 0.0f);
+    ps.bind("fx/resonode/level", 0.8f);
     ps.bind("fx/microrepeat_div");
     ps.bind("fx/monitorfold");
     ps.bind("fx/formant");
@@ -303,9 +305,9 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps, LinkBridge* link, Audio
     if (m_bankFlashReleaseAt != 0 && now_ms >= m_bankFlashReleaseAt) {
         m_bankFlashReleaseAt = 0;
     }
-    if (m_granulatorHeld && !m_objektEngaged && now_ms - m_granulatorPressAt >= kGranulatorTapMs) {
-        m_objektEngaged = true;
-        ps.setByName("fx/objekt/engaged", 1.0f);
+    if (m_granulatorHeld && !m_resonodeEngaged && now_ms - m_granulatorPressAt >= kGranulatorTapMs) {
+        m_resonodeEngaged = true;
+        ps.setByName("fx/resonode/engaged", 1.0f);
         if (audio && audio->sampler()) audio->sampler()->setGranulatorEnabled(false);
     }
     for (int looper = 0; looper < kLooperCount; looper++) {
@@ -473,7 +475,7 @@ void ApcGrid::onClearAll(bool held, ParamStore& ps, LinkBridge* link) {
         snprintf(gateName, sizeof gateName, "fx/xpose%d/gate", v);
         ps.setByName(gateName, 0.0f);
     }
-    releaseAllObjektVoices(ps);
+    releaseAllResonodeVoices(ps);
     publishTransport(link);
 }
 int ApcGrid::allocateTransposeVoice(int note) {
@@ -502,47 +504,49 @@ void ApcGrid::releaseTransposeVoice(int note, ParamStore& ps) {
         return;
     }
 }
-int ApcGrid::allocateObjektVoice(int note) {
-    for (int v = 0; v < kObjektVoices; v++)
-        if (m_objektVoiceNote[v] == note) return v;
-    for (int v = 0; v < kObjektVoices; v++) {
-        if (m_objektVoiceNote[v] >= 0) continue;
-        m_objektVoiceNote[v] = note;
-        m_objektVoiceOrder[v] = ++m_objektVoiceCounter;
+int ApcGrid::allocateResonodeVoice(int note) {
+    for (int v = 0; v < kResonodeVoices; v++)
+        if (m_resonodeVoiceNote[v] == note) return v;
+    for (int v = 0; v < kResonodeVoices; v++) {
+        if (m_resonodeVoiceNote[v] >= 0) continue;
+        m_resonodeVoiceNote[v] = note;
+        m_resonodeVoiceOrder[v] = ++m_resonodeVoiceCounter;
         return v;
     }
     int oldest = 0;
-    for (int v = 1; v < kObjektVoices; v++)
-        if (m_objektVoiceOrder[v] < m_objektVoiceOrder[oldest]) oldest = v;
-    m_objektVoiceNote[oldest] = note;
-    m_objektVoiceOrder[oldest] = ++m_objektVoiceCounter;
+    for (int v = 1; v < kResonodeVoices; v++)
+        if (m_resonodeVoiceOrder[v] < m_resonodeVoiceOrder[oldest]) oldest = v;
+    m_resonodeVoiceNote[oldest] = note;
+    m_resonodeVoiceOrder[oldest] = ++m_resonodeVoiceCounter;
     return oldest;
 }
-void ApcGrid::releaseObjektVoice(int note, ParamStore& ps) {
-    for (int v = 0; v < kObjektVoices; v++) {
-        if (m_objektVoiceNote[v] != note) continue;
-        m_objektVoiceNote[v] = -1;
+void ApcGrid::releaseResonodeVoice(int note, ParamStore& ps) {
+    for (int v = 0; v < kResonodeVoices; v++) {
+        if (m_resonodeVoiceNote[v] != note) continue;
+        m_resonodeVoiceNote[v] = -1;
         char gateName[28];
-        snprintf(gateName, sizeof gateName, "fx/objektvoice%d/gate", v);
+        snprintf(gateName, sizeof gateName, "fx/resonodevoice%d/gate", v);
         ps.setByName(gateName, 0.0f);
         return;
     }
 }
-void ApcGrid::releaseAllObjektVoices(ParamStore& ps) {
+void ApcGrid::releaseAllResonodeVoices(ParamStore& ps) {
     char gateName[28];
-    for (int v = 0; v < kObjektVoices; v++) {
-        m_objektVoiceNote[v] = -1;
-        snprintf(gateName, sizeof gateName, "fx/objektvoice%d/gate", v);
+    for (int v = 0; v < kResonodeVoices; v++) {
+        m_resonodeVoiceNote[v] = -1;
+        snprintf(gateName, sizeof gateName, "fx/resonodevoice%d/gate", v);
         ps.setByName(gateName, 0.0f);
     }
 }
 void ApcGrid::onKeybedNoteOn(int note, int vel, ParamStore& ps, Sampler* sampler) {
-    if (m_objektEngaged) {
-        int v = allocateObjektVoice(note);
-        char noteName[28], gateName[28];
-        snprintf(noteName, sizeof noteName, "fx/objektvoice%d/note", v);
-        snprintf(gateName, sizeof gateName, "fx/objektvoice%d/gate", v);
+    if (m_resonodeEngaged) {
+        int v = allocateResonodeVoice(note);
+        char noteName[28], gateName[28], velName[28];
+        snprintf(noteName, sizeof noteName, "fx/resonodevoice%d/note", v);
+        snprintf(gateName, sizeof gateName, "fx/resonodevoice%d/gate", v);
+        snprintf(velName, sizeof velName, "fx/resonodevoice%d/vel", v);
         ps.setByName(noteName, (float)note);
+        ps.setByName(velName, (float)vel / 127.0f);
         ps.setByName(gateName, 1.0f);
         return;
     }
@@ -566,8 +570,8 @@ void ApcGrid::onKeybedNoteOn(int note, int vel, ParamStore& ps, Sampler* sampler
     ps.setByName(gateName, 1.0f);
 }
 void ApcGrid::onKeybedNoteOff(int note, ParamStore& ps, Sampler* sampler) {
-    if (m_objektEngaged) {
-        releaseObjektVoice(note, ps);
+    if (m_resonodeEngaged) {
+        releaseResonodeVoice(note, ps);
         return;
     }
     if (m_drumRecordMode) {
@@ -669,49 +673,49 @@ static const GranPatch kGranPatches[kGranPatchCount] = {
     {  14.0f, 150.0f, 90.0f, 300.0f, 4.5f, 0.50f, 1.00f },
 };
 
-struct ObjektPatch { float position, decay, damping, stretch; };
+struct ResonodePatch { float position, decay, damping, stretch; };
 
-constexpr int kObjektPatchCount = 4;
-static const ObjektPatch kObjektPatches[kObjektPatchCount] = {
+constexpr int kResonodePatchCount = 4;
+static const ResonodePatch kResonodePatches[kResonodePatchCount] = {
     { 0.080f, 0.150f, 0.800f, -0.100f },
     { 0.080f, 7.000f, 0.970f,  1.200f },
     { 0.080f, 7.000f, 0.970f, -0.100f },
     { 0.420f, 7.000f, 0.150f, -0.100f },
 };
 
-struct ObjektDirectKnobRange { const char* zone; float lo; float hi; bool logTaper; };
-static const ObjektDirectKnobRange kObjektDirectKnobRanges[kFxKnobCount - 1 - kObjektPatchCount] = {
-    { "fx/objekt/tone",  200.0f, 18000.0f, true },
-    { "fx/objekt/level", 0.0f, 1.5f, false },
+struct ResonodeDirectKnobRange { const char* zone; float lo; float hi; bool logTaper; };
+static const ResonodeDirectKnobRange kResonodeDirectKnobRanges[kFxKnobCount - 1 - kResonodePatchCount] = {
+    { "fx/resonode/tone",  200.0f, 18000.0f, true },
+    { "fx/resonode/level", 0.0f, 1.5f, false },
 };
-static void applyObjektDirectKnob(int knobIdx, float v01, ParamStore& ps) {
-    int i = knobIdx - 1 - kObjektPatchCount;
-    if (i < 0 || i >= kFxKnobCount - 1 - kObjektPatchCount) return;
-    const ObjektDirectKnobRange& r = kObjektDirectKnobRanges[i];
+static void applyResonodeDirectKnob(int knobIdx, float v01, ParamStore& ps) {
+    int i = knobIdx - 1 - kResonodePatchCount;
+    if (i < 0 || i >= kFxKnobCount - 1 - kResonodePatchCount) return;
+    const ResonodeDirectKnobRange& r = kResonodeDirectKnobRanges[i];
     float v = r.logTaper ? r.lo * std::pow(r.hi / r.lo, v01) : r.lo + v01 * (r.hi - r.lo);
     ps.setByName(r.zone, v);
 }
 
-void ApcGrid::applyObjektPatchMorph(ParamStore& ps) {
+void ApcGrid::applyResonodePatchMorph(ParamStore& ps) {
     const float* weight = &m_fxBankValues[(int)FxBank::LofiFx][1];
     float totalWeight = 0.0f;
-    for (int p = 0; p < kObjektPatchCount; p++) totalWeight += weight[p];
+    for (int p = 0; p < kResonodePatchCount; p++) totalWeight += weight[p];
 
-    ObjektPatch blend = kObjektPatches[0];
+    ResonodePatch blend = kResonodePatches[0];
     if (totalWeight > 0.0001f) {
-        blend = ObjektPatch{0.0f, 0.0f, 0.0f, 0.0f};
-        for (int p = 0; p < kObjektPatchCount; p++) {
+        blend = ResonodePatch{0.0f, 0.0f, 0.0f, 0.0f};
+        for (int p = 0; p < kResonodePatchCount; p++) {
             float wn = weight[p] / totalWeight;
-            blend.position += wn * kObjektPatches[p].position;
-            blend.decay    += wn * kObjektPatches[p].decay;
-            blend.damping  += wn * kObjektPatches[p].damping;
-            blend.stretch  += wn * kObjektPatches[p].stretch;
+            blend.position += wn * kResonodePatches[p].position;
+            blend.decay    += wn * kResonodePatches[p].decay;
+            blend.damping  += wn * kResonodePatches[p].damping;
+            blend.stretch  += wn * kResonodePatches[p].stretch;
         }
     }
-    ps.setByName("fx/objekt/position", blend.position);
-    ps.setByName("fx/objekt/decay", blend.decay);
-    ps.setByName("fx/objekt/damping", blend.damping);
-    ps.setByName("fx/objekt/stretch", blend.stretch);
+    ps.setByName("fx/resonode/position", blend.position);
+    ps.setByName("fx/resonode/decay", blend.decay);
+    ps.setByName("fx/resonode/damping", blend.damping);
+    ps.setByName("fx/resonode/stretch", blend.stretch);
 }
 
 void ApcGrid::applyGranulatorMorph(Sampler* sampler) {
@@ -765,9 +769,9 @@ void ApcGrid::onFxKnobCC(int ccNumber, uint8_t data2, ParamStore& ps, Sampler* s
     float v = (float)data2 / 127.0f;
     m_fxBankValues[(int)m_activeBank][knobIdx] = v;
     if (m_activeBank == FxBank::LofiFx && knobIdx > 0) {
-        if (m_objektEngaged) {
-            if (knobIdx <= kObjektPatchCount) applyObjektPatchMorph(ps);
-            else applyObjektDirectKnob(knobIdx, v, ps);
+        if (m_resonodeEngaged) {
+            if (knobIdx <= kResonodePatchCount) applyResonodePatchMorph(ps);
+            else applyResonodeDirectKnob(knobIdx, v, ps);
         } else {
             applyGranulatorMorph(sampler);
         }
@@ -797,14 +801,14 @@ void ApcGrid::onLofiFxPress(unsigned now_ms, ParamStore&, Sampler* sampler) {
     m_bankFlashReleaseAt = nonZeroDeadline(now_ms, kBankFlashMs);
     m_granulatorHeld = true;
     m_granulatorPressAt = now_ms;
-    m_objektEngaged = false;
+    m_resonodeEngaged = false;
     if (sampler) sampler->setGranulatorEnabled(true);
 }
 void ApcGrid::onLofiFxRelease(unsigned now_ms, ParamStore& ps, Sampler* sampler) {
-    if (m_objektEngaged) {
-        releaseAllObjektVoices(ps);
-        m_objektEngaged = false;
-        ps.setByName("fx/objekt/engaged", 0.0f);
+    if (m_resonodeEngaged) {
+        releaseAllResonodeVoices(ps);
+        m_resonodeEngaged = false;
+        ps.setByName("fx/resonode/engaged", 0.0f);
     } else if (now_ms - m_granulatorPressAt < kGranulatorTapMs) {
         m_granulatorLatched = !m_granulatorLatched;
     }

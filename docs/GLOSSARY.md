@@ -36,14 +36,14 @@ Domain terms used throughout aloop, so the docs are self-contained.
   aloop's effects are LV2 plugins.
 - **lilv** — the reference library for discovering and loading LV2 plugins.
 - **MC-420** — the right-to-repair live-performance workstation this codebase
-  implements: looping, polyphonic pitch-lock, Objekt, and the granulator, on a
+  implements: looping, polyphonic pitch-lock, Resonode, and the granulator, on a
   Pi 4 running Alpine + PREEMPT_RT.
 - **mlockall** — a syscall that locks a process's memory into RAM so it never
   page-faults (page faults would blow the audio deadline).
-- **Objekt** — the 4-voice modal-resonator synth mode reachable by holding the
-  LofiFx pad past a 1-second threshold; excited by the live input signal
-  ("reactor mode"), not a synthetic oscillator, and replaces (never layers
-  over) the dry signal while engaged.
+- **Resonode** — the 4-voice, 6-mode-per-voice modal-resonator synth mode
+  reachable by holding the LofiFx pad past a 1-second threshold; excited by the
+  live input signal ("reactor mode"), not a synthetic oscillator, and replaces
+  (never layers over) the dry signal while engaged.
 - **PREEMPT_RT** — the Linux real-time preemption patch/config that bounds
   worst-case scheduling latency to the tens of microseconds.
 - **RP1** — the Pi 5 I/O controller; its IRQ handling breaks the audio-core
