@@ -679,16 +679,17 @@ static const ObjektPatch kObjektPatches[kObjektPatchCount] = {
     { 0.420f, 7.000f, 0.150f, -0.100f },
 };
 
-struct ObjektDirectKnobRange { const char* zone; float lo; float hi; };
+struct ObjektDirectKnobRange { const char* zone; float lo; float hi; bool logTaper; };
 static const ObjektDirectKnobRange kObjektDirectKnobRanges[kFxKnobCount - 1 - kObjektPatchCount] = {
-    { "fx/objekt/tone",  200.0f, 18000.0f },
-    { "fx/objekt/level", 0.0f, 1.5f },
+    { "fx/objekt/tone",  200.0f, 18000.0f, true },
+    { "fx/objekt/level", 0.0f, 1.5f, false },
 };
 static void applyObjektDirectKnob(int knobIdx, float v01, ParamStore& ps) {
     int i = knobIdx - 1 - kObjektPatchCount;
     if (i < 0 || i >= kFxKnobCount - 1 - kObjektPatchCount) return;
     const ObjektDirectKnobRange& r = kObjektDirectKnobRanges[i];
-    ps.setByName(r.zone, r.lo + v01 * (r.hi - r.lo));
+    float v = r.logTaper ? r.lo * std::pow(r.hi / r.lo, v01) : r.lo + v01 * (r.hi - r.lo);
+    ps.setByName(r.zone, v);
 }
 
 void ApcGrid::applyObjektPatchMorph(ParamStore& ps) {
