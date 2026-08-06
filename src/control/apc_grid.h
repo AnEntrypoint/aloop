@@ -168,6 +168,7 @@ private:
     int allocateObjektVoice(int note);
     void releaseObjektVoice(int note, ParamStore& ps);
     void releaseAllObjektVoices(ParamStore& ps);
+    void applyObjektPatchMorph(ParamStore& ps);
 
     bool m_guitarFxHeld = false;
     bool m_guitarFxConsumedByLooperPress = false;
