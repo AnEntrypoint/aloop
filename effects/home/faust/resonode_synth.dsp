@@ -5,6 +5,13 @@ declare description "4-voice modal-resonator instrument: a bank of tuned resonan
 
 import("stdfaust.lib");
 
+morphGlidePole = ba.tau2pole(0.015);
+morphIsFirstSample = ba.time == 0;
+morphGlide(x) = y
+letrec {
+    'y = ba.if(morphIsFirstSample, x, y + (x - y)*(1.0 - morphGlidePole));
+};
+
 position  = hslider("fx/resonode/position", 0.35, 0.0, 1.0, 0.001) : morphGlide;
 tone      = hslider("fx/resonode/tone", 6000.0, 200.0, 18000.0, 1.0) : morphGlide;
 decayTime = hslider("fx/resonode/decay", 1.2, 0.05, 8.0, 0.001) : morphGlide;
@@ -14,11 +21,6 @@ outLevel  = hslider("fx/resonode/level", 0.8, 0.0, 1.5, 0.001) : morphGlide;
 
 voiceGain = 0.5;
 retuneGlide = 0.01;
-morphGlidePole = ba.tau2pole(0.015);
-morphGlide(x) = y
-letrec {
-    'y = ba.if(ba.time == 0, x, y + (x - y)*(1.0 - morphGlidePole));
-};
 
 stealEvent(note, gate) = (note != note') * (gate <= gate');
 retriggerGate(note, gate) = gate * (1.0 - stealEvent(note, gate));
