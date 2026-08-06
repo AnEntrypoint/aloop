@@ -1878,13 +1878,20 @@ holding a note, unlike `position`/`decay`/`damping`/`stretch`, which define
 what the resonator is made of and are better dialed in as a single named
 identity than four independent sliders fought into alignment by hand.
 
-**The four patches were found empirically, not hand-guessed.** The
-DawDreamer JIT harness at `test/resonode-sweetspot/` (`sweep.py` +
-`select_patches.py`) grid-searched `position`/`decay`/`damping`/`stretch`
-(5 levels each, 625 renders total; `resonode_synth.dsp` compiles standalone
-against a single multi-channel `make_playback_processor` feeding all 9
-declared inputs by channel order — no `ffunction`/`pitch.dsp` stub needed,
-same as the voice-steal/alias-guard harnesses above) against a synthetic
+**The four patches were found empirically, not hand-guessed, and RE-SWEPT
+after the mode bank grew from 4 to 6 modes/voice** (see "Resonode's mode bank
+is 6 modes/voice" above) rather than assuming the old picks still analyze
+best — adding two modes measurably changes the acoustic result at any fixed
+`(position,decay,damping,stretch)` point, so the only honest way to know
+whether the 4-mode-era picks were still optimal was to re-run the same
+methodology against the current DSP. The DawDreamer JIT harness at
+`test/resonode-sweetspot/` (`sweep.py` + `select_patches.py`) grid-searched
+`position`/`decay`/`damping`/`stretch` (5 levels each, 625 renders total;
+`resonode_synth.dsp` compiles standalone against a single multi-channel
+`make_playback_processor` feeding all 13 declared inputs by channel order —
+no `ffunction`/`pitch.dsp` stub needed, same as the voice-steal/alias-guard
+harnesses above; `vel` is pinned to 1.0 throughout the sweep, so the search
+covers timbre, not the separate velocity-loudness axis) against a synthetic
 mic excitation (a short filtered-noise burst, decaying over ~3ms, then
 silence — a generic stand-in for a real tap/pluck/vocal transient) and
 scored each render's measured features (RMS-envelope decay time to -24dB,
@@ -1899,26 +1906,39 @@ numbers (nearest-integer rounding error shrinks as 1/k) and isn't reliable
 enough to rank by on its own — a real limitation of that specific metric,
 not of the sweep methodology.
 
-Final picks (`position, decay, damping, stretch`), each spot-verified at a
-bass note (36) and a high note (84) to confirm the alias guard keeps every
-patch's output finite and sane across the whole keybed:
+**The re-sweep's top pick for every one of the 4 patches landed on the exact
+same `(position,decay,damping,stretch)` point as the original 4-mode sweep** —
+all four target directions are dominated by pushing `decay`/`damping`/`position`/
+`stretch` to a grid EXTREME (the sharpest-decay corner for Percussive, the
+longest-ring-plus-max-damping corner for the two sustained patches, etc.), and
+the two added lower-weighted modes (0.22/0.16 vs modes 1-4's 1.00/0.60/0.40/0.30)
+shift each render's absolute feature values slightly without changing which
+corner of the search grid wins for any of the four target directions. This is
+a genuinely re-verified result, not an unexamined carryover: the measured
+feature values below are the NEW 6-mode numbers, not the old 4-mode ones (each
+shifted by a small, explainable amount — e.g. Percussive's transient ratio rose
+from ~34 to ~35 as modes 5/6 add a touch more energy to the initial transient
+without materially changing the decay tail), each again spot-verified at a bass
+note (36) and a high note (84) to confirm the alias guard keeps every patch's
+output finite and sane across the whole keybed.
 
-| Patch (knob 1-4 slot) | position | decay | damping | stretch | Measured character |
+| Patch (knob 1-4 slot) | position | decay | damping | stretch | Measured character (6-mode) |
 |---|---|---|---|---|---|
-| Percussive | 0.08 | 0.15 | 0.80 | -0.10 | 60ms decay, transient ratio ~34 (sharp tap) |
-| Metal/Glass | 0.08 | 7.00 | 0.97 | 1.20 | ~2.5s ring, centroid ~1.8kHz, only 26% of energy below 1.5x f0 (bright, inharmonic) |
-| Strings | 0.08 | 7.00 | 0.97 | -0.10 | ~2.5s ring, centroid ~2-3x f0, harmonic partials audibly present (not a bare sine) |
-| Dance Bass | 0.42 | 7.00 | 0.15 | -0.10 | ~2.5s ring, centroid pinned at f0, >99% of energy at the fundamental (clean low end) |
+| Percussive | 0.08 | 0.15 | 0.80 | -0.10 | 60ms decay, transient ratio ~35.3 (sharp tap) |
+| Metal/Glass | 0.08 | 7.00 | 0.97 | 1.20 | ~2.5s ring, centroid ~1.85kHz, only 26% of energy below 1.5x f0 (bright, inharmonic) |
+| Strings | 0.08 | 7.00 | 0.97 | -0.10 | ~2.5s ring, centroid ~632Hz (~2-3x f0), harmonic partials audibly present (not a bare sine) |
+| Dance Bass | 0.42 | 7.00 | 0.15 | -0.10 | ~2.5s ring, centroid ~262Hz (pinned at f0), ~99.8% of energy at the fundamental (clean low end) |
 
 Metal/Glass and Strings share `position`/`decay`/`damping` and differ only
-in `stretch` — the sweep independently rediscovered that inharmonicity
-(`stretch`) is the one parameter that actually separates "bell-like" from
-"string-like" once decay and damping are both maxed toward a long, lightly-
-damped ring; `position`'s effect on the mode-gain weights
+in `stretch` — the sweep independently rediscovered (both times) that
+inharmonicity (`stretch`) is the one parameter that actually separates
+"bell-like" from "string-like" once decay and damping are both maxed toward
+a long, lightly-damped ring; `position`'s effect on the mode-gain weights
 (`abs(sin(pi*position*k))`) turned out to be far less intuitive than its
 name suggests (0.08 doesn't favor the fundamental — it gives roughly equal
-weight across all 4 modes) and the optimizer's empirical answer overrode
-any hand-authored assumption about it.
+weight across modes 1-4, and now 5-6 too) and the optimizer's empirical
+answer overrode any hand-authored assumption about it, both before and after
+the mode-count expansion.
 
 ## Resonode's `tone` knob needs a logarithmic taper, not a linear Hz sweep
 
