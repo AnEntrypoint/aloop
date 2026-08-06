@@ -168,6 +168,7 @@
 <div id="app"></div>
 <script type="module">
 import { h, applyDiff } from 'anentrypoint-design';
+import { AloopFaustEngine } from './faust-engine.js';
 
 const N_LOOPERS = 20, N_PRESETS = 10;
 const DIVS = [1,2,4,8,16];
@@ -203,45 +204,54 @@ const state = {
   resonodeVoices: Array(4).fill(null),
   modWheel: 0.5,
   formant: 0.5,
-  bpm: 120,
-  linkPlaying: true,
-  linkPeers: 2,
+  bpm: 0,
   beatIndex: -1,
-  coreBusy: [9, 7, 5, 3],
-  xruns: 0,
-  loadError: null,
+  audioStarted: false,
+  audioStarting: false,
+  audioError: null,
 };
+
+const engine = new AloopFaustEngine(new URL('.', location.href).href);
 
 let root = document.getElementById('app');
 function render() { applyDiff(root, view()); }
 
-// ---------- gesture logic (mirrors src/control/apc_grid.cpp) ----------
-
-function pressLooper(i) {
-  const L = state.loopers[i];
-  if (state.guitarFxHeld) { L.sidechain = !L.sidechain; render(); return; }
-  if (!L.hasContent && !L.recording) {
-    L.recording = true;
-  } else if (L.recording) {
-    L.recording = false; L.hasContent = true; L.playing = true;
-  } else if (L.hasContent) {
-    L.playing = !L.playing;
+async function startAudio() {
+  if (state.audioStarted || state.audioStarting) return;
+  state.audioStarting = true;
+  render();
+  try {
+    await engine.start();
+    state.audioStarted = true;
+  } catch (err) {
+    state.audioError = String((err && err.message) || err);
+    console.error(err);
   }
+  state.audioStarting = false;
   render();
 }
-function eraseLooper(i) {
-  const L = state.loopers[i];
-  L.recording = false; L.hasContent = false; L.playing = false; L.level = 0; L.sidechain = false;
-  if (!state.loopers.some(x => x.hasContent)) { /* master phrase len would reset here */ }
-  render();
-}
-let holdTimers = {};
+
 function padDown(i) {
-  holdTimers[i] = setTimeout(() => { eraseLooper(i); holdTimers[i] = null; }, 1000);
+  if (!state.audioStarted) return;
+  engine.padDown(i, performance.now());
+  render();
 }
 function padUp(i) {
-  if (holdTimers[i]) { clearTimeout(holdTimers[i]); holdTimers[i] = null; pressLooper(i); }
+  if (!state.audioStarted) return;
+  engine.padUp(i);
+  render();
 }
+function padLeave(i) {}
+window.addEventListener('mouseup', () => {
+  if (!state.audioStarted) return;
+  let dirty = false;
+  for (let i = 0; i < N_LOOPERS; i++) {
+    if (!engine.looperHeld[i]) continue;
+    engine.padUp(i);
+    dirty = true;
+  }
+  if (dirty) render();
+});
 
 function pressPreset(p) {
   state.presets[p].used = true;
@@ -249,58 +259,82 @@ function pressPreset(p) {
 }
 
 function pressStopAll() {
-  state.loopers.forEach(L => { L.playing = false; if (state.shift) L.recording = false; });
+  if (!state.audioStarted) return;
+  engine.stopAll();
   render();
 }
 function pressClearAll() {
-  state.loopers.forEach(L => { L.recording = false; L.hasContent = false; L.playing = false; L.level = 0; L.sidechain = false; });
+  if (!state.audioStarted) return;
+  engine.clearAll();
   render();
 }
-function toggleShift() { state.shift = !state.shift; render(); }
-function toggleLive() { state.live = !state.live; render(); }
+function toggleShift() {
+  state.shift = !state.shift;
+  if (state.audioStarted) engine.setShift(state.shift);
+  render();
+}
+function toggleLive() {
+  state.live = !state.live;
+  if (state.audioStarted) engine.onLiveEngageToggle();
+  render();
+}
 
 function flashBank(which) {
   state.bankFlashWhich = which;
   state.bankFlashUntil = performance.now() + 150;
   setTimeout(render, 160);
 }
-function pressDubFx() { state.bank = 'dub'; flashBank('dub'); render(); }
+function pressDubFx() {
+  state.bank = 'dub';
+  if (state.audioStarted) engine.onDubFxPress();
+  flashBank('dub');
+  render();
+}
 function toggleGuitarFxHeld() {
   state.guitarFxHeld = !state.guitarFxHeld;
   state.bank = 'guitar';
+  if (state.audioStarted) {
+    if (state.guitarFxHeld) engine.onGuitarFxPress(); else engine.onGuitarFxRelease();
+  }
   flashBank('guitar');
   render();
 }
 
-let granTimer = null;
 function pressLofiFxDown() {
   state.bankBeforeHold = state.bank;
   state.bank = 'lofi';
   state.granHeld = true;
+  if (state.audioStarted) engine.onLofiFxPress(performance.now());
   render();
-  granTimer = setTimeout(() => {
-    if (state.granHeld) { state.resonodeEngaged = true; render(); }
-  }, 1000);
 }
 function pressLofiFxUp() {
-  clearTimeout(granTimer);
   state.granHeld = false;
-  if (state.resonodeEngaged) {
-    state.resonodeEngaged = false;
-    state.transposeVoices.fill(null);
-    state.resonodeVoices.fill(null);
-  } else {
-    state.granLatched = !state.granLatched;
+  if (state.audioStarted) {
+    engine.onLofiFxRelease(performance.now());
+    state.granLatched = engine.granulatorLatched;
+    state.resonodeEngaged = engine.resonodeEngaged;
   }
   state.bank = state.bankBeforeHold;
   render();
 }
 
-function microOn(d) { state.microDiv = d; render(); }
-function microOff(d) { if (state.microDiv === d) state.microDiv = 0; render(); }
+function microOn(d) {
+  state.microDiv = d;
+  if (state.audioStarted) engine.setMicrorepeatDiv(d);
+  render();
+}
+function microOff(d) {
+  if (state.microDiv === d) {
+    state.microDiv = 0;
+    if (state.audioStarted) engine.setMicrorepeatDiv(0);
+  }
+  render();
+}
 
 function setKnob(idx, v) {
-  state.knobs[state.bank][idx] = Math.max(0, Math.min(1, v));
+  const clamped = Math.max(0, Math.min(1, v));
+  state.knobs[state.bank][idx] = clamped;
+  if (state.audioStarted) engine.setKnob(idx, clamped);
   render();
 }
 
@@ -337,9 +371,12 @@ function releaseVoice(arr, note) {
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 function noteName(n) { return NOTE_NAMES[n % 12] + (Math.floor(n / 12) - 1); }
 
+const MOUSE_KEY_VELOCITY = 100;
+
 function keyDown(note) {
   if (state.resonodeEngaged) allocVoice(state.resonodeVoices, note);
   else if (state.shift) allocVoice(state.transposeVoices, note);
+  if (state.audioStarted) engine.keyDown(note, MOUSE_KEY_VELOCITY);
   state.keysDownSet = state.keysDownSet || new Set();
   state.keysDownSet.add(note);
   render();
@@ -347,11 +384,10 @@ function keyDown(note) {
 function keyUp(note) {
   if (state.resonodeEngaged) releaseVoice(state.resonodeVoices, note);
   else if (state.shift) releaseVoice(state.transposeVoices, note);
+  if (state.audioStarted) engine.keyUp(note);
   if (state.keysDownSet) state.keysDownSet.delete(note);
   render();
 }
-
-// ---------- knob drag widget ----------
 
 function bindKnobDrag(el, idx) {
   let dragging = false, startY = 0, startV = 0;
@@ -373,8 +409,6 @@ function bindKnobDrag(el, idx) {
   el.addEventListener('touchmove', move, {passive: true});
   el.addEventListener('touchend', () => { dragging = false; }, {passive: true});
 }
-
-// ---------- view ----------
 
 function padColor(row, col) {
   if (col >= 2 && col <= 5) {
@@ -419,7 +453,7 @@ function padGrid() {
       const preset = isPreset ? row * 2 + col : -1;
       const sidechainCls = isLooper && state.loopers[looper].sidechain ? ' sidechain' : '';
       const handlers = isLooper
-        ? { onmousedown: () => padDown(looper), onmouseup: () => padUp(looper), onmouseleave: () => { if (holdTimers[looper]) { clearTimeout(holdTimers[looper]); holdTimers[looper] = null; } } }
+        ? { onmousedown: () => padDown(looper), onmouseup: () => padUp(looper), onmouseleave: () => padLeave(looper) }
         : isPreset
         ? { onclick: () => pressPreset(preset) }
         : {};
@@ -522,16 +556,18 @@ function chip(label, tone) {
 }
 
 function telemetry() {
-  const busyColor = (v) => v > 70 ? 'var(--led-red)' : v > 40 ? 'var(--led-yellow)' : 'var(--led-green)';
+  if (!state.audioStarted) {
+    return h('div', {class: 'telemetry'},
+      chip('Faust DSP not started', 'warning'),
+    );
+  }
   return h('div', {class: 'telemetry'},
-    ...state.coreBusy.map((v, i) => h('div', {class: 'tele-item', key: 'busy'+i},
-      'core' + i, h('div', {class: 'busybar'}, h('i', {style: `width:${v}%;background:${busyColor(v)}`})),
-    )),
-    h('div', {class: 'tele-item'}, 'xruns ', h('b', {}, state.xruns)),
-    h('div', {class: 'tele-item'}, 'link ', h('b', {}, state.linkPeers), ' peers @ ', h('b', {}, state.bpm), ' bpm ', state.linkPlaying ? '▶' : '⏸'),
-    h('div', {class: 'tele-item'}, 'grid_beat_index ', h('b', {}, state.beatIndex)),
-    chip('ticker mesh (AP)', 'info'),
-    chip(state.linkPlaying ? 'link playing' : 'link stopped', state.linkPlaying ? 'success' : 'warning'),
+    chip('Faust DSP running — dsp/aloop.dsp + guitar_lofi_fx.dsp, real libfaust-wasm JIT', 'success'),
+    h('div', {class: 'tele-item'}, 'sampleRate ', h('b', {}, engine.audioContext.sampleRate)),
+    h('div', {class: 'tele-item'}, 'baseLatency ', h('b', {}, (engine.audioContext.baseLatency || 0).toFixed(4)), 's'),
+    h('div', {class: 'tele-item'}, 'phrase length ', h('b', {}, state.bpm ? state.bpm.toFixed(1) + ' bpm' : '—')),
+    engine.resonodeEngaged ? chip('Resonode engaged', 'info') : null,
+    engine.granulatorLatched ? chip('LofiFx bitcrush latched', 'info') : null,
   );
 }
 
@@ -546,23 +582,29 @@ function view() {
       h('h1', {style: 'margin:0;font-size:1.4rem'}, 'aloop — control surface'),
     ),
     h('p', {class: 'lede'},
-      'A browser simulation of aloop’s APC Key25-class control surface — same press-cycle, ' +
-      'bank, and LED rules as ', h('code', {}, 'src/control/apc_grid.cpp'), ' / ',
-      h('code', {}, 'src/control/apc_leds.cpp'), '. Nothing here touches real audio or a real device; ' +
-      'it exists so the gestures are readable at a glance. Click a looper pad to arm/finish/pause/resume it, ' +
-      'press-and-hold ~1s to erase, toggle Shift (a mouse can’t hold two controls at once, so it latches here ' +
-      'instead of requiring a continuous hold) and play the keybed to pitch-lock, ' +
-      'tap LofiFx to latch the granulator or hold it 1s to switch to the Resonode resonator synth.'
+      'aloop’s APC Key25-class control surface running the REAL Faust DSP — ',
+      h('code', {}, 'dsp/aloop.dsp'), ' (20-looper engine + dub effects + pitch-lock + Resonode) chained into ',
+      h('code', {}, 'effects/home/faust/guitar_lofi_fx.dsp'), ' (guitar+lofi-fx), compiled at page-load by ',
+      h('code', {}, '@grame/faustwasm'), '’s real libfaust-wasm JIT and run in an AudioWorklet against your ' +
+      'microphone — the same signal path ', h('code', {}, 'src/dsp/audio_thread.cpp'), ' runs on real hardware, ' +
+      'not a simulation. The only substitution is ', h('code', {}, 'effects/home/faust/pitch.dsp'),
+      '’s ffunction-based SNAC engine (no Faust JIT, including this codebase’s own DawDreamer harness, can ' +
+      'link an ffunction against real hardware C++) — swapped browser-side for a real ', h('code', {}, 'ef.transpose'),
+      ' pitch-shift with the same control interface, see ', h('code', {}, 'docs/demo/faust/pitch_stub_browser.dsp'), '. ' +
+      'Click a looper pad to arm/finish/pause/resume it, press-and-hold ~1s to erase, toggle Shift (a mouse can’t ' +
+      'hold two controls at once, so it latches here instead of requiring a continuous hold) and play the keybed ' +
+      'to pitch-lock, tap LofiFx to latch the granulator knob or hold it 1s to switch to the real Resonode ' +
+      'resonator synth.'
     ),
+    !state.audioStarted ? h('div', {class: 'rack'},
+      h('h3', {}, 'Audio'),
+      h('button', {class: 'xbtn on', style: 'width:100%;padding:14px', onclick: startAudio, disabled: state.audioStarting},
+        state.audioStarting ? 'Compiling Faust DSP…' : 'Start Audio (compiles real Faust DSP, requests mic access)'),
+      state.audioError ? h('div', {class: 'err-banner', style: 'margin-top:10px'}, state.audioError) : null,
+    ) : null,
     h('div', {class: 'rack'},
-      h('h3', {}, 'Telemetry (status.json)'),
+      h('h3', {}, 'Telemetry'),
       telemetry(),
-      h('div', {class: 'sliderrow', style: 'margin-top:10px'},
-        h('b', {}, 'Tempo'),
-        h('input', {type: 'range', class: 'thin', min: '60', max: '180', value: state.bpm,
-          oninput: (e) => { state.bpm = Number(e.target.value); render(); }}),
-        h('span', {}, state.bpm + ' bpm'),
-      ),
     ),
     h('div', {class: 'surface'},
       h('div', {},
@@ -585,12 +627,12 @@ function view() {
           h('div', {class: 'sliderrow', style: 'margin-top:10px'},
             h('b', {}, 'Mod wheel'),
             h('input', {type: 'range', class: 'thin', min: '0', max: '1', step: '0.01', value: state.modWheel,
-              oninput: (e) => { state.modWheel = Number(e.target.value); render(); }}),
+              oninput: (e) => { state.modWheel = Number(e.target.value); if (state.audioStarted) engine.setModWheel(state.modWheel); render(); }}),
           ),
           h('div', {class: 'sliderrow'},
             h('b', {}, 'Formant'),
             h('input', {type: 'range', class: 'thin', min: '0', max: '1', step: '0.01', value: state.formant,
-              oninput: (e) => { state.formant = Number(e.target.value); render(); }}),
+              oninput: (e) => { state.formant = Number(e.target.value); if (state.audioStarted) engine.setFormant(state.formant); render(); }}),
           ),
         ),
       ),
@@ -622,27 +664,26 @@ function view() {
   );
 }
 
-// ---------- animation loop: simulated looper levels + Link beat clock ----------
+function syncLoopersFromRealFaustTelemetry() {
+  for (let i = 0; i < N_LOOPERS; i++) {
+    const L = state.loopers[i];
+    L.recording = engine.looperRecording[i];
+    L.hasContent = engine.looperHasContent[i];
+    L.playing = engine.looperPlaying[i];
+    L.sidechain = engine.looperIsSidechainSource[i];
+    L.level = engine.ready ? Math.abs(engine.levelOf(i)) : 0;
+  }
+  state.resonodeEngaged = engine.resonodeEngaged;
+  state.granLatched = engine.granulatorLatched;
+  state.bpm = engine.recordedBpm || 0;
+}
 
-let lastBeatAt = performance.now();
 function tick(now) {
-  let dirty = false;
-  for (const L of state.loopers) {
-    if (L.playing && !L.recording) {
-      L.level += (Math.random() - 0.5) * 0.18;
-      L.level = Math.max(0, Math.min(0.85, L.level));
-      dirty = true;
-    }
+  if (state.audioStarted) {
+    engine.pollHolds(now);
+    syncLoopersFromRealFaustTelemetry();
   }
-  if (state.linkPlaying) {
-    const beatMs = 60000 / state.bpm;
-    if (now - lastBeatAt >= beatMs) {
-      lastBeatAt = now;
-      state.beatIndex = (state.beatIndex + 1) % 16;
-      dirty = true;
-    }
-  }
-  if (dirty) render();
+  render();
   requestAnimationFrame(tick);
 }
 

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>home-FX Faust chain (vendored from dubfx) | aloop</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="home-FX Faust chain (vendored from dubfx)" />
+<meta property="og:locale" content="en_US" />
+<link rel="canonical" href="https://anentrypoint.github.io/mc-420/effects/home/faust/" />
+<meta property="og:url" content="https://anentrypoint.github.io/mc-420/effects/home/faust/" />
+<meta property="og:site_name" content="aloop" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="home-FX Faust chain (vendored from dubfx)" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","headline":"home-FX Faust chain (vendored from dubfx)","url":"https://anentrypoint.github.io/mc-420/effects/home/faust/"}</script>
+<!-- End Jekyll SEO tag -->
+
+    <link rel="stylesheet" href="/mc-420/assets/css/style.css?v=122f186fd9172479bcb0623cb7fd86679d2a68de">
+    <!--[if lt IE 9]>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
+    <![endif]-->
+    <!-- start custom head snippets, customize with your own _includes/head-custom.html file -->
+
+<!-- Setup Google Analytics -->
+
+
+
+<!-- You can set your favicon here -->
+<!-- link rel="shortcut icon" type="image/x-icon" href="/mc-420/favicon.ico" -->
+
+<!-- end custom head snippets -->
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a href="https://anentrypoint.github.io/mc-420/">aloop</a></h1>
+
+        
+
+        <p></p>
+
+        
+        <p class="view"><a href="https://github.com/AnEntrypoint/mc-420">View the Project on GitHub <small>AnEntrypoint/mc-420</small></a></p>
+        
+
+        
+
+        
+      </header>
+      <section>
+
+      <h1 id="home-fx-faust-chain-vendored-from-dubfx">home-FX Faust chain (vendored from dubfx)</h1>
+
+<p>This is the verified dubfx Faust chain — the exact reproduction of the bare-metal
+looper’s effects, A/B-tested sample-for-sample (see <code class="language-plaintext highlighter-rouge">../../../docs/FEASIBILITY.md</code>
+and the dubfx repo). It is vendored here unchanged (ADR-003) and packaged as the
+home-FX LV2 bundle by CI (<code class="language-plaintext highlighter-rouge">.github/workflows/build-lv2.yml</code>).</p>
+
+<ul>
+  <li><code class="language-plaintext highlighter-rouge">chain.dsp</code> — the full chain: pitch → delay → reverb → microrepeat → HP/LP filters.</li>
+  <li><code class="language-plaintext highlighter-rouge">filters.dsp</code>, <code class="language-plaintext highlighter-rouge">delay.dsp</code>, <code class="language-plaintext highlighter-rouge">reverb.dsp</code>, <code class="language-plaintext highlighter-rouge">microrepeat.dsp</code> — the stages. The final
+mix/hard-clip stage lives natively in <code class="language-plaintext highlighter-rouge">audio_thread.cpp</code>’s int32 write path, not
+as a Faust stage.</li>
+  <li><code class="language-plaintext highlighter-rouge">pitch.dsp</code> + <code class="language-plaintext highlighter-rouge">pitch_ffi.h</code> — the live pitch stage. It links the EXACT C++ pitch
+engine via a Faust <code class="language-plaintext highlighter-rouge">ffunction</code> (ADR-004), so the sound is identical to looper.</li>
+  <li><code class="language-plaintext highlighter-rouge">soladSnacOctaver.h</code>, <code class="language-plaintext highlighter-rouge">grainFormant.h</code> — the vendored pitch engine headers from <code class="language-plaintext highlighter-rouge">../looper/patches/</code> (the ffunction target, ADR-004), kept flat next to the dsp so faust2lv2 resolves the <code class="language-plaintext highlighter-rouge">#include</code>s.
+<code class="language-plaintext highlighter-rouge">grainFormant.h</code>) from <code class="language-plaintext highlighter-rouge">../looper/patches/</code>. These are the <code class="language-plaintext highlighter-rouge">ffunction</code> target;
+the LV2 build compiles them in.</li>
+  <li><code class="language-plaintext highlighter-rouge">param_mapping.md</code> — the CC/note → normalized param mapping (from dubfx).</li>
+</ul>
+
+<p>To rebuild locally (needs Faust + LV2 dev headers):
+<code class="language-plaintext highlighter-rouge">faust2lv2 chain.dsp</code> → <code class="language-plaintext highlighter-rouge">chain.lv2/</code>.</p>
+
+
+      </section>
+      <footer>
+        
+        <p>This project is maintained by <a href="https://github.com/AnEntrypoint">AnEntrypoint</a></p>
+        
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="/mc-420/assets/js/scale.fix.js"></script>
+  </body>
+</html>

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Parameter mapping — CC/note → normalized → chain constant | aloop</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="Parameter mapping — CC/note → normalized → chain constant" />
+<meta property="og:locale" content="en_US" />
+<link rel="canonical" href="https://anentrypoint.github.io/mc-420/effects/home/faust/param_mapping.html" />
+<meta property="og:url" content="https://anentrypoint.github.io/mc-420/effects/home/faust/param_mapping.html" />
+<meta property="og:site_name" content="aloop" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Parameter mapping — CC/note → normalized → chain constant" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","headline":"Parameter mapping — CC/note → normalized → chain constant","url":"https://anentrypoint.github.io/mc-420/effects/home/faust/param_mapping.html"}</script>
+<!-- End Jekyll SEO tag -->
+
+    <link rel="stylesheet" href="/mc-420/assets/css/style.css?v=122f186fd9172479bcb0623cb7fd86679d2a68de">
+    <!--[if lt IE 9]>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
+    <![endif]-->
+    <!-- start custom head snippets, customize with your own _includes/head-custom.html file -->
+
+<!-- Setup Google Analytics -->
+
+
+
+<!-- You can set your favicon here -->
+<!-- link rel="shortcut icon" type="image/x-icon" href="/mc-420/favicon.ico" -->
+
+<!-- end custom head snippets -->
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a href="https://anentrypoint.github.io/mc-420/">aloop</a></h1>
+
+        
+
+        <p></p>
+
+        
+        <p class="view"><a href="https://github.com/AnEntrypoint/mc-420">View the Project on GitHub <small>AnEntrypoint/mc-420</small></a></p>
+        
+
+        
+
+        
+      </header>
+      <section>
+
+      <h1 id="parameter-mapping--ccnote--normalized--chain-constant">Parameter mapping — CC/note → normalized → chain constant</h1>
+
+<p>The looper’s effect params arrive as MIDI CC/note values and are normalized before
+reaching the DSP. The Faust chain takes the <strong>already-normalized</strong> values as its
+per-render constants (SEMIS/FORMANT/ENGAGED/DELAYAMT/REVAMT/TIME/DIV/MLB/HPCUT/
+LPCUT/LPRES). The normalization below is the control-plane mapping the looper
+applies (apcKey25*.cpp); the audio path (this chain) is verified against the
+normalized values, so reproducing these mappings makes any knob position match.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Knob</th>
+      <th>MIDI source</th>
+      <th>Normalization (C++)</th>
+      <th>Chain param</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>HP cutoff</td>
+      <td>CC51</td>
+      <td><code class="language-plaintext highlighter-rouge">data2/127</code></td>
+      <td>HPCUT ∈ [0,1]</td>
+    </tr>
+    <tr>
+      <td>LP resonance</td>
+      <td>CC54</td>
+      <td><code class="language-plaintext highlighter-rouge">data2/127</code></td>
+      <td>LPRES ∈ [0,1]</td>
+    </tr>
+    <tr>
+      <td>LP cutoff</td>
+      <td>CC55</td>
+      <td><code class="language-plaintext highlighter-rouge">data2/127</code></td>
+      <td>LPCUT ∈ [0,1]</td>
+    </tr>
+    <tr>
+      <td>Reverb amount</td>
+      <td>CC48</td>
+      <td><code class="language-plaintext highlighter-rouge">data2/127</code></td>
+      <td>REVAMT ∈ [0,1]</td>
+    </tr>
+    <tr>
+      <td>Delay amount</td>
+      <td>CC49</td>
+      <td><code class="language-plaintext highlighter-rouge">data2/127</code></td>
+      <td>DELAYAMT ∈ [0,1]</td>
+    </tr>
+    <tr>
+      <td>Time</td>
+      <td>CC50</td>
+      <td><code class="language-plaintext highlighter-rouge">data2/127</code></td>
+      <td>TIME ∈ [0,1]</td>
+    </tr>
+    <tr>
+      <td>Formant depth</td>
+      <td>CC53</td>
+      <td>deadzone data2∈[60,68]→0; else <code class="language-plaintext highlighter-rouge">((data2-64)/63)*range</code>, range=1 (or 3 w/ SHIFT)</td>
+      <td>FORMANT ∈ [-3,3]</td>
+    </tr>
+    <tr>
+      <td>Pitch semitones</td>
+      <td>keybed note (ch1)</td>
+      <td><code class="language-plaintext highlighter-rouge">note-60</code></td>
+      <td>SEMIS</td>
+    </tr>
+    <tr>
+      <td>”</td>
+      <td>mod wheel CC1</td>
+      <td>deadzone 59-69→disengage; else <code class="language-plaintext highlighter-rouge">(data2-64)*12/63</code></td>
+      <td>SEMIS</td>
+    </tr>
+    <tr>
+      <td>”</td>
+      <td>CC52</td>
+      <td><code class="language-plaintext highlighter-rouge">(data2/127)*24-12</code></td>
+      <td>SEMIS</td>
+    </tr>
+    <tr>
+      <td>Pitch scale</td>
+      <td>(derived)</td>
+      <td><code class="language-plaintext highlighter-rouge">pow(2, semitones/12)</code></td>
+      <td>(computed in pitch.dsp)</td>
+    </tr>
+    <tr>
+      <td>Engaged</td>
+      <td>note/CC engage</td>
+      <td>boolean</td>
+      <td>ENGAGED ∈ {0,1}</td>
+    </tr>
+    <tr>
+      <td>Microrepeat div</td>
+      <td>notes 82-86</td>
+      <td>latched → {1,2,4,8,16}; note-off clears</td>
+      <td>DIV</td>
+    </tr>
+    <tr>
+      <td>masterLoopBlocks</td>
+      <td>Link/loop grid</td>
+      <td>phrase length in blocks</td>
+      <td>MLB</td>
+    </tr>
+    <tr>
+      <td>THRU/LOOP/MIX vol</td>
+      <td>CC (base 0x08)</td>
+      <td><code class="language-plaintext highlighter-rouge">value/63</code></td>
+      <td>(mix-bus stage)</td>
+    </tr>
+    <tr>
+      <td>INPUT/OUTPUT gain</td>
+      <td>CC</td>
+      <td><code class="language-plaintext highlighter-rouge">value/127</code> → codec</td>
+      <td>(codec, out of DSP path)</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Defaults (the passthrough state): HPCUT=0, LPCUT=1, LPRES=0, REVAMT=0, DELAYAMT=0,
+TIME=0.5, FORMANT=0, SEMIS=0, ENGAGED=0, DIV=0, MLB=0, THRU/LOOP/MIX=1.0. At these
+the whole chain is a byte-exact passthrough (verified maxAbs=0).</p>
+
+
+      </section>
+      <footer>
+        
+        <p>This project is maintained by <a href="https://github.com/AnEntrypoint">AnEntrypoint</a></p>
+        
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="/mc-420/assets/js/scale.fix.js"></script>
+  </body>
+</html>
