@@ -5,15 +5,20 @@ declare description "4-voice modal-resonator instrument in the spirit of Reason 
 
 import("stdfaust.lib");
 
-position  = hslider("fx/objekt/position", 0.35, 0.0, 1.0, 0.001);
-tone      = hslider("fx/objekt/tone", 6000.0, 200.0, 18000.0, 1.0);
-objDecay  = hslider("fx/objekt/decay", 1.2, 0.05, 8.0, 0.001);
-damping   = hslider("fx/objekt/damping", 0.85, 0.05, 1.0, 0.001);
-stretch   = hslider("fx/objekt/stretch", 0.0, -0.5, 1.5, 0.001);
-objLevel  = hslider("fx/objekt/level", 0.8, 0.0, 1.5, 0.001);
+position  = hslider("fx/objekt/position", 0.35, 0.0, 1.0, 0.001) : morphGlide;
+tone      = hslider("fx/objekt/tone", 6000.0, 200.0, 18000.0, 1.0) : morphGlide;
+objDecay  = hslider("fx/objekt/decay", 1.2, 0.05, 8.0, 0.001) : morphGlide;
+damping   = hslider("fx/objekt/damping", 0.85, 0.05, 1.0, 0.001) : morphGlide;
+stretch   = hslider("fx/objekt/stretch", 0.0, -0.5, 1.5, 0.001) : morphGlide;
+objLevel  = hslider("fx/objekt/level", 0.8, 0.0, 1.5, 0.001) : morphGlide;
 
 voiceGain = 0.5;
 retuneGlide = 0.01;
+morphGlidePole = ba.tau2pole(0.015);
+morphGlide(x) = y
+letrec {
+    'y = ba.if(ba.time == 0, x, y + (x - y)*(1.0 - morphGlidePole));
+};
 
 stealEvent(note, gate) = (note != note') * (gate <= gate');
 retriggerGate(note, gate) = gate * (1.0 - stealEvent(note, gate));

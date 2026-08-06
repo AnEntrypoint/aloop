@@ -1771,6 +1771,74 @@ name suggests (0.08 doesn't favor the fundamental — it gives roughly equal
 weight across all 4 modes) and the optimizer's empirical answer overrode
 any hand-authored assumption about it.
 
+## Objekt's `tone` knob needs a logarithmic taper, not a linear Hz sweep
+
+`applyObjektDirectKnob` originally mapped the knob 0..1 straight onto
+`fx/objekt/tone`'s 200..18000Hz range linearly. WITNESSED via the DawDreamer
+JIT harness (broadband-noise excitation, measured post-onset spectral
+centroid): across every note tested (48/60/72/84), 85-99% of the knob's
+total brightness change landed in the first 10-20% of its physical travel,
+with the remaining 80-90% of the knob doing almost nothing — because the
+`tone` hslider only feeds `exciteFor`'s pre-resonator lowpass, and once its
+cutoff clears the resonator bank's own highest mode frequency, widening it
+further has no more resonant content to reveal. This is the same shape of
+defect as any linear-Hz filter-cutoff control: nearly the whole audible
+range is compressed into a sliver of the knob.
+
+Fixed by an exponential (`lo * pow(hi/lo, v01)`) taper in
+`applyObjektDirectKnob` (`ObjektDirectKnobRange::logTaper`), which stretches
+the perceptually-relevant low end across most of the knob and compresses the
+already-inert top end into a small slice at the far end — re-measured
+post-fix, the first 10% of knob travel drops to 0-15% of the total
+brightness change (was 85-99%). `level` stays on the plain linear taper
+(`logTaper=false`) — its dB response was already reasonably even across the
+knob (`test/objekt-sweetspot/verify_musical_controls.py`'s
+`check_tone_taper`/measurements), and a taper only helps a control that has
+a demonstrated dead zone, not every control by default.
+
+## Objekt's morph knobs (position/decay/damping/stretch/tone/level) needed glide, not bare hsliders
+
+Every one of `objekt_synth.dsp`'s six controls was a bare `hslider` feeding
+straight into `pm.modeFilter`'s per-sample coefficient recompute (`position`/
+`decay`/`damping`/`stretch`) or `fi.lowpass`'s biquad (`tone`) — the same
+"raw coefficient jump" failure class already fixed once in this file for
+note-steal (`freqGlide`, see above) and independently documented in
+`delay.dsp`/`multitranspose.dsp`. WITNESSED via the DawDreamer JIT harness:
+naively stepping `position`/`stretch`/`tone` mid-ring while the resonator is
+actively decaying produces a real sample-to-sample derivative spike several
+times the local background (position: ~2.8-9x, worse right after a fresh
+strike) — an audible click every time a performer morphs the patch-blend or
+tone/level knobs while a note is ringing, since `applyObjektPatchMorph`/
+`applyObjektDirectKnob` write the full blended value on every single MIDI CC
+tick with no interpolation on either the C++ or Faust side.
+
+Fixed with the same `si.smooth`-style one-pole idiom `multitranspose.dsp`
+already uses (`morphGlide`, `ba.tau2pole(0.015)`, ~15ms), applied to all six
+controls at their declaration site. **A naive `si.smooth` wrap is not
+enough**: its recursive register zero-initializes, so every control would
+glide up from 0 over the first several time-constants of the instrument's
+life — WITNESSED as the first 5ms of a fresh onset rendering at only 12% of
+its correct loudness (decay/damping/position/tone/level all fading in from
+"the resonator doesn't exist yet" instead of starting at their real
+default/dialed-in values) before ramping to ~90%+ by ~40ms. This is the
+identical zero-init pitfall already named for `multitranspose.dsp`'s
+`windowFor` smoother. Fixed the same way `freqGlide` already does in this
+file: a `letrec`-based one-pole that SNAPS to the true value on `ba.time ==
+0` (the very first sample this DSP instance ever computes) and glides only
+on any later change — verified bit-exact-modulo-float32-rounding (~2e-4 max
+absolute, pure floating-point reassociation noise from the restructured
+signal graph, reproducible even with `-vec` disabled and with the dead
+`morphGlide` definition stripped from the control render, i.e. not a logic
+bug) against the unsmoothed DSP when parameters are never touched, and the
+first-5ms onset RMS ratio (smoothed/raw) at 1.000.
+
+`test/objekt-sweetspot/verify_musical_controls.py` codifies both fixes:
+`check_tone_taper` (linear vs exponential brightness-spread measurement),
+`check_morph_glide_click` (raw vs smoothed derivative-spike ratio at a
+mid-ring parameter jump), and `check_no_fadein_regression` (first-5ms onset
+loudness parity at static default params) — run after any further change to
+`objekt_synth.dsp`'s control declarations.
+
 ## `ApcGrid::bindAll` must `ps.bind()` every internal flag a C++ path later `setByName`s
 
 `ParamStore::setByName` only writes into a slot `bind()` already created — it never
