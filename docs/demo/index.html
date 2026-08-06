@@ -1,0 +1,661 @@
+<!doctype html>
+<html class="ds-247420" data-theme="ink" data-accent="green" data-density="compact">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aloop — control surface demo</title>
+<meta name="description" content="Interactive, simulated replica of aloop's APC Key25 control surface — pads, banks, knobs and keybed, driven by the same gesture rules as src/control/apc_grid.cpp.">
+<link rel="stylesheet" href="https://unpkg.com/anentrypoint-design@latest/dist/247420.css">
+<script type="importmap">
+{ "imports": { "anentrypoint-design": "https://unpkg.com/anentrypoint-design@latest/dist/247420.js" } }
+</script>
+<style>
+  :root {
+    --pad-off: #1a1f1c;
+    --pad-border: #2b332e;
+    --led-off: #232925;
+    --led-green: #34d17c;
+    --led-red: #ef4d4d;
+    --led-yellow: #e8c547;
+    --grid-gap: 6px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  #app { max-width: 1180px; margin: 0 auto; padding: 24px 20px 64px; }
+  .lede {
+    color: var(--ds-text-muted, #9aa39c);
+    font-size: 0.95rem;
+    line-height: 1.5;
+    max-width: 74ch;
+    margin: 4px 0 20px;
+  }
+  .surface {
+    display: grid;
+    grid-template-columns: 1fr 220px;
+    gap: 16px;
+    align-items: start;
+  }
+  @media (max-width: 860px) {
+    .surface { grid-template-columns: 1fr; }
+  }
+  .rack {
+    background: #121613;
+    border: 1px solid #232a25;
+    border-radius: 14px;
+    padding: 16px;
+  }
+  .rack + .rack { margin-top: 16px; }
+  .rack h3 {
+    margin: 0 0 10px;
+    font-size: 0.78rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #7d8a80;
+  }
+
+  .knob-row { display: flex; gap: 14px; flex-wrap: wrap; justify-content: space-between; }
+  .knob-cell { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 84px; }
+  .knob {
+    width: 52px; height: 52px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #3a4640, #171c19 70%);
+    border: 1px solid #333c36;
+    position: relative; cursor: grab; touch-action: none;
+    box-shadow: inset 0 0 0 1px #0a0d0b, 0 2px 6px rgba(0,0,0,.4);
+  }
+  .knob:active { cursor: grabbing; }
+  .knob .tick {
+    position: absolute; left: 50%; top: 4px; width: 2px; height: 14px;
+    background: var(--led-green); border-radius: 1px;
+    transform-origin: 50% 22px;
+  }
+  .knob-label { font-size: 0.68rem; color: #9aa39c; text-align: center; line-height: 1.2; }
+  .knob-val { font-size: 0.62rem; color: #5c6b60; }
+
+  .padgrid {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: var(--grid-gap);
+  }
+  .pad {
+    aspect-ratio: 1 / 1;
+    border-radius: 6px;
+    border: 1px solid var(--pad-border);
+    background: var(--pad-off);
+    cursor: pointer;
+    position: relative;
+    display: flex; align-items: flex-end; justify-content: center;
+    padding-bottom: 3px;
+    user-select: none;
+    transition: background-color .08s linear, box-shadow .08s linear;
+  }
+  .pad span { font-size: 0.56rem; color: #6b756f; pointer-events: none; }
+  .pad.dim { visibility: hidden; }
+  .pad.led-green   { background: var(--led-green); box-shadow: 0 0 10px rgba(52,209,124,.55); }
+  .pad.led-red     { background: var(--led-red); box-shadow: 0 0 10px rgba(239,77,77,.55); }
+  .pad.led-yellow  { background: var(--led-yellow); box-shadow: 0 0 10px rgba(232,197,71,.5); }
+  .pad.led-yellow span, .pad.led-green span, .pad.led-red span { color: rgba(0,0,0,.55); }
+  .pad.blink { animation: padblink 0.5s steps(1) infinite; }
+  @keyframes padblink { 50% { background: var(--pad-off); box-shadow: none; } }
+  .pad.sidechain::before {
+    content: ''; position: absolute; top: 3px; right: 3px; width: 6px; height: 6px;
+    border-radius: 50%; background: #6fb3ff; box-shadow: 0 0 4px #6fb3ff;
+  }
+
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
+  .xbtn {
+    flex: 1 1 auto; min-width: 64px;
+    padding: 9px 8px; border-radius: 8px; border: 1px solid #2b332e;
+    background: #161b18; color: #cfd8d2; font-size: 0.72rem; letter-spacing: .02em;
+    cursor: pointer; text-align: center; user-select: none; position: relative;
+  }
+  .xbtn .led-dot {
+    position: absolute; top: 5px; right: 6px; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--led-off);
+  }
+  .xbtn.on { background: #1c2c22; border-color: #2f5a41; color: #eafff2; }
+  .xbtn .led-dot.on-green { background: var(--led-green); box-shadow: 0 0 6px var(--led-green); }
+  .xbtn .led-dot.on-red { background: var(--led-red); box-shadow: 0 0 6px var(--led-red); }
+  .xbtn .led-dot.on-yellow { background: var(--led-yellow); box-shadow: 0 0 6px var(--led-yellow); }
+  .xbtn .led-dot.blink { animation: padblink 0.5s steps(1) infinite; }
+
+  .keybed { display: flex; position: relative; height: 96px; margin-top: 4px; user-select: none; }
+  .wkey {
+    flex: 1; background: #e8ece9; border: 1px solid #0a0d0b; border-radius: 0 0 4px 4px;
+    cursor: pointer; position: relative;
+  }
+  .wkey.down { background: var(--led-green); }
+  .bkey {
+    position: absolute; top: 0; width: 5.6%; height: 60%; background: #141815;
+    border: 1px solid #000; border-radius: 0 0 3px 3px; z-index: 2; cursor: pointer;
+  }
+  .bkey.down { background: #1c6b41; }
+
+  .voice-strip { display: flex; gap: 6px; margin-top: 8px; }
+  .voice-chip {
+    flex: 1; text-align: center; font-size: 0.62rem; padding: 5px 2px; border-radius: 6px;
+    background: #161b18; border: 1px solid #232a25; color: #6b756f;
+  }
+  .voice-chip.active { background: #1c2c22; border-color: #2f5a41; color: #eafff2; }
+
+  .telemetry { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; }
+  .busybar { width: 70px; height: 8px; border-radius: 4px; background: #1a1f1c; overflow: hidden; }
+  .busybar > i { display: block; height: 100%; background: var(--led-green); }
+  .tele-item { font-size: 0.72rem; color: #9aa39c; display: flex; align-items: center; gap: 6px; }
+  .tele-item b { color: #eafff2; font-weight: 600; }
+  .chip {
+    font-size: 0.68rem; padding: 3px 9px; border-radius: 999px; border: 1px solid;
+    display: inline-flex; align-items: center;
+  }
+  .chip-info    { color: #8fc7ff; border-color: #2c4f70; background: #142230; }
+  .chip-success { color: #8ff0b9; border-color: #2f5a41; background: #122019; }
+  .chip-warning { color: #f0d98f; border-color: #5a4f2f; background: #201c12; }
+
+  .legend { font-size: 0.78rem; color: #9aa39c; line-height: 1.6; }
+  .legend b { color: #cfd8d2; }
+
+  .toprow { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .smallnote { font-size: 0.68rem; color: #5c6b60; margin-top: 8px; }
+  input[type=range].thin { width: 100%; }
+  .sliderrow { display: flex; align-items: center; gap: 8px; font-size: 0.72rem; color: #9aa39c; }
+  .sliderrow b { width: 96px; color: #cfd8d2; flex: none; }
+  .err-banner {
+    background: #2c1616; border: 1px solid #5a2626; color: #ffb4b4;
+    padding: 12px 16px; border-radius: 10px; font-size: 0.85rem; margin-bottom: 16px;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import { h, applyDiff } from 'anentrypoint-design';
+
+const N_LOOPERS = 20, N_PRESETS = 10;
+const DIVS = [1,2,4,8,16];
+const KNOB_CC = [48,49,50,51,54,55,57];
+const VU_MID = 0.32, VU_HIGH = 0.62;
+const GRAN_PATCHES = ['Glass','Cloud','Freeze','Chop','Tape','Shatter'];
+const OBJEKT_PATCHES = ['Percussive','Metal/Glass','Strings','Dance Bass'];
+const DUB_LABELS = ['Reverb','Delay','Time','HP Cut','LP Res','LP Cut','Pitch'];
+const GUITAR_LABELS = ['Flange','Tremolo','Bank Spd','Phaser','Attack','Release','Compress'];
+
+function initLoopers() {
+  return Array.from({length: N_LOOPERS}, () => ({
+    recording: false, hasContent: false, playing: false, level: 0, sidechain: false,
+  }));
+}
+
+const state = {
+  loopers: initLoopers(),
+  presets: Array.from({length: N_PRESETS}, () => ({used: false})),
+  microDiv: 0,
+  shift: false,
+  live: false,
+  bank: 'dub',
+  bankFlashUntil: 0,
+  bankFlashWhich: null,
+  guitarFxHeld: false,
+  granHeld: false,
+  granLatched: false,
+  objektEngaged: false,
+  bankBeforeHold: 'dub',
+  knobs: { dub: [0,0,0.5,0,0,1,0], guitar: [0,0,0.5,0,0,0,0], lofi: [0,0,0,0,0,0,0] },
+  transposeVoices: Array(6).fill(null),
+  objektVoices: Array(4).fill(null),
+  modWheel: 0.5,
+  formant: 0.5,
+  bpm: 120,
+  linkPlaying: true,
+  linkPeers: 2,
+  beatIndex: -1,
+  coreBusy: [9, 7, 5, 3],
+  xruns: 0,
+  loadError: null,
+};
+
+let root = document.getElementById('app');
+function render() { applyDiff(root, view()); }
+
+// ---------- gesture logic (mirrors src/control/apc_grid.cpp) ----------
+
+function pressLooper(i) {
+  const L = state.loopers[i];
+  if (state.guitarFxHeld) { L.sidechain = !L.sidechain; render(); return; }
+  if (!L.hasContent && !L.recording) {
+    L.recording = true;
+  } else if (L.recording) {
+    L.recording = false; L.hasContent = true; L.playing = true;
+  } else if (L.hasContent) {
+    L.playing = !L.playing;
+  }
+  render();
+}
+function eraseLooper(i) {
+  const L = state.loopers[i];
+  L.recording = false; L.hasContent = false; L.playing = false; L.level = 0; L.sidechain = false;
+  if (!state.loopers.some(x => x.hasContent)) { /* master phrase len would reset here */ }
+  render();
+}
+let holdTimers = {};
+function padDown(i) {
+  holdTimers[i] = setTimeout(() => { eraseLooper(i); holdTimers[i] = null; }, 1000);
+}
+function padUp(i) {
+  if (holdTimers[i]) { clearTimeout(holdTimers[i]); holdTimers[i] = null; pressLooper(i); }
+}
+
+function pressPreset(p) {
+  state.presets[p].used = true;
+  render();
+}
+
+function pressStopAll() {
+  state.loopers.forEach(L => { L.playing = false; if (state.shift) L.recording = false; });
+  render();
+}
+function pressClearAll() {
+  state.loopers.forEach(L => { L.recording = false; L.hasContent = false; L.playing = false; L.level = 0; L.sidechain = false; });
+  render();
+}
+function toggleShift() { state.shift = !state.shift; render(); }
+function toggleLive() { state.live = !state.live; render(); }
+
+function flashBank(which) {
+  state.bankFlashWhich = which;
+  state.bankFlashUntil = performance.now() + 150;
+  setTimeout(render, 160);
+}
+function pressDubFx() { state.bank = 'dub'; flashBank('dub'); render(); }
+function toggleGuitarFxHeld() {
+  state.guitarFxHeld = !state.guitarFxHeld;
+  state.bank = 'guitar';
+  flashBank('guitar');
+  render();
+}
+
+let granTimer = null;
+function pressLofiFxDown() {
+  state.bankBeforeHold = state.bank;
+  state.bank = 'lofi';
+  state.granHeld = true;
+  render();
+  granTimer = setTimeout(() => {
+    if (state.granHeld) { state.objektEngaged = true; render(); }
+  }, 1000);
+}
+function pressLofiFxUp() {
+  clearTimeout(granTimer);
+  state.granHeld = false;
+  if (state.objektEngaged) {
+    state.objektEngaged = false;
+    state.transposeVoices.fill(null);
+    state.objektVoices.fill(null);
+  } else {
+    state.granLatched = !state.granLatched;
+  }
+  state.bank = state.bankBeforeHold;
+  render();
+}
+
+function microOn(d) { state.microDiv = d; render(); }
+function microOff(d) { if (state.microDiv === d) state.microDiv = 0; render(); }
+
+function setKnob(idx, v) {
+  state.knobs[state.bank][idx] = Math.max(0, Math.min(1, v));
+  render();
+}
+
+function knobLabel(idx) {
+  if (state.bank === 'dub') return DUB_LABELS[idx];
+  if (state.bank === 'guitar') return GUITAR_LABELS[idx];
+  if (idx === 0) return 'Bitcrush';
+  if (state.objektEngaged) {
+    if (idx >= 1 && idx <= 4) return OBJEKT_PATCHES[idx - 1];
+    if (idx === 5) return 'Tone';
+    if (idx === 6) return 'Level';
+  } else {
+    return GRAN_PATCHES[idx - 1];
+  }
+  return '';
+}
+
+let voiceCounter = 0;
+function allocVoice(arr, note) {
+  const held = arr.findIndex(v => v && v.note === note);
+  if (held >= 0) return held;
+  const free = arr.findIndex(v => v === null);
+  if (free >= 0) { arr[free] = {note, order: voiceCounter++}; return free; }
+  let oldest = 0;
+  for (let i = 1; i < arr.length; i++) if (arr[i].order < arr[oldest].order) oldest = i;
+  arr[oldest] = {note, order: voiceCounter++};
+  return oldest;
+}
+function releaseVoice(arr, note) {
+  const idx = arr.findIndex(v => v && v.note === note);
+  if (idx >= 0) arr[idx] = null;
+}
+
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+function noteName(n) { return NOTE_NAMES[n % 12] + (Math.floor(n / 12) - 1); }
+
+function keyDown(note) {
+  if (state.objektEngaged) allocVoice(state.objektVoices, note);
+  else if (state.shift) allocVoice(state.transposeVoices, note);
+  state.keysDownSet = state.keysDownSet || new Set();
+  state.keysDownSet.add(note);
+  render();
+}
+function keyUp(note) {
+  if (state.objektEngaged) releaseVoice(state.objektVoices, note);
+  else if (state.shift) releaseVoice(state.transposeVoices, note);
+  if (state.keysDownSet) state.keysDownSet.delete(note);
+  render();
+}
+
+// ---------- knob drag widget ----------
+
+function bindKnobDrag(el, idx) {
+  let dragging = false, startY = 0, startV = 0;
+  const move = (e) => {
+    if (!dragging) return;
+    const y = e.touches ? e.touches[0].clientY : e.clientY;
+    const dy = startY - y;
+    setKnob(idx, startV + dy / 140);
+  };
+  const up = () => { dragging = false; window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+  el.addEventListener('mousedown', (e) => {
+    dragging = true; startY = e.clientY; startV = state.knobs[state.bank][idx];
+    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+    e.preventDefault();
+  });
+  el.addEventListener('touchstart', (e) => {
+    dragging = true; startY = e.touches[0].clientY; startV = state.knobs[state.bank][idx];
+  }, {passive: true});
+  el.addEventListener('touchmove', move, {passive: true});
+  el.addEventListener('touchend', () => { dragging = false; }, {passive: true});
+}
+
+// ---------- view ----------
+
+function padColor(row, col) {
+  if (col >= 2 && col <= 5) {
+    const looper = row * 4 + (col - 2);
+    const L = state.loopers[looper];
+    if (L.recording) return {cls: 'led-red blink', label: String(looper + 1)};
+    if (!L.hasContent) return {cls: '', label: String(looper + 1)};
+    if (L.playing) {
+      if (L.level >= VU_HIGH) return {cls: 'led-red', label: String(looper + 1)};
+      if (L.level >= VU_MID) return {cls: 'led-yellow', label: String(looper + 1)};
+      return {cls: 'led-green', label: String(looper + 1)};
+    }
+    return {cls: 'led-yellow blink', label: String(looper + 1)};
+  }
+  if (col <= 1) {
+    const preset = row * 2 + col;
+    const used = state.presets[preset].used;
+    return {cls: used ? 'led-yellow' : '', label: 'P' + (preset + 1)};
+  }
+  if (col === 7 && row >= 1 && row <= 4) {
+    const g = row - 1;
+    const activeGroup = state.beatIndex >= 0 ? (state.beatIndex >> 2) : -1;
+    const posInGroup = state.beatIndex >= 0 ? (state.beatIndex & 3) : 0;
+    const beatCols = ['', 'led-yellow', 'led-red', 'led-green'];
+    let cls = '';
+    if (activeGroup < 0 || g > activeGroup) cls = '';
+    else if (g < activeGroup) cls = 'led-green';
+    else cls = beatCols[posInGroup];
+    return {cls, label: ''};
+  }
+  return {cls: 'dim', label: ''};
+}
+
+function padGrid() {
+  const cells = [];
+  for (let row = 0; row < 5; row++) {
+    for (let col = 0; col < 8; col++) {
+      const {cls, label} = padColor(row, col);
+      const isLooper = col >= 2 && col <= 5;
+      const looper = isLooper ? row * 4 + (col - 2) : -1;
+      const isPreset = col <= 1;
+      const preset = isPreset ? row * 2 + col : -1;
+      const sidechainCls = isLooper && state.loopers[looper].sidechain ? ' sidechain' : '';
+      const handlers = isLooper
+        ? { onmousedown: () => padDown(looper), onmouseup: () => padUp(looper), onmouseleave: () => { if (holdTimers[looper]) { clearTimeout(holdTimers[looper]); holdTimers[looper] = null; } } }
+        : isPreset
+        ? { onclick: () => pressPreset(preset) }
+        : {};
+      cells.push(h('div', {class: `pad ${cls}${sidechainCls}`, key: `${row}-${col}`, ...handlers}, h('span', {}, label)));
+    }
+  }
+  return h('div', {class: 'padgrid'}, ...cells);
+}
+
+function knobRow() {
+  const knobs = [];
+  for (let i = 0; i < 7; i++) {
+    const v = state.knobs[state.bank][i];
+    const angle = -135 + v * 270;
+    knobs.push(h('div', {class: 'knob-cell', key: 'knob' + i},
+      h('div', {class: 'knob', ref: (el) => { if (el && !el._bound) { bindKnobDrag(el, i); el._bound = true; } }},
+        h('div', {class: 'tick', style: `transform: translateX(-50%) rotate(${angle}deg)`})
+      ),
+      h('div', {class: 'knob-label'}, knobLabel(i)),
+      h('div', {class: 'knob-val'}, 'CC' + KNOB_CC[i] + '  ' + v.toFixed(2)),
+    ));
+  }
+  return h('div', {class: 'knob-row'}, ...knobs);
+}
+
+function xbtn(label, {on, ledClass, onclick, onmousedown, onmouseup, onmouseleave} = {}) {
+  const handlers = {};
+  if (onclick) handlers.onclick = onclick;
+  if (onmousedown) handlers.onmousedown = onmousedown;
+  if (onmouseup) { handlers.onmouseup = onmouseup; handlers.onmouseleave = onmouseleave || onmouseup; }
+  return h('div', {class: `xbtn${on ? ' on' : ''}`, ...handlers},
+    label,
+    ledClass ? h('div', {class: `led-dot ${ledClass}`}) : null,
+  );
+}
+
+function transportRow() {
+  const lofiLed = state.objektEngaged ? 'on-red blink' : state.granHeld ? 'on-green blink' : state.granLatched ? 'on-green' : '';
+  return h('div', {class: 'btnrow'},
+    xbtn('Stop All', {onclick: pressStopAll}),
+    xbtn('Clear All / Play', {ledClass: state.shift ? 'on-yellow' : '', onclick: pressClearAll}),
+    xbtn('Shift', {on: state.shift, ledClass: state.shift ? 'on-yellow' : '', onclick: toggleShift}),
+    xbtn('Live', {on: state.live, ledClass: state.live ? 'on-green' : '', onclick: toggleLive}),
+    xbtn('Dub FX', {on: state.bank === 'dub', ledClass: (state.bankFlashWhich === 'dub' && performance.now() < state.bankFlashUntil) ? 'on-green' : '', onclick: pressDubFx}),
+    xbtn('Guitar FX' + (state.guitarFxHeld ? ' (held)' : ''), {on: state.bank === 'guitar', ledClass: state.guitarFxHeld ? 'on-yellow' : (state.bankFlashWhich === 'guitar' && performance.now() < state.bankFlashUntil) ? 'on-green' : '', onclick: toggleGuitarFxHeld}),
+    xbtn('LofiFx / Objekt', {on: state.bank === 'lofi', ledClass: lofiLed, onmousedown: pressLofiFxDown, onmouseup: pressLofiFxUp}),
+  );
+}
+
+function microRow() {
+  return h('div', {class: 'btnrow'},
+    ...DIVS.map(d => xbtn('÷' + d, {
+      on: state.microDiv === d,
+      ledClass: state.microDiv === d ? 'on-green' : '',
+      onmousedown: () => microOn(d), onmouseup: () => microOff(d), onmouseleave: () => microOff(d),
+    }))
+  );
+}
+
+function keybed() {
+  const startNote = 48;
+  const whites = [];
+  const blacks = [];
+  let wi = 0;
+  for (let i = 0; i < 25; i++) {
+    const note = startNote + i;
+    const semitone = note % 12;
+    const isBlack = [1,3,6,8,10].includes(semitone);
+    const down = state.keysDownSet && state.keysDownSet.has(note);
+    if (!isBlack) {
+      whites.push(h('div', {
+        class: 'wkey' + (down ? ' down' : ''), key: 'w' + note,
+        onmousedown: () => keyDown(note), onmouseup: () => keyUp(note), onmouseleave: () => keyUp(note),
+      }));
+      wi++;
+    } else {
+      blacks.push(h('div', {
+        class: 'bkey' + (down ? ' down' : ''), key: 'b' + note,
+        style: `left: calc(${(wi - 0.28) * (100/15)}% )`,
+        onmousedown: () => keyDown(note), onmouseup: () => keyUp(note), onmouseleave: () => keyUp(note),
+      }));
+    }
+  }
+  return h('div', {class: 'keybed'}, ...whites, ...blacks);
+}
+
+function voiceStrip() {
+  const active = state.objektEngaged ? state.objektVoices : state.transposeVoices;
+  const label = state.objektEngaged ? 'Objekt voices' : 'Pitch-lock voices (hold Shift)';
+  return h('div', {},
+    h('div', {class: 'knob-label', style: 'text-align:left;margin-top:10px'}, label),
+    h('div', {class: 'voice-strip'},
+      ...active.map((v, i) => h('div', {class: 'voice-chip' + (v ? ' active' : ''), key: 'v'+i}, v ? noteName(v.note) : '—'))
+    )
+  );
+}
+
+function chip(label, tone) {
+  return h('span', {class: `chip chip-${tone}`}, label);
+}
+
+function telemetry() {
+  const busyColor = (v) => v > 70 ? 'var(--led-red)' : v > 40 ? 'var(--led-yellow)' : 'var(--led-green)';
+  return h('div', {class: 'telemetry'},
+    ...state.coreBusy.map((v, i) => h('div', {class: 'tele-item', key: 'busy'+i},
+      'core' + i, h('div', {class: 'busybar'}, h('i', {style: `width:${v}%;background:${busyColor(v)}`})),
+    )),
+    h('div', {class: 'tele-item'}, 'xruns ', h('b', {}, state.xruns)),
+    h('div', {class: 'tele-item'}, 'link ', h('b', {}, state.linkPeers), ' peers @ ', h('b', {}, state.bpm), ' bpm ', state.linkPlaying ? '▶' : '⏸'),
+    h('div', {class: 'tele-item'}, 'grid_beat_index ', h('b', {}, state.beatIndex)),
+    chip('ticker mesh (AP)', 'info'),
+    chip(state.linkPlaying ? 'link playing' : 'link stopped', state.linkPlaying ? 'success' : 'warning'),
+  );
+}
+
+function view() {
+  if (state.loadError) {
+    return h('div', {},
+      h('div', {class: 'err-banner'}, 'Design-system CDN failed to load (' + state.loadError + '). The instrument logic below still runs on plain HTML.'),
+    );
+  }
+  return h('div', {},
+    h('div', {class: 'toprow'},
+      h('h1', {style: 'margin:0;font-size:1.4rem'}, 'aloop — control surface'),
+    ),
+    h('p', {class: 'lede'},
+      'A browser simulation of aloop’s APC Key25-class control surface — same press-cycle, ' +
+      'bank, and LED rules as ', h('code', {}, 'src/control/apc_grid.cpp'), ' / ',
+      h('code', {}, 'src/control/apc_leds.cpp'), '. Nothing here touches real audio or a real device; ' +
+      'it exists so the gestures are readable at a glance. Click a looper pad to arm/finish/pause/resume it, ' +
+      'press-and-hold ~1s to erase, toggle Shift (a mouse can’t hold two controls at once, so it latches here ' +
+      'instead of requiring a continuous hold) and play the keybed to pitch-lock, ' +
+      'tap LofiFx to latch the granulator or hold it 1s to switch to the Objekt resonator synth.'
+    ),
+    h('div', {class: 'rack'},
+      h('h3', {}, 'Telemetry (status.json)'),
+      telemetry(),
+      h('div', {class: 'sliderrow', style: 'margin-top:10px'},
+        h('b', {}, 'Tempo'),
+        h('input', {type: 'range', class: 'thin', min: '60', max: '180', value: state.bpm,
+          oninput: (e) => { state.bpm = Number(e.target.value); render(); }}),
+        h('span', {}, state.bpm + ' bpm'),
+      ),
+    ),
+    h('div', {class: 'surface'},
+      h('div', {},
+        h('div', {class: 'rack'},
+          h('h3', {}, '7-knob FX bank (' + state.bank + ')'),
+          knobRow(),
+        ),
+        h('div', {class: 'rack'},
+          h('h3', {}, '5×8 pad grid — cols 0-1 presets · cols 2-5 loopers · col 7 rows 1-4 beat bar'),
+          padGrid(),
+        ),
+        h('div', {class: 'rack'},
+          h('h3', {}, 'Microrepeat / glitch division'),
+          microRow(),
+        ),
+        h('div', {class: 'rack'},
+          h('h3', {}, 'Keybed'),
+          keybed(),
+          voiceStrip(),
+          h('div', {class: 'sliderrow', style: 'margin-top:10px'},
+            h('b', {}, 'Mod wheel'),
+            h('input', {type: 'range', class: 'thin', min: '0', max: '1', step: '0.01', value: state.modWheel,
+              oninput: (e) => { state.modWheel = Number(e.target.value); render(); }}),
+          ),
+          h('div', {class: 'sliderrow'},
+            h('b', {}, 'Formant'),
+            h('input', {type: 'range', class: 'thin', min: '0', max: '1', step: '0.01', value: state.formant,
+              oninput: (e) => { state.formant = Number(e.target.value); render(); }}),
+          ),
+        ),
+      ),
+      h('div', {},
+        h('div', {class: 'rack'},
+          h('h3', {}, 'Transport / mode'),
+          transportRow(),
+        ),
+        h('div', {class: 'rack'},
+          h('h3', {}, 'Reading the pads'),
+          h('div', {class: 'legend'},
+            h('div', {}, h('b', {}, 'red blink'), ' — recording'),
+            h('div', {}, h('b', {}, 'green / yellow / red'), ' — playing, by live level'),
+            h('div', {}, h('b', {}, 'yellow blink'), ' — has content, paused'),
+            h('div', {}, h('b', {}, 'off'), ' — empty'),
+            h('div', {}, h('b', {}, 'blue dot'), ' — sidechain source (toggle Guitar FX, then tap a looper)'),
+          ),
+          h('div', {class: 'smallnote'},
+            'Shift and Guitar FX are press-and-hold on real hardware; they toggle here since ' +
+            'a mouse cursor can only be in one place at a time.'
+          ),
+          h('div', {class: 'smallnote'},
+            'Full gesture reference: ', h('code', {}, 'docs/CONTROLS.md'), ' and AGENTS.md’s ',
+            '"Control surface" section in the aloop repo.'
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+// ---------- animation loop: simulated looper levels + Link beat clock ----------
+
+let lastBeatAt = performance.now();
+function tick(now) {
+  let dirty = false;
+  for (const L of state.loopers) {
+    if (L.playing && !L.recording) {
+      L.level += (Math.random() - 0.5) * 0.18;
+      L.level = Math.max(0, Math.min(0.85, L.level));
+      dirty = true;
+    }
+  }
+  if (state.linkPlaying) {
+    const beatMs = 60000 / state.bpm;
+    if (now - lastBeatAt >= beatMs) {
+      lastBeatAt = now;
+      state.beatIndex = (state.beatIndex + 1) % 16;
+      dirty = true;
+    }
+  }
+  if (dirty) render();
+  requestAnimationFrame(tick);
+}
+
+try {
+  render();
+  requestAnimationFrame(tick);
+} catch (err) {
+  state.loadError = String(err && err.message || err);
+  document.getElementById('app').innerHTML =
+    '<div class="err-banner">Failed to initialize (' + state.loadError + '). ' +
+    'This page needs network access to unpkg.com for the anentrypoint-design CDN bundle.</div>';
+  console.error(err);
+}
+</script>
+</body>
+</html>
