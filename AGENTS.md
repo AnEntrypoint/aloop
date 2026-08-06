@@ -1719,6 +1719,42 @@ DawDreamer regression suite's one non-bit-exact case, a 1.477e-06 max
 absolute difference, is exactly the float32 rounding this removes, ~106dB
 below audible).
 
+## `mode2`/`mode3`/`mode4`'s damping exponent is small-integer — strength-reduce, don't `pow()`
+
+A full-repo DawDreamer-based sweep (every `pow()`/`tan()`/`exp()`/`log()` call
+site across `dsp/*.dsp` and `effects/home/faust/*.dsp`, checked for the same
+"exponent independent of the runtime knob" pattern the `mode1` fix above
+caught) found one more instance the `mode1` pass missed: `mode2`'s
+`objDecay*pow(damping,1)`, `mode3`'s `objDecay*pow(damping,2)`, `mode4`'s
+`objDecay*pow(damping,3)`. Unlike `stretch`-dependent exponents elsewhere in
+this file (`pow(2.0, 1.0+stretch)` etc., genuinely runtime-variable, not
+touched), these three exponents are LITERAL INTEGERS baked into the source
+text, independent of any hslider — `pow(x,1)` is mathematically always `x`;
+`pow(x,2)`/`pow(x,3)` are exactly `x*x`/`x*x*x`, computable with plain
+multiplies instead of a full transcendental `pow()` call. Since `bank()`
+computes all 4 modes for all 4 voices every sample unconditionally (Objekt
+has no runtime branching, same as every other always-on stage in this file —
+see "Faust has no runtime branching" above), this was 3 wasted-relative-to-
+multiplication `pow()` calls x 4 voices = 12 calls/sample, permanently, not
+gated by whether Objekt is even engaged.
+
+Fixed: `pow(damping,1)` -> `damping`, `pow(damping,2)` -> `damping*damping`,
+`pow(damping,3)` -> `damping*damping*damping`. Verified via the DawDreamer JIT
+harness across 6 cases spanning the full position/decay/damping/stretch range
+(including all 4 named sweetspot patches' exact settings): **bit-exact,
+0.000e+00 max absolute difference in every case** — stronger than `mode1`'s
+own fix (which had a 1.477e-06 float32-rounding residual), since multiplying
+a value by itself introduces no more rounding than the `pow()` call it
+replaces. `test/objekt-sweetspot/verify_musical_controls.py`'s existing
+`tone_taper`/`morph_glide_click`/`no_fadein_regression` checks all still pass
+unchanged. No `faust2bench` figure is available for this change (this
+environment has DawDreamer's JIT bindings only, not the standalone `faust`
+CLI `faust2bench` needs — see "DawDreamer verification harness" below); a
+same-environment JIT render-time A/B (20s render, x86_64, not a substitute for
+`faust2bench` on real hardware) showed a small, consistent-direction
+improvement, in line with removing 12 `pow()` calls/sample from an always-hot
+path.
+
 ## Objekt's higher modes must mute, not alias, once their frequency exceeds Nyquist
 
 `pm.modeFilter(freq,t60,gain) = fi.tf2(...)*gain` computes `a1 =

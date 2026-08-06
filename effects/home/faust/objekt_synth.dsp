@@ -37,9 +37,9 @@ letrec {
 aliasGuard(f) = min(1.0, max(0.0, (ma.SR*0.5 - f) / (ma.SR*0.05)));
 
 mode1(freqHz) = pm.modeFilter(freqHz, objDecay, 1.0*abs(sin(ma.PI*position*1))*aliasGuard(freqHz));
-mode2(freqHz) = pm.modeFilter(f2, objDecay*pow(damping,1), 0.6*abs(sin(ma.PI*position*2))*aliasGuard(f2)) with { f2 = freqHz*pow(2.0, 1.0+stretch); };
-mode3(freqHz) = pm.modeFilter(f3, objDecay*pow(damping,2), 0.4*abs(sin(ma.PI*position*3))*aliasGuard(f3)) with { f3 = freqHz*pow(3.0, 1.0+stretch); };
-mode4(freqHz) = pm.modeFilter(f4, objDecay*pow(damping,3), 0.3*abs(sin(ma.PI*position*4))*aliasGuard(f4)) with { f4 = freqHz*pow(4.0, 1.0+stretch); };
+mode2(freqHz) = pm.modeFilter(f2, objDecay*damping, 0.6*abs(sin(ma.PI*position*2))*aliasGuard(f2)) with { f2 = freqHz*pow(2.0, 1.0+stretch); };
+mode3(freqHz) = pm.modeFilter(f3, objDecay*(damping*damping), 0.4*abs(sin(ma.PI*position*3))*aliasGuard(f3)) with { f3 = freqHz*pow(3.0, 1.0+stretch); };
+mode4(freqHz) = pm.modeFilter(f4, objDecay*(damping*damping*damping), 0.3*abs(sin(ma.PI*position*4))*aliasGuard(f4)) with { f4 = freqHz*pow(4.0, 1.0+stretch); };
 
 bank(freqHz, exc) = exc <: (mode1(freqHz), mode2(freqHz), mode3(freqHz), mode4(freqHz)) :> _;
 
