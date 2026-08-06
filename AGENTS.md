@@ -150,6 +150,49 @@ resident on local media before PXE/TFTP is reachable. `build-image.yml`'s
 netboot-build/validate/SD-zip steps are skipped for `BOARD=opi-prime`; only its
 raw `.img.gz` is produced and released.
 
+**`boot_tree_write_boot_scr_opi`'s `kernel_addr_r`/`fdt_addr_r`/`ramdisk_addr_r`
+must match THIS specific U-Boot build's own compiled-in defaults, not generic
+sunxi-common.h values.** Real hardware reached `booti`'s "Starting kernel"
+handoff message with fully normal U-Boot output before it (version banner,
+DRAM/MMC detection, correct load byte-counts, even a real HDMI U-Boot logo),
+then total silence with zero earlycon output and a reset — consistent with a
+devicetree the kernel cannot even locate its own UART in. The values previously
+hardcoded here (`0x44000000`/`0x4a000000`/`0x4c000000`) were carried over from a
+generic sunxi assumption and never verified against this build's real defaults.
+`strings` on the U-Boot blob extracted straight from the downloaded
+`dl.armbian.com/orangepiprime/Trixie_current_minimal` image (same extraction
+offset/span `boot_tree_fetch_opi` already uses) shows this build's real
+compiled-in env: `kernel_addr_r=0x40080000`, `fdt_addr_r=0x4FA00000`,
+`ramdisk_addr_r=0x4FF00000` (also `loadaddr=0x42000000`,
+`scriptaddr=0x4FC00000`) — none overlapping, well-spaced. Fixed to use these
+real values. `fdt addr`/`fdt resize 65536` before `booti` (Armbian's own
+`boot-sunxi.cmd` runs this to give U-Boot's in-place FDT edits headroom) was
+already present from an earlier diagnostic round and stays, unchanged and
+untested against the corrected addresses — this remains the next thing to
+verify once real hardware or a serial adapter is available.
+
+Two earlier hypotheses for this same silent-post-handoff symptom were tested
+live and ruled out: relocated load addresses generically moved off
+sunxi-common.h defaults (not derived from the real binary — this row's actual
+fix), and an explicit `wdt stop` (kept, harmless either way).
+
+`boot_tree_config_opi`'s `earlycon=uart8250,mmio32,0x01c28000` diagnostic
+console param isolates whether the kernel crashes before or after its own
+console driver initializes — `0x01c28000` is H5's uart0 MMIO base, same
+8250-derived register layout other Allwinner boards use for earlycon;
+`console=ttyS0,115200` is independently verified correct for this board's DTB
+(`serial0` alias → `uart0`, `chosen` stdout-path).
+
+Armbian's own compiled `bootcmd` sources `/boot/boot.scr` directly by fixed
+filename and calls `booti` itself — it never touches `extlinux.conf`. Since
+this project's U-Boot binary is sourced from Armbian's real build,
+`extlinux.conf` alone is not reachable: real hardware confirmed this live
+(SPL+U-Boot proper both genuinely complete their multi-second load each cycle,
+then reset — consistent with `bootcmd` finding no `boot.scr` and having
+nothing else to fall back to). `extlinux.conf` stays as a defensive fallback
+(harmless, costs nothing) for any future U-Boot build that does have
+`CONFIG_DISTRO_DEFAULTS` compiled in.
+
 **WiFi is Realtek RTL8723BS.** `kernel/rt-tune.sh`'s IRQ-steering matches by
 driver-name substring, so `rtl8723bs` is in its grep pattern alongside
 `brcmfmac`. Link multicast behavior tuned against Broadcom should be re-validated

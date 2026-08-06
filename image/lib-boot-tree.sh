@@ -237,9 +237,6 @@ SSHCFG
   gzip -f "$APKOVL_TAR"
   cp "$_work/$APKOVL" "$_boot/$APKOVL"
 
-  # Extraction on Windows loses the exec bit regardless of what the archive
-  # stores (NTFS has no exec bit), so modes are always read from the tar
-  # LISTING here, never from an extracted copy -- see AGENTS.md.
   APKOVL_LASTMODE=$(tar -tzvf "$_work/$APKOVL" 2>/dev/null | grep 'opt/aloop/aloop$' | tail -1 | cut -c1-10)
   if [ "$APKOVL_LASTMODE" = "-rwxr-xr-x" ]; then
     echo "[boot-tree] apkovl -> $_boot/$APKOVL ($(du -h "$_work/$APKOVL" | cut -f1)) [aloop binary confirmed +x in archive]"
@@ -292,14 +289,6 @@ boot_tree_config_opi() {
   [ -n "$_kernel" ] || { echo "[boot-tree] ERROR: no kernel image found under $_boot/opi-boot" >&2; return 1; }
   [ -n "$_dtb" ]    || { echo "[boot-tree] ERROR: no sun50i-h5-orangepi-prime.dtb found under $_boot/opi-boot" >&2; return 1; }
   mkdir -p "$_boot/opi-boot/extlinux"
-  # earlycon prints before the normal ttyS0 console driver initializes --
-  # confirmed live on real hardware that U-Boot hands off correctly ("Starting
-  # kernel") but the kernel produces zero output afterward even though
-  # console=ttyS0,115200 is independently verified correct for this exact
-  # board's DTB (serial0 alias -> uart0, chosen stdout-path). earlycon isolates
-  # whether the kernel is crashing before or after its own console comes up.
-  # 0x01c28000 is H5's uart0 MMIO base, same 8250-derived register layout
-  # Allwinner boards use for earlycon.
   _console="earlycon=uart8250,mmio32,0x01c28000 console=ttyS0,115200"
   {
     echo "DEFAULT aloop"
@@ -315,44 +304,18 @@ boot_tree_config_opi() {
   boot_tree_write_boot_scr_opi "$_boot" "$(basename "$_kernel")" "$(basename "$_dtb")" "$( [ -n "$_initrd" ] && basename "$_initrd")" "$_rt" "$_console"
 }
 
-# Armbian's own compiled bootcmd sources /boot/boot.scr directly by fixed
-# filename and calls booti itself -- it never touches extlinux.conf. Since
-# this project's U-Boot binary is sourced from Armbian's real build (see
-# opi-alpine-image-source-decision), extlinux.conf ALONE is not reachable:
-# real hardware confirmed this live (SPL+U-Boot proper both genuinely
-# complete their multi-second load each cycle, then reset -- consistent
-# with bootcmd finding no boot.scr and having nothing else to fall back to).
-# extlinux.conf stays as a defensive fallback (harmless, costs nothing) for
-# any future U-Boot build that does have CONFIG_DISTRO_DEFAULTS compiled in.
 boot_tree_write_boot_scr_opi() {
   _boot="$1"; _kernel_name="$2"; _dtb_name="$3"; _initrd_name="$4"; _rt="$5"; _console="$6"
   if ! command -v mkimage >/dev/null 2>&1; then
     echo "[boot-tree] ERROR: mkimage unavailable -- cannot compile boot.scr (needs u-boot-tools; works in CI, not this dev host)" >&2
     return 1
   fi
-  # DIAGNOSTIC ROUND: real hardware reached 'Starting kernel' (booti's own
-  # handoff message) with fully normal U-Boot output before it -- version
-  # banner, DRAM/MMC detection, correct load byte-counts for every file, even
-  # a real HDMI graphical U-Boot logo -- then total silence, including zero
-  # earlycon output, then a reset. Relocated load addresses (kernel_addr_r
-  # etc, moved off the sunxi-common.h defaults in case of an overlap with
-  # U-Boot's own runtime relocation target) and an explicit watchdog stop
-  # were both tested live and ruled out -- the symptom persisted unchanged.
-  # Real fix candidate found in Armbian's own reference config/bootscripts/
-  # boot-sunxi.cmd: it runs 'fdt addr'/'fdt resize 65536' on the loaded DTB
-  # before booti, which this hand-written script never did. Without a resize,
-  # U-Boot's own in-place FDT edits during handoff (inserting /chosen
-  # properties for bootargs/initrd bounds, PSCI/memory nodes) have zero
-  # headroom in a DTB blob sized to exactly its on-disk bytes, and can
-  # silently corrupt/truncate the buffer with no error text -- a structurally
-  # plausible match for booti completing its own print then the kernel
-  # receiving a devicetree it cannot even locate its own UART in.
   _cmd="$_boot/opi-boot/boot.cmd"
   {
     echo "setenv bootargs \"root=LABEL=aloopboot rw $_console $_rt\""
-    echo "setenv kernel_addr_r 0x44000000"
-    echo "setenv fdt_addr_r 0x4a000000"
-    echo "setenv ramdisk_addr_r 0x4c000000"
+    echo "setenv kernel_addr_r 0x40080000"
+    echo "setenv fdt_addr_r 0x4FA00000"
+    echo "setenv ramdisk_addr_r 0x4FF00000"
     echo "wdt stop || true"
     echo "load mmc 0:1 \${kernel_addr_r} /boot/$_kernel_name"
     echo "load mmc 0:1 \${fdt_addr_r} /boot/$_dtb_name"
