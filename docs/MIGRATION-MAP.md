@@ -25,6 +25,9 @@ Classification: **delete** (kernel/userspace replaces it entirely) · **trivial*
 | — (Core 3 idle) | user-swappable LV2 on Core 3 | **new** | medium | The moddability capability — impossible without a filesystem + linker |
 | effects compiled into firmware | LV2 bundles on flash (home + user) | **new** | medium | The dubfx Faust chain via `faust2lv2` |
 | `:4445` telemetry verbs, core-busy % | Linux telemetry surface (UDP / status file) | **port** | low | Keep the diagnosability looper had |
+| — (no bare-metal precedent) | 6-voice polyphonic pitch-lock (`multitranspose.dsp`) | **new** | high | A Whammy/Manipulator-style harmonizer; possible only because the home stack has headroom the bare-metal core never had |
+| — (no bare-metal precedent) | Objekt modal-resonator synth (`objekt_synth.dsp`) | **new** | high | A real-input-excited synth voice, not a loop/effect at all — the LofiFx pad's real-hold gesture |
+| — (no bare-metal precedent) | 6-patch granulator (`Sampler`, C++) | **new** | high | Dynamic per-grain scheduling; deliberately C++ rather than Faust since it doesn't fit static dataflow |
 
 ## The two-sided ledger
 

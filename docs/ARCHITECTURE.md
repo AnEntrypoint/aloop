@@ -120,6 +120,32 @@ means a segfaulting plugin could take down audio — so the host installs a
 with the home chain**, degraded rather than dead. (True process isolation would
 require a graph and its latency; that tradeoff is documented in `DECISIONS.md`.)
 
+## The home stack has grown into a real instrument, not just loop+effects
+
+Everything below runs inside the same always-on Faust program on Core 1,
+alongside the original loop engine and effects chain — Faust has no runtime
+branching, so every stage below is computed every block whether or not it is
+currently engaged (see `AGENTS.md`'s "Faust has no runtime branching" entry);
+this is the accepted cost model here, not a regression to fix.
+
+- **6-voice polyphonic pitch-lock** (`effects/home/faust/multitranspose.dsp`) —
+  a pitch tracker plus 6 crossfaded-delay-line shifter voices, each gated by a
+  held key. Locked output *replaces* the dry signal via a dedicated gate, it
+  never layers over it.
+- **Objekt** (`effects/home/faust/objekt_synth.dsp`) — a 4-voice modal
+  resonator synth excited by the live input signal, with alias-guarded higher
+  modes (a mode above Nyquist fades to silence rather than folding back into
+  an unrelated frequency) and click-free voice stealing (a stolen voice gets a
+  synthetic one-sample gate dip to re-trigger its envelopes, plus a
+  frequency-glide to avoid a biquad-coefficient discontinuity).
+- **The granulator** lives in `Sampler` (C++, not Faust — it needs dynamic
+  grain scheduling that doesn't fit Faust's static dataflow model), sharing the
+  same post-fx capture tap as loop recording.
+
+These are genuinely *new* instrument capabilities, not ports of anything the
+original bare-metal looper had — see `docs/MIGRATION-MAP.md` for which parts of
+this codebase are Circle ports versus net-new.
+
 ## Ableton Link: the official library, RT-safe by the same pattern
 
 The bare-metal looper reimplemented the Link wire protocol from scratch because
@@ -138,6 +164,33 @@ is *mode-switching*, not simultaneous AP+STA (which is flaky on a single Pi
 radio). `wpa_supplicant` + `hostapd` + `dnsmasq` under OpenRC, with a switch
 service — the exact behavior the looper hand-rolled, now on the tested stack.
 The AP passes multicast between clients (`ap_isolate=0`) so Link works over it.
+
+## Mesh networking: aloop + esp-idf-link form one ad-hoc Link mesh
+
+Ableton Link's peer discovery is UDP multicast, so every device that should
+share tempo/transport needs to be on the same L2 network. aloop pairs with a
+sibling ESP32-based project (`../esp-idf-link`, the "ticker" box) to form
+**one ad-hoc, single-AP mesh** with no credential provisioning: exactly one
+device hosts an open SSID (`ticker`), and everyone else joins as a station.
+
+- **Host election is MAC-ordered**, not "host if nothing was found" — both
+  projects hold for a duration monotonic in their own MAC address (lowest
+  MAC ≈ 0s, highest ≈ 6s) before deciding to host, rescanning every second and
+  joining the instant a peer's AP appears. This avoids the failure mode where
+  two devices cold-booting together each scan before the other's AP exists and
+  both end up hosting, splitting into two isolated L2 domains Link can never
+  cross.
+- Every AP/channel/Link-quantum/start-stop-sync value is a **paired invariant**
+  between the two codebases — changing one without the other silently breaks
+  meshing with no error on either side. `AGENTS.md`'s Mesh Networking section
+  carries the authoritative paired-invariant table.
+- Link's own tempo-authority rule (a peer joining must never hijack the
+  session's tempo) is audited against Ableton's own 12-case Link Test Plan,
+  not just informally — see `AGENTS.md`'s "Ableton's Link Test Plan" entry.
+
+Whether Link's multicast crosses the Pi's own AP to its stations on the
+Broadcom WiFi chip (`ap_isolate=0` may or may not be sufficient alone) is
+currently **unverified on real hardware** — see `docs/LINK-MESH-TESTING.md`.
 
 ## USB audio: the kernel `f_uac2` gadget
 
