@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Flashing aloop to an SD card and testing from it | aloop</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="Flashing aloop to an SD card and testing from it" />
+<meta property="og:locale" content="en_US" />
+<link rel="canonical" href="https://anentrypoint.github.io/aloop/FLASHING.html" />
+<meta property="og:url" content="https://anentrypoint.github.io/aloop/FLASHING.html" />
+<meta property="og:site_name" content="aloop" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Flashing aloop to an SD card and testing from it" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","headline":"Flashing aloop to an SD card and testing from it","url":"https://anentrypoint.github.io/aloop/FLASHING.html"}</script>
+<!-- End Jekyll SEO tag -->
+
+    <link rel="stylesheet" href="/aloop/assets/css/style.css?v=2e279a87748b76ad7c5e7c1d866d8982985bdcef">
+    <!--[if lt IE 9]>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
+    <![endif]-->
+    <!-- start custom head snippets, customize with your own _includes/head-custom.html file -->
+
+<!-- Setup Google Analytics -->
+
+
+
+<!-- You can set your favicon here -->
+<!-- link rel="shortcut icon" type="image/x-icon" href="/aloop/favicon.ico" -->
+
+<!-- end custom head snippets -->
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a href="https://anentrypoint.github.io/aloop/">aloop</a></h1>
+
+        
+
+        <p></p>
+
+        
+        <p class="view"><a href="https://github.com/AnEntrypoint/aloop">View the Project on GitHub <small>AnEntrypoint/aloop</small></a></p>
+        
+
+        
+
+        
+      </header>
+      <section>
+
+      <h1 id="flashing-aloop-to-an-sd-card-and-testing-from-it">Flashing aloop to an SD card and testing from it</h1>
+
+<blockquote>
+  <p><strong>Testing before you commit to a card?</strong> Pi boards can boot the <em>same</em> aloop tree
+over the network (TFTP/DHCP) with zero reflashing — see
+<strong><a href="/aloop/NETBOOT.html">docs/NETBOOT.md</a></strong>. That’s the fastest way to shake out boot
+issues on a Pi; come back here to burn a card. Orange Pi Prime has no netboot
+path (see <code class="language-plaintext highlighter-rouge">docs/BOOT.md</code>’s board matrix) — it’s SD-card-flash-only.</p>
+</blockquote>
+
+<p>This is the card-test procedure, worked through for the Pi 4 (the best-supported,
+gadget-capable board) — the same steps apply to pi3/pi5/opi-prime with the board’s
+own image filename substituted; see <code class="language-plaintext highlighter-rouge">docs/BOOT.md</code>’s board matrix for what differs
+per board (USB-audio gadget availability, WiFi chip). The CI <code class="language-plaintext highlighter-rouge">build-image</code> workflow
+builds one image PER BOARD (<code class="language-plaintext highlighter-rouge">aloop-&lt;board&gt;-image</code> artifacts: pi3, pi4, pi5,
+opi-prime); flash the one matching your hardware and it comes up as the aloop
+appliance.</p>
+
+<h2 id="1-get-the-image">1. Get the image</h2>
+
+<ul>
+  <li><strong>From CI:</strong> open the latest green <code class="language-plaintext highlighter-rouge">build-image</code> run on <code class="language-plaintext highlighter-rouge">AnEntrypoint/aloop</code> and
+download the <strong><code class="language-plaintext highlighter-rouge">aloop-&lt;board&gt;-image</code></strong> artifact for your board (e.g.
+<code class="language-plaintext highlighter-rouge">aloop-pi4-image</code> → <code class="language-plaintext highlighter-rouge">aloop-pi4.img.gz</code>) — or grab it straight from the
+auto-updated <code class="language-plaintext highlighter-rouge">latest</code> GitHub Release, which carries every board’s image.</li>
+  <li><strong>Locally</strong> (on a Linux/Alpine host with <code class="language-plaintext highlighter-rouge">mtools dosfstools fdisk curl</code>; Orange Pi
+Prime additionally needs <code class="language-plaintext highlighter-rouge">e2fsprogs xz-utils util-linux</code> and real root for
+<code class="language-plaintext highlighter-rouge">losetup</code>/<code class="language-plaintext highlighter-rouge">mount</code>):
+    <div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">ALOOP_BIN</span><span class="o">=</span>build/aloop <span class="nv">LV2_DIR</span><span class="o">=</span>effects/home <span class="nv">BOARD</span><span class="o">=</span>pi4 image/build-image.sh   <span class="c"># -&gt; aloop-pi4.img</span>
+<span class="nv">BOARD</span><span class="o">=</span>pi4 image/validate-image.sh aloop-pi4.img                            <span class="c"># structural check</span>
+</code></pre></div>    </div>
+    <p>(<code class="language-plaintext highlighter-rouge">BOARD</code> defaults to <code class="language-plaintext highlighter-rouge">pi4</code> if omitted — set it explicitly for any other board.)</p>
+  </li>
+</ul>
+
+<p>Verify the download:</p>
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">gunzip </span>aloop-pi4.img.gz
+<span class="nv">BOARD</span><span class="o">=</span>pi4 image/validate-image.sh aloop-pi4.img     <span class="c"># must print "IMAGE VALID"</span>
+</code></pre></div></div>
+
+<h2 id="2-flash-it">2. Flash it</h2>
+
+<p>Pick one:</p>
+
+<ul>
+  <li><strong>Raspberry Pi Imager</strong> → “Use custom image” → <code class="language-plaintext highlighter-rouge">aloop-pi4.img</code> → your SD card.</li>
+  <li><strong>balenaEtcher</strong> → select the image → the card → Flash.</li>
+  <li><strong><code class="language-plaintext highlighter-rouge">dd</code></strong> (Linux/macOS, double-check the device — this erases it):
+    <div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c"># find the card first (lsblk / diskutil list); then, replacing sdX:</span>
+<span class="nb">sudo dd </span><span class="k">if</span><span class="o">=</span>aloop-pi4.img <span class="nv">of</span><span class="o">=</span>/dev/sdX <span class="nv">bs</span><span class="o">=</span>4M <span class="nv">conv</span><span class="o">=</span>fsync <span class="nv">status</span><span class="o">=</span>progress
+<span class="nb">sync</span>
+</code></pre></div>    </div>
+  </li>
+</ul>
+
+<h2 id="3-wire-it-up">3. Wire it up</h2>
+
+<ul>
+  <li><strong>SD card</strong> → the board’s SD slot.</li>
+  <li><strong>USB audio to the host (pi4/CM4/Zero2 only — see <code class="language-plaintext highlighter-rouge">docs/BOOT.md</code>’s board
+matrix):</strong> connect the Pi 4’s <strong>USB-C power/OTG port</strong> to the computer you want
+it to be a soundcard for. The port is in peripheral mode
+(<code class="language-plaintext highlighter-rouge">dtoverlay=dwc2,dr_mode=peripheral</code>), so the host sees a <strong>UAC2 mono 48 kHz
+soundcard</strong> named <code class="language-plaintext highlighter-rouge">aloop</code>. (Power the Pi from the 5 V GPIO pins or a powered hub
+if the OTG port is busy being the gadget.) pi3/pi5/opi-prime have no working
+USB-audio gadget path — they run the full DSP/Link stack but do not present as
+a USB soundcard to a host computer.</li>
+  <li><strong>MIDI controller</strong> (optional): a class-compliant USB MIDI controller on a
+USB-A port drives the loopers/effects per <code class="language-plaintext highlighter-rouge">config/controls.conf</code> (remappable).</li>
+  <li><strong>Serial console (recommended for the first boot):</strong> a 3.3 V USB-UART on the
+GPIO header lets you watch boot without a display —
+    <ul>
+      <li>GND → pin 6, <strong>Pi TX GPIO14 → adapter RX</strong> (pin 8), <strong>Pi RX GPIO15 → adapter TX</strong>
+(pin 10), <strong>115200 8N1</strong> (<code class="language-plaintext highlighter-rouge">enable_uart=1</code> is set).</li>
+      <li><code class="language-plaintext highlighter-rouge">screen /dev/ttyUSB0 115200</code> (or PuTTY) to watch it come up.</li>
+    </ul>
+  </li>
+</ul>
+
+<h2 id="4-first-boot--what-to-expect">4. First boot — what to expect</h2>
+
+<ul>
+  <li>Alpine boots diskless into RAM and restores the <code class="language-plaintext highlighter-rouge">aloop.apkovl.tar.gz</code> overlay.</li>
+  <li><code class="language-plaintext highlighter-rouge">/etc/local.d/*.start</code> run in order: <strong>10</strong> RT-tune (isolcpus already applied via
+cmdline; sets IRQ affinity + rt limits), <strong>20</strong> brings up the <code class="language-plaintext highlighter-rouge">f_uac2</code> USB-audio
+gadget, then the <strong>aloop</strong> + <strong>autoap</strong> OpenRC services start (supervised —
+they respawn on crash; logs in <code class="language-plaintext highlighter-rouge">/var/log/aloop.log</code>).</li>
+  <li>The host should enumerate the <code class="language-plaintext highlighter-rouge">aloop</code> USB soundcard within a few seconds of the
+OTG cable being connected.</li>
+  <li><strong>WiFi / Ableton Link:</strong> <code class="language-plaintext highlighter-rouge">autoap</code> joins a known network if <code class="language-plaintext highlighter-rouge">wpa_supplicant.conf</code>
+has one; otherwise it hosts an AP (SSID <code class="language-plaintext highlighter-rouge">aloop</code>, <code class="language-plaintext highlighter-rouge">ap_isolate=0</code> so Link multicast
+works). Put a Link-enabled app on the same network and it should sync tempo.</li>
+</ul>
+
+<h2 id="5-verify-its-alive">5. Verify it’s alive</h2>
+
+<p>Over the serial console or (if networked) from another machine:</p>
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c"># status file on the device:</span>
+<span class="nb">cat</span> /run/aloop/status.json
+<span class="c"># or query the telemetry UDP responder (port 4445) from a peer:</span>
+<span class="nb">echo </span>status | nc <span class="nt">-u</span> <span class="nt">-w1</span> &lt;pi-ip&gt; 4445
+</code></pre></div></div>
+<p>You get JSON: <code class="language-plaintext highlighter-rouge">core_busy</code> (per-core %), <code class="language-plaintext highlighter-rouge">xruns</code>, <code class="language-plaintext highlighter-rouge">link</code> (synced/bpm), <code class="language-plaintext highlighter-rouge">wifi</code>, and
+<code class="language-plaintext highlighter-rouge">loopers</code> (rec/play bitmaps + vols) — the live device state.</p>
+
+<h2 id="6-run-the-hardware-measurements">6. Run the hardware measurements</h2>
+
+<p>The build is green; the numbers that need real silicon are the last step. On the
+booted Pi:</p>
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code>/opt/aloop/test/hardware/run-all.sh     <span class="c"># or the individual test-*.sh</span>
+</code></pre></div></div>
+<p>See <strong>docs/HARDWARE-TESTS.md</strong> for what each measures (RT jitter, f_uac2 round-trip
+latency, Link no-glitch, AP multicast) and the pass criteria. If RT jitter misses
+the target with the stock kernel, build the PREEMPT_RT kernel
+(<code class="language-plaintext highlighter-rouge">kernel/build-rt-kernel.sh</code>, ADR-011) and re-flash.</p>
+
+<h2 id="dropping-in-a-user-effect">Dropping in a user effect</h2>
+
+<p>The free core runs a swappable user LV2. Drop an <code class="language-plaintext highlighter-rouge">.lv2</code> bundle into <code class="language-plaintext highlighter-rouge">/effects/user</code>
+(mount the card’s boot FAT partition on any computer, or <code class="language-plaintext highlighter-rouge">lbu add</code> on the device)
+and reboot — the in-process host loads it after the home stack, zero added latency.</p>
+
+
+      </section>
+      <footer>
+        
+        <p>This project is maintained by <a href="https://github.com/AnEntrypoint">AnEntrypoint</a></p>
+        
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="/aloop/assets/js/scale.fix.js"></script>
+  </body>
+</html>

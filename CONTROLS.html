@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Controls — the real, current control surface | aloop</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="Controls — the real, current control surface" />
+<meta property="og:locale" content="en_US" />
+<link rel="canonical" href="https://anentrypoint.github.io/aloop/CONTROLS.html" />
+<meta property="og:url" content="https://anentrypoint.github.io/aloop/CONTROLS.html" />
+<meta property="og:site_name" content="aloop" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Controls — the real, current control surface" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","headline":"Controls — the real, current control surface","url":"https://anentrypoint.github.io/aloop/CONTROLS.html"}</script>
+<!-- End Jekyll SEO tag -->
+
+    <link rel="stylesheet" href="/aloop/assets/css/style.css?v=2e279a87748b76ad7c5e7c1d866d8982985bdcef">
+    <!--[if lt IE 9]>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
+    <![endif]-->
+    <!-- start custom head snippets, customize with your own _includes/head-custom.html file -->
+
+<!-- Setup Google Analytics -->
+
+
+
+<!-- You can set your favicon here -->
+<!-- link rel="shortcut icon" type="image/x-icon" href="/aloop/favicon.ico" -->
+
+<!-- end custom head snippets -->
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a href="https://anentrypoint.github.io/aloop/">aloop</a></h1>
+
+        
+
+        <p></p>
+
+        
+        <p class="view"><a href="https://github.com/AnEntrypoint/aloop">View the Project on GitHub <small>AnEntrypoint/aloop</small></a></p>
+        
+
+        
+
+        
+      </header>
+      <section>
+
+      <h1 id="controls--the-real-current-control-surface">Controls — the real, current control surface</h1>
+
+<p>The control surface is implemented in <code class="language-plaintext highlighter-rouge">src/control/apc_grid.cpp</code> and driven by
+an APC Key25-class MIDI grid controller. Every binding still goes through the
+same name-keyed <code class="language-plaintext highlighter-rouge">ParamStore</code>/Faust-zone mechanism the project started with —
+re-mapping a CC or note is a config change, not a recompile — but the gestures
+each pad/knob drives have grown well past plain rec/play/vol. This document is
+the user-facing summary; <code class="language-plaintext highlighter-rouge">AGENTS.md</code>’s “Control Surface” section has the
+byte-level detail and the bug history behind each rule below.</p>
+
+<h2 id="looper-pads-a-real-press-cycle-not-a-toggle">Looper pads: a real press cycle, not a toggle</h2>
+
+<p>Each looper pad drives one of 20 independent loopers through a state cycle,
+not a simple record/play flag:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>empty → ARM (rec=1, held) → FINISH (rec=0, play=1) → pause (play=0) → resume (play=1) → ...
+</code></pre></div></div>
+
+<ul>
+  <li><strong>ARM and FINISH fire on press</strong>, not release — both are instants that must
+land precisely.</li>
+  <li><strong>Long-hold erases</strong> a looper’s content and, if it was the last looper still
+holding content, resets the shared master phrase length so the next
+recording re-establishes it from scratch.</li>
+  <li><strong>CLEAR_ALL</strong> zeroes every looper’s <code class="language-plaintext highlighter-rouge">play</code> and <code class="language-plaintext highlighter-rouge">rec</code> in one gesture.</li>
+  <li>Real APC Key25 hardware re-sends note-on for an already-held pad; a press
+guard treats the repeat as a no-op so it can’t reset a hold timer or
+re-trigger ARM/FINISH mid-recording.</li>
+  <li><strong>Successive recordings snap to a musical subdivision</strong> of the first
+recording’s real length — the master phrase length is read from live
+<code class="language-plaintext highlighter-rouge">writeIdx</code> telemetry (sample-accurate), never estimated from wall-clock time.
+Candidates are always powers of 2 relative to the established length, chosen
+by the log-space geometric midpoint between the two bracketing candidates —
+so any two loopers’ lengths are always in a clean power-of-2 ratio and stay
+drift-free forever.</li>
+</ul>
+
+<h2 id="guitar-fx-held-sidechain-source-toggle">Guitar-FX held: sidechain-source toggle</h2>
+
+<p>While the Guitar-FX pad is held, a looper-pad press is redirected entirely — it
+toggles that looper as a sidechain-pump source instead of touching its
+ARM/FINISH state. The designation auto-clears when that looper’s content is
+wiped.</p>
+
+<h2 id="the-lofifx--granulator-pad-two-gestures-on-one-button">The LofiFx / granulator pad: two gestures on one button</h2>
+
+<p>This pad (note 69) always switches the active knob bank to LofiFx on press and
+immediately previews the granulator, but what happens as the press continues
+depends on how long it’s held:</p>
+
+<ul>
+  <li><strong>Quick tap</strong> (released before 1 second): flips a <em>latched</em> granulator
+state that survives release — a tap turns the grain engine into a
+persistent, backgrounded texture layered under everything else.</li>
+  <li><strong>Real hold</strong> (still held past 1 second): switches the instrument entirely
+to <strong>Resonode</strong>, a 4-voice, 6-mode-per-voice modal-resonator synth in the
+spirit of a classic hardware physical-modeling instrument. While engaged:
+    <ul>
+      <li>The keybed drives up to 4 Resonode voices (round-robin/oldest-steal
+allocation, same shape as the pitch-lock voice allocator below), each
+carrying its own real MIDI velocity into the exciter’s gain — a harder
+key press rings out louder.</li>
+      <li>Knob slots 1–4 are the blend weight of one of 4 named material patches —
+<strong>Percussive, Metal/Glass, Strings, Dance Bass</strong> — each a full point in
+position/decay/damping/stretch space, blended as a convex combination
+exactly like the granulator’s own patch surface below. Knob slots 5–6 are
+direct performative dials: <strong>tone</strong> (exponential-taper brightness) and
+<strong>level</strong> (output loudness).</li>
+      <li>Resonode is excited by the <em>live input signal</em> (“reactor mode”), not a
+synthetic oscillator — it only sounds through a voice while that voice’s
+key is held, and it fully <strong>replaces</strong> the dry/pitch-lock signal while
+engaged rather than layering under it.</li>
+      <li>Releasing the pad releases every held Resonode voice and reverts to the
+bank that was active before the press.</li>
+    </ul>
+  </li>
+</ul>
+
+<p>LED feedback on the pad itself: blinking red once Resonode is actually
+engaged, blinking green during the pre-threshold granulator preview, solid
+green while latched-on in the background, off otherwise.</p>
+
+<h3 id="granulator-and-resonode-named-patches-blended-never-raw-sliders">Granulator and Resonode: named patches, blended, never raw sliders</h3>
+
+<p>When Resonode is <em>not</em> engaged, knob slots 1–6 are the blend weight of one of
+6 fixed named grain patches — <strong>Glass, Cloud, Freeze, Chop, Tape, Shatter</strong> —
+each a full point in grain-size/density/pitch-spray/position-jitter/scan-rate/
+reverse-probability/envelope-shape space representing a distinct musical
+character. When Resonode <em>is</em> engaged, knob slots 1–4 blend the 4 named
+material patches above instead. Both surfaces share the same convex-
+combination discipline: turning up multiple patch dials together produces a
+coherent blend, never independent raw parameters fighting each other, and all
+weights at zero falls back to the first named patch (Glass for the granulator,
+Percussive for Resonode) rather than dividing by zero. Real key velocity
+scales overall voice loudness for both instruments, and (for granular voices
+only) grain spawn density, so a harder key press plays louder — and for the
+granulator, spawns a denser, brighter grain cloud.</p>
+
+<h2 id="6-voice-polyphonic-pitch-lock-shift--keybed">6-voice polyphonic pitch-lock (SHIFT + keybed)</h2>
+
+<p>Holding SHIFT and pressing keys drives a 6-voice polyphonic pitch-lock engine
+(<code class="language-plaintext highlighter-rouge">multitranspose.dsp</code>) — a Whammy/Manipulator-style harmonizer where the
+output lands on the exact held key regardless of the input’s actual pitch.</p>
+
+<ul>
+  <li>Each held key claims one of 6 voice slots (reuse-own-slot / prefer-unheld /
+oldest-steal allocation).</li>
+  <li>The transpose window is pitch-synchronous (sized from the detected input
+period, capped at 20ms), not a fixed window, so large shifts track
+correctly and rapid retriggers stay click-safe.</li>
+  <li>SHIFT alone (no key held) is a separate gesture — the native fold mechanism
+that lets the previous block’s loop content bleed into the live input.</li>
+  <li>SHIFT + <code class="language-plaintext highlighter-rouge">fx/monitorfold</code>’s <strong>free-transpose</strong> mode redirects the whole
+tracking/shifting engine onto the loop content itself instead of the dry
+input — a live “pitch-shift the loop” gesture on the same voice engine.</li>
+  <li>Locked pitch <strong>replaces</strong> the original signal — a dry/pitch-lock crossfade
+gate closes as voices gate, so this is a lock, never a harmonizer sitting on
+top of the unshifted signal.</li>
+</ul>
+
+<h2 id="grid-beat-visualization">Grid-beat visualization</h2>
+
+<p>The 4 top-right otherwise-unassigned pads show the shared 16-beat Link phrase
+position live as a cumulative bar-graph (blank → yellow → red → green per
+beat index), read from <code class="language-plaintext highlighter-rouge">AudioThread::Telemetry::gridBeatIndex</code>.</p>
+
+<h2 id="3-bank-fx-knob-surface">3-bank FX knob surface</h2>
+
+<p>The knob row is one shared set of 6 CCs whose target table depends on which
+bank is active — <strong>Dub</strong>, <strong>Guitar</strong>, or <strong>LofiFx</strong> (granulator/Resonode, above).
+A bank-select press only flips which target table the next knob CC reaches
+and starts a brief LED flash; it never re-pushes state to the DSP.</p>
+
+<h2 id="config-file-remapping-unchanged-mechanism">Config-file remapping (unchanged mechanism)</h2>
+
+<p>Every control still ultimately binds through <code class="language-plaintext highlighter-rouge">/etc/aloop-controls.conf</code> (see
+<code class="language-plaintext highlighter-rouge">config/controls.conf</code> for the format): a plain <code class="language-plaintext highlighter-rouge">&lt;midi&gt; &lt;target&gt;</code> line per
+binding, parsed by the MIDI thread and written into the name-keyed
+<code class="language-plaintext highlighter-rouge">ParamStore</code>, which the audio thread reads by name into the matching Faust
+control zone. Nothing is hardcoded — the map is the single source of truth for
+which physical control reaches which target, and re-mapping needs no
+recompile. What has changed since this file’s original scope is the <em>behavior</em>
+layered on top of individual pads (the gestures documented above) — the
+underlying binding mechanism is untouched.</p>
+
+
+      </section>
+      <footer>
+        
+        <p>This project is maintained by <a href="https://github.com/AnEntrypoint">AnEntrypoint</a></p>
+        
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="/aloop/assets/js/scale.fix.js"></script>
+  </body>
+</html>

@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Command surface — the looper control behavior aloop clones | aloop</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="Command surface — the looper control behavior aloop clones" />
+<meta property="og:locale" content="en_US" />
+<link rel="canonical" href="https://anentrypoint.github.io/aloop/COMMAND-SURFACE.html" />
+<meta property="og:url" content="https://anentrypoint.github.io/aloop/COMMAND-SURFACE.html" />
+<meta property="og:site_name" content="aloop" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Command surface — the looper control behavior aloop clones" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","headline":"Command surface — the looper control behavior aloop clones","url":"https://anentrypoint.github.io/aloop/COMMAND-SURFACE.html"}</script>
+<!-- End Jekyll SEO tag -->
+
+    <link rel="stylesheet" href="/aloop/assets/css/style.css?v=2e279a87748b76ad7c5e7c1d866d8982985bdcef">
+    <!--[if lt IE 9]>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
+    <![endif]-->
+    <!-- start custom head snippets, customize with your own _includes/head-custom.html file -->
+
+<!-- Setup Google Analytics -->
+
+
+
+<!-- You can set your favicon here -->
+<!-- link rel="shortcut icon" type="image/x-icon" href="/aloop/favicon.ico" -->
+
+<!-- end custom head snippets -->
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a href="https://anentrypoint.github.io/aloop/">aloop</a></h1>
+
+        
+
+        <p></p>
+
+        
+        <p class="view"><a href="https://github.com/AnEntrypoint/aloop">View the Project on GitHub <small>AnEntrypoint/aloop</small></a></p>
+        
+
+        
+
+        
+      </header>
+      <section>
+
+      <h1 id="command-surface--the-looper-control-behavior-aloop-clones">Command surface — the looper control behavior aloop clones</h1>
+
+<p>100% clone includes the control/command behavior, not just audio. aloop
+reproduces looper’s full command surface (the ported apcKey25*.cpp logic + loop
+commands), with the input source moved to ALSA rawmidi (src/control/midi.cpp).</p>
+
+<h2 id="loop-commands-ported-from-looper-loopmachine-command-dispatch">Loop commands (ported from looper loopMachine command dispatch)</h2>
+<p>record · play · stop · clear/erase (per track) · halve/double speed (varispeed) · loop-immediate · set/clear loop-start — for each of the 20 independent loopers. NO overdub.
+· set/clear mark point · pause (mute-with-advancing-head) · quantize-to-grid.</p>
+
+<h3 id="exact-opcode--aloop-control-target-commondefinesh--configcontrolsconf">Exact opcode → aloop control target (commonDefines.h → config/controls.conf)</h3>
+<p>The hardware speaks <code class="language-plaintext highlighter-rouge">LOOP_COMMAND_*</code> opcodes; aloop’s control map speaks named
+targets that resolve to Faust zones (src/dsp/audio_thread.cpp <code class="language-plaintext highlighter-rouge">targetToZone</code> +
+the engine-global <code class="language-plaintext highlighter-rouge">clear</code>/<code class="language-plaintext highlighter-rouge">speed</code> handling). This is the authoritative parity map:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>looper opcode</th>
+      <th>value</th>
+      <th>aloop target</th>
+      <th>how it’s realized</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">LOOP_COMMAND_RECORD</code> (per track <code class="language-plaintext highlighter-rouge">TRACK_BASE 0x20</code>)</td>
+      <td>0x80 / 0x20+i</td>
+      <td><code class="language-plaintext highlighter-rouge">looper&lt;i&gt;/rec</code></td>
+      <td>Faust <code class="language-plaintext highlighter-rouge">button("rec")</code> — record replaces the loop (NO overdub)</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">LOOP_COMMAND_PLAY</code></td>
+      <td>0x81</td>
+      <td><code class="language-plaintext highlighter-rouge">looper&lt;i&gt;/play</code></td>
+      <td>Faust <code class="language-plaintext highlighter-rouge">checkbox("play")</code> — gates the looper output</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">LOOP_COMMAND_STOP</code> / <code class="language-plaintext highlighter-rouge">STOP_IMMEDIATE</code></td>
+      <td>0x03 / 0x02</td>
+      <td><code class="language-plaintext highlighter-rouge">cmd/stopall</code></td>
+      <td>audio thread clears <strong>every</strong> <code class="language-plaintext highlighter-rouge">looper&lt;i&gt;/play</code> to 0</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">LOOP_COMMAND_STOP_TRACK_BASE</code></td>
+      <td>0x40+i</td>
+      <td><code class="language-plaintext highlighter-rouge">looper&lt;i&gt;/play</code>=0</td>
+      <td>per-track stop = clearing that one play checkbox</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">LOOP_COMMAND_CLEAR_ALL</code></td>
+      <td>0x01</td>
+      <td><code class="language-plaintext highlighter-rouge">cmd/clearall</code></td>
+      <td>engine-global — a plain <code class="language-plaintext highlighter-rouge">process()</code> signal input (3rd input, <code class="language-plaintext highlighter-rouge">clearBuf</code> in audio_thread.cpp), NOT a Faust UI zone — wipes all 20 loops</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">LOOP_COMMAND_ERASE_TRACK_BASE</code></td>
+      <td>0x60+i</td>
+      <td><code class="language-plaintext highlighter-rouge">looper&lt;i&gt;/erase</code></td>
+      <td>per-looper Faust <code class="language-plaintext highlighter-rouge">button("erase")</code> — wipes that one loop</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">LOOP_COMMAND_HALFSPEED_ON/OFF</code></td>
+      <td>0x0C/0x0D</td>
+      <td><code class="language-plaintext highlighter-rouge">cmd/halfspeed</code></td>
+      <td>engine-global <code class="language-plaintext highlighter-rouge">speed</code>=0.5 while held (varispeed read rate) — a plain <code class="language-plaintext highlighter-rouge">process()</code> signal input (4th input, <code class="language-plaintext highlighter-rouge">speedBuf</code>), NOT a Faust UI zone (see below)</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">LOOP_COMMAND_DOUBLESPEED_ON/OFF</code></td>
+      <td>0x0E/0x0F</td>
+      <td><code class="language-plaintext highlighter-rouge">cmd/doublespeed</code></td>
+      <td>engine-global <code class="language-plaintext highlighter-rouge">speed</code>=2.0 while held (2× read rate), same signal-input mechanism</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">LOOP_COMMAND_ABORT_RECORDING</code></td>
+      <td>0x06</td>
+      <td><code class="language-plaintext highlighter-rouge">looper&lt;i&gt;/rec</code>=0</td>
+      <td>releasing rec ends the take; record replaces in place so there is nothing to “un-append”</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">LOOP_COMMAND_LOOP_IMMEDIATE</code></td>
+      <td>0x08</td>
+      <td><em>(model difference)</em></td>
+      <td>needs an addressable read head — see the note below</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">LOOP_COMMAND_SET_LOOP_START</code></td>
+      <td>0x09</td>
+      <td><em>(model difference)</em></td>
+      <td>needs an addressable read head — see the note below</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">LOOP_COMMAND_CLEAR_LOOP_START</code></td>
+      <td>0x0A</td>
+      <td><em>(model difference)</em></td>
+      <td>needs an addressable read head — see the note below</td>
+    </tr>
+    <tr>
+      <td>Link tempo/phase</td>
+      <td>—</td>
+      <td><code class="language-plaintext highlighter-rouge">looper&lt;i&gt;/len</code></td>
+      <td>audio thread sizes every loop from the Link BPM (varispeed grid sync)</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3 id="the-one-deliberate-model-difference-mark-point--immediate-re-trigger-0x080x0a">The one deliberate model difference: mark-point / immediate re-trigger (0x08–0x0A)</h3>
+<p>These three commands reposition an <strong>addressable read head</strong> (set a restart mark at
+the current play position; jump all heads to their mark). The aloop loop engine is a
+Faust <strong>feedback-delay ring</strong> — record replaces the loop, play recirculates it — which
+has NO addressable read position, so it cannot express a mark-point jump.</p>
+
+<p>Why not a buffer+playhead (rwtable) engine, which <em>does</em> have an addressable head?
+Because a preserve-on-hold playhead looper must <strong>read the buffer and write the
+read-back to the same buffer</strong> (so the loop survives while not recording) — a
+read-modify-write that Faust’s pure-signal evaluator rejects. This was witnessed
+across <strong>4 CI codegen attempts</strong> (<code class="language-plaintext highlighter-rouge">syntax error</code> → <code class="language-plaintext highlighter-rouge">stack overflow in eval</code> →
+<code class="language-plaintext highlighter-rouge">endless evaluation cycle of 8 steps</code>); the delay ring sidesteps RMW by construction
+and is the correct Faust looper. See <code class="language-plaintext highlighter-rouge">.wfgy/lessons.md</code> and the ADR in <code class="language-plaintext highlighter-rouge">DECISIONS.md</code>.</p>
+
+<p>Everything ELSE maps 1:1 (record/play/stop/stop-all/erase/clear/half-double-speed,
+plus Link-driven varispeed loop length). Mark-point is the single behavior traded for
+a single-Faust-program, maintainable, RMW-free engine — a documented, evidence-backed
+model choice, not a silently dropped feature.</p>
+
+<p>Momentary semantics match the hardware exactly: <code class="language-plaintext highlighter-rouge">HALFSPEED</code>/<code class="language-plaintext highlighter-rouge">DOUBLESPEED</code> and
+<code class="language-plaintext highlighter-rouge">clear</code>/<code class="language-plaintext highlighter-rouge">erase</code> are <strong>held</strong> (value 1 = active, release = neutral), driven each
+block from the atomic ParamStore the MIDI thread writes. <code class="language-plaintext highlighter-rouge">speed</code> composes with the
+Link-set <code class="language-plaintext highlighter-rouge">len</code>: Link sets the base loop length, <code class="language-plaintext highlighter-rouge">speed</code> divides it (loop stays
+grid-locked, plays at 0.5×/2×). The <code class="language-plaintext highlighter-rouge">TRACK_BASE 0x20</code> / <code class="language-plaintext highlighter-rouge">STOP_TRACK_BASE 0x40</code> /
+<code class="language-plaintext highlighter-rouge">ERASE_TRACK_BASE 0x60</code> families are 20 contiguous per-track slots — the default
+<code class="language-plaintext highlighter-rouge">config/controls.conf</code> binds all 20 of each; remap freely (no recompile).</p>
+
+<p><strong><code class="language-plaintext highlighter-rouge">clear</code>/<code class="language-plaintext highlighter-rouge">speed</code> are process() signal inputs, not Faust UI zones (fixed in
+commit 9806835, 2nd-generation fix on top of 382e775’s incomplete attempt):</strong>
+Faust’s <code class="language-plaintext highlighter-rouge">par(i, NLOOPERS, vgroup(...))</code> combinator re-elaborates whatever UI
+primitive (<code class="language-plaintext highlighter-rouge">button()</code>/<code class="language-plaintext highlighter-rouge">hslider()</code>) is textually referenced inside its body at
+EACH of the 20 instantiation sites — even when the declaration itself is
+hoisted to file scope and threaded in as an ordinary function parameter. This
+was WITNESSED via the generated C++ (<code class="language-plaintext highlighter-rouge">build/loop.cpp</code>): <code class="language-plaintext highlighter-rouge">"speed"</code>/<code class="language-plaintext highlighter-rouge">"clear"</code>
+each appeared 20 times, one per <code class="language-plaintext highlighter-rouge">"looper N"</code> vgroup, even after 382e775
+believed it had collapsed them to a single shared zone. There is no Faust
+mechanism for “declare a UI control once, reference the same zone from many
+call sites” across a <code class="language-plaintext highlighter-rouge">par()</code> boundary. The real fix removes <code class="language-plaintext highlighter-rouge">clear</code>/<code class="language-plaintext highlighter-rouge">speed</code>
+as Faust UI controls entirely: <code class="language-plaintext highlighter-rouge">dsp/loop.dsp</code>’s <code class="language-plaintext highlighter-rouge">process()</code> now takes 4
+signal inputs — <code class="language-plaintext highlighter-rouge">(in, prevFiltIn, clearAll, speedMul)</code> — and <code class="language-plaintext highlighter-rouge">clearAll</code>/
+<code class="language-plaintext highlighter-rouge">speedMul</code> are plain wires threaded through <code class="language-plaintext highlighter-rouge">par()</code>, which cannot duplicate a
+signal the way it duplicates a UI primitive. <code class="language-plaintext highlighter-rouge">audio_thread.cpp</code> fills
+<code class="language-plaintext highlighter-rouge">clearBuf</code>/<code class="language-plaintext highlighter-rouge">speedBuf</code> (constant across each block) and passes them as
+<code class="language-plaintext highlighter-rouge">fins[2]</code>/<code class="language-plaintext highlighter-rouge">fins[3]</code> to <code class="language-plaintext highlighter-rouge">compute()</code> instead of calling <code class="language-plaintext highlighter-rouge">fui.set("clear"/
+"speed", ...)</code>.</p>
+
+<h2 id="apc-key25-controls-the-exact-mapping--srccontrolmidicpp-param_mappingmd">APC Key25 controls (the exact mapping — src/control/midi.cpp, param_mapping.md)</h2>
+<ul>
+  <li>CC48–55 → reverb/delay/time/HP/LP/resonance (all <code class="language-plaintext highlighter-rouge">/127</code>)</li>
+  <li>CC53 → formant depth (deadzone + range, SHIFT expands) — <code class="language-plaintext highlighter-rouge">ApcGrid::onFormantCC</code></li>
+  <li>CC52 / keybed / mod-wheel → live pitch semitones</li>
+  <li>notes 82–86 → microrepeat divisors {1,2,4,8,16}</li>
+  <li>notes 70/71 → global speed-scrub (varispeed)</li>
+  <li>SHIFT (note 0x62/98, channel 0 only) → held state gating CC53’s range AND the
+loop-fold/monitor routing: while held, the running loops are folded INTO the
+effect input (<code class="language-plaintext highlighter-rouge">fx/monitorfold</code> → Faust <code class="language-plaintext highlighter-rouge">MONITORFOLD</code>, <code class="language-plaintext highlighter-rouge">dsp/aloop.dsp</code>’s
+<code class="language-plaintext highlighter-rouge">foldMix</code>) with the dry loop contribution complementarily suppressed, so the
+loops are heard once, through the effects — <code class="language-plaintext highlighter-rouge">ApcGrid::onShiftPress/Release</code>,
+<code class="language-plaintext highlighter-rouge">AudioThread::Telemetry::monitorMode</code>. Drum-record-mode (looper’s per-key
+keybed sampler) is NOT ported — see <code class="language-plaintext highlighter-rouge">docs/DECISIONS.md</code> ADR-012.</li>
+  <li>the 8×5 grid → track/clip select + state display</li>
+</ul>
+
+<h2 id="3-bank-fx-control-surface-lofi-feature--srccontrolapc_gridhcpp-midicpp">3-bank fx control-surface (LOFI feature — src/control/apc_grid.h/.cpp, midi.cpp)</h2>
+<p>The 8-button control row above the pad grid is transpose / sample / drum-sample /
+dub-fx / guitar-fx / lofi-fx / varispeed / varispeed. The first three and last two
+are the existing, unchanged buttons (<code class="language-plaintext highlighter-rouge">onLiveEngageToggle</code>, <code class="language-plaintext highlighter-rouge">onSamplerBtn65/66Press</code>,
+note70/71 speed-scrub). Positions 4-6 are 3 new, symmetric bank-select buttons —
+<strong>FULLY WIRED</strong> in <code class="language-plaintext highlighter-rouge">ApcGrid</code>/<code class="language-plaintext highlighter-rouge">midi.cpp</code>, and (per the Core-3 redesign below)
+so is every bank’s own effect chain — all 3 banks are simultaneously live.</p>
+
+<ul>
+  <li><strong>dub-fx</strong> = note 67, <strong>guitar-fx</strong> = note 68, <strong>lofi-fx</strong> = note 69 (channel 0
+only) — WITNESSED live on real APC Key25 hardware (originally assumed 87/88/89
+from an unverified “free note range” guess; real button presses, isolated one
+at a time and read from the live <code class="language-plaintext highlighter-rouge">[midi] note decoded</code> log, showed 67/68/69 —
+which also makes physical sense: they sit immediately before notes 70/71
+(the varispeed scrub buttons), i.e. these ARE “positions 4/5/6 of the row,
+left of the two varispeed controls” exactly as originally specified).</li>
+  <li>Tap-to-select, radio-button style — no cycling, no hold-preview. Pressing one
+makes it the <code class="language-plaintext highlighter-rouge">activeBank()</code> immediately (<code class="language-plaintext highlighter-rouge">ApcGrid::onDubFxPress</code>/
+<code class="language-plaintext highlighter-rouge">onLofiFxPress</code>/<code class="language-plaintext highlighter-rouge">onGuitarFxPress</code>) and re-pushes every one of that bank’s 7
+stored knob values into the shared Faust zones right away
+(<code class="language-plaintext highlighter-rouge">pushBankValuesToZones</code>) — otherwise switching banks would leave the audible
+effect showing the PREVIOUS bank’s values until every knob was retouched,
+which reads as the switch silently failing.</li>
+  <li>Selecting a bank starts a <code class="language-plaintext highlighter-rouge">bankFlashActive()</code> window (150ms, <code class="language-plaintext highlighter-rouge">kBankFlashMs</code>),
+cleared by <code class="language-plaintext highlighter-rouge">pollHolds</code> — a <strong>transient</strong> LED flash on selection, not a
+persistent “which bank is active” indicator.</li>
+  <li>CC48/49/50/51/54/55/57 (the 7 physical fx knobs) are intercepted directly in
+<code class="language-plaintext highlighter-rouge">midi.cpp</code>, ahead of the flat <code class="language-plaintext highlighter-rouge">config/controls.conf</code> map — that flat map no
+longer binds any of these 7 targets at all (see its own comment block: a flat
+binding here would race <code class="language-plaintext highlighter-rouge">ApcGrid</code>’s bank-aware write with no defined winner).
+<code class="language-plaintext highlighter-rouge">ApcGrid::onFxKnobCC</code> writes the normalized <code class="language-plaintext highlighter-rouge">data2/127</code> value into the
+<strong>currently active bank’s own stored slot</strong> for that knob position, AND into
+the shared Faust zone, so turning a knob still has the usual instant effect.</li>
+</ul>
+
+<h3 id="per-bank-independent-knob-storage">Per-bank independent knob storage</h3>
+<p>Each bank stores its own value per physical knob position — switching banks
+changes what the 7 knobs currently mean/show without touching any other bank’s
+stored values (<code class="language-plaintext highlighter-rouge">m_fxBankValues[bank][knob]</code>, seeded in <code class="language-plaintext highlighter-rouge">ApcGrid::bindAll</code>).</p>
+
+<p><strong>REDESIGN (Core-3 move, superseding an earlier in-Faust 3-bank crossfade
+design — see “Guitar/LofiFx bank DSP wiring” below for why that was
+abandoned):</strong> each bank’s 7 knob positions now have their OWN permanent
+target (<code class="language-plaintext highlighter-rouge">FxKnobTarget</code>/<code class="language-plaintext highlighter-rouge">kDubTargets</code>/<code class="language-plaintext highlighter-rouge">kGuitarTargets</code>/<code class="language-plaintext highlighter-rouge">kLofiFxTargets</code> in
+apc_grid.cpp) — Dub’s targets are unchanged Core-1 Faust zones; Guitar/LofiFx
+targets are either an <code class="language-plaintext highlighter-rouge">fx2/*</code> LV2 control port on the new permanent Core-3
+<code class="language-plaintext highlighter-rouge">guitar_lofi_fx.dsp</code> bundle, or (for attack/release/granulator) a native
+<code class="language-plaintext highlighter-rouge">Sampler</code> setter call. All 3 banks’ targets are simultaneously, permanently
+live — switching banks is now a pure UI/state change (which bank’s stored
+values the physical knobs currently show/edit), never a DSP-routing change:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>CC</th>
+      <th>Dub target</th>
+      <th>Guitar target</th>
+      <th>LofiFx target</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>48</td>
+      <td><code class="language-plaintext highlighter-rouge">fx/reverb</code> (Faust)</td>
+      <td><code class="language-plaintext highlighter-rouge">fx2/FLANGEAMT</code> (LV2)</td>
+      <td><code class="language-plaintext highlighter-rouge">fx2/BITCRUSHAMT</code> (LV2)</td>
+    </tr>
+    <tr>
+      <td>49</td>
+      <td><code class="language-plaintext highlighter-rouge">fx/delay</code> (Faust)</td>
+      <td><code class="language-plaintext highlighter-rouge">fx2/TREMOLOAMT</code> (LV2)</td>
+      <td>grain size ms (Sampler)</td>
+    </tr>
+    <tr>
+      <td>50</td>
+      <td><code class="language-plaintext highlighter-rouge">fx/time</code> (Faust)</td>
+      <td><code class="language-plaintext highlighter-rouge">fx2/BANKSPEED</code> (LV2)</td>
+      <td>grain density Hz (Sampler)</td>
+    </tr>
+    <tr>
+      <td>51</td>
+      <td><code class="language-plaintext highlighter-rouge">fx/hp</code> (Faust)</td>
+      <td><code class="language-plaintext highlighter-rouge">fx2/PHASERAMT</code> (LV2)</td>
+      <td>scan rate (Sampler)</td>
+    </tr>
+    <tr>
+      <td>54</td>
+      <td><code class="language-plaintext highlighter-rouge">fx/lpres</code> (Faust)</td>
+      <td>attack ms (Sampler)</td>
+      <td>pitch-spray cents (Sampler)</td>
+    </tr>
+    <tr>
+      <td>55</td>
+      <td><code class="language-plaintext highlighter-rouge">fx/lp</code> (Faust)</td>
+      <td>release ms (Sampler)</td>
+      <td>position-jitter ms (Sampler)</td>
+    </tr>
+    <tr>
+      <td>57</td>
+      <td><code class="language-plaintext highlighter-rouge">fx/pitch</code> (Faust)</td>
+      <td><code class="language-plaintext highlighter-rouge">fx2/COMPRESSAMT</code> (LV2)</td>
+      <td>reverse-grain probability (Sampler)</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>(CC53/formant is handled separately by <code class="language-plaintext highlighter-rouge">onFormantCC</code>, unaffected by bank
+switching — same as before this feature.)</p>
+
+<p><strong>“Super music granulator” rework (LOFI feature, superseding the earlier
+3-knob granulator above):</strong> LofiFx keeps <code class="language-plaintext highlighter-rouge">BITCRUSHAMT</code> as its one surviving
+lofi audio-effect knob (explicit user decision: “keep the bitcrusher”) and
+hands every other knob position to the granulator — all 6 of its
+meaningful runtime parameters are now directly controllable (grain size,
+grain density, scan rate, pitch spray, position jitter, and a new
+reverse-grain probability control), instead of the previous 3 (grain
+size/density/scan rate only, with pitch-spray/position-jitter fixed at
+their passthrough defaults and no reverse-probability control existing at
+all). <code class="language-plaintext highlighter-rouge">VINYLAMT</code>/<code class="language-plaintext highlighter-rouge">FLUTTERAMT</code>/<code class="language-plaintext highlighter-rouge">SRRAMT</code> are dropped from the bank’s own
+control surface — <code class="language-plaintext highlighter-rouge">guitar_lofi_fx.dsp</code>’s Faust zones for them still exist
+and default to their own passthrough values, so the DSP stages themselves
+are unaffected, only the physical knob no longer reaches them.</p>
+
+<p><code class="language-plaintext highlighter-rouge">Sampler::setReverseProbability(float)</code> (new): per-grain probability
+[0,1] of spawning in reverse (negative playback rate, tail-to-head
+instead of head-to-tail) — a reversed grain keeps the exact same
+raised-cosine window and lifespan as a forward one, so reversal is purely
+a read-direction flip, orthogonal to grain size/rate/scan.</p>
+
+<p><strong>Un-granulating: SHIFT + lofi-fx toggles the granulator on/off.</strong> Every
+granulator knob’s <code class="language-plaintext highlighter-rouge">applySamplerFxKnob</code> case unconditionally calls
+<code class="language-plaintext highlighter-rouge">setGranulatorEnabled(true)</code> (turning any knob on the bank engages
+granulation), but nothing ever called <code class="language-plaintext highlighter-rouge">setGranulatorEnabled(false)</code> –
+once touched, there was no way back to a plain (non-granulated) sample
+without a full service restart. Fixed: holding SHIFT (<code class="language-plaintext highlighter-rouge">fx/monitorfold</code>)
+while pressing lofi-fx toggles <code class="language-plaintext highlighter-rouge">granulatorEnabled()</code> instead of selecting
+the bank (a plain tap, SHIFT not held, still selects the bank exactly as
+before) — mirrors guitar-fx’s own dual-gesture precedent (tap = normal
+action, modifier-held = alternate action) rather than inventing a new
+gesture shape.</p>
+
+<h3 id="guitar-fxs-dual-gesture">guitar-fx’s dual gesture</h3>
+<p>guitar-fx is the one bank button with a second, independent gesture layered on
+top of plain tap-to-select:</p>
+<ul>
+  <li><strong>Plain tap</strong> (press+release, no looper pad pressed in between) selects the
+Guitar bank exactly like dub-fx/lofi-fx. The bank-select actually fires on
+PRESS (not release) — same shape as the main pad grid’s ARM/FINISH, which
+also commits on press while a separate flag suppresses only the matching
+release.</li>
+  <li><strong>Hold guitar-fx + press a looper pad</strong> instead toggles that looper’s
+sidechain-pump SOURCE designation (<code class="language-plaintext highlighter-rouge">ApcGrid::onSidechainLooperToggle</code>) — the
+press is redirected entirely away from the normal ARM/FINISH pad dispatch
+(never touches <code class="language-plaintext highlighter-rouge">m_looperHeld</code>/hold-erase timing at all). Toggle, not set:
+press again while still held to remove it. <strong>Multiple loopers can be
+sidechain sources simultaneously.</strong> The designation persists after guitar-fx
+is released (not cleared on release), and auto-clears if that looper is
+erased (per-looper hold-erase) or a clear-all fires (<code class="language-plaintext highlighter-rouge">cmd/clearall</code>) — both
+paths confirmed by reading <code class="language-plaintext highlighter-rouge">apc_grid.cpp</code> (the erase and clear-all branches
+each explicitly reset <code class="language-plaintext highlighter-rouge">m_looperIsSidechainSource</code>).</li>
+  <li><code class="language-plaintext highlighter-rouge">looperIsSidechainSource(int)</code> is the read accessor. The ducking/pump signal
+itself IS now wired at the DSP level (see “Sidechain-pump DSP routing”
+below) — a designated source looper’s own level telemetry drives a shared
+ducking envelope applied to every OTHER looper’s output.</li>
+</ul>
+
+<h3 id="guitarlofifx-bank-dsp-wiring--landed-core-3-redesign">Guitar/LofiFx bank DSP wiring — LANDED (Core-3 redesign)</h3>
+<p><strong>Superseded design, kept here for history:</strong> an earlier iteration of this
+feature made <code class="language-plaintext highlighter-rouge">dsp/effects_runtime.dsp</code> compute all 3 banks’ effect chains
+every block and blend them via an 8th <code class="language-plaintext highlighter-rouge">fx/bank</code> Faust zone (a continuous
+<code class="language-plaintext highlighter-rouge">si.smoo</code>-smoothed triangular crossfade). <strong>WITNESSED live on a real Pi 4:</strong>
+Faust has no runtime branching — <code class="language-plaintext highlighter-rouge">select2</code>/crossfade math chooses among
+ALREADY-COMPUTED signals, it never skips computing the other banks — so this
+design computed guitar+lofi-fx’s 8 effects on Core 1 continuously regardless
+of which bank was “selected,” a real ~7 percentage-point <code class="language-plaintext highlighter-rouge">core_busy</code>
+regression (23%→30%) that caused audible continuous audio dropouts. Confirmed
+via a real CI-built pre-feature baseline (zero xruns) vs the crossfade build
+(continuous dropouts), and via a second isolated A/B test reverting only that
+file.</p>
+
+<p><strong>Current, landed design:</strong> <code class="language-plaintext highlighter-rouge">dsp/effects_runtime.dsp</code> is restored to its
+pre-feature dub-only chain (<code class="language-plaintext highlighter-rouge">pitchStage : delayStage : reverbStage :
+microStage &lt;: (filterStage, _)</code>) — Core 1’s cost is back to its original
+budget. Guitar+lofi-fx’s 8 effects moved to their own standalone Faust
+program, <code class="language-plaintext highlighter-rouge">effects/home/faust/guitar_lofi_fx.dsp</code>, compiled by CI
+(<code class="language-plaintext highlighter-rouge">.github/workflows/build-lv2.yml</code>’s <code class="language-plaintext highlighter-rouge">guitar-lofi-fx-lv2</code> job) into its own
+LV2 bundle under <code class="language-plaintext highlighter-rouge">/effects/home</code>, and hosted in-process on Core 3 (previously
+fully idle) via a SECOND, PERMANENT <code class="language-plaintext highlighter-rouge">Lv2Host</code> instance (<code class="language-plaintext highlighter-rouge">audio_thread.cpp</code>’s
+<code class="language-plaintext highlighter-rouge">homeFx</code>, distinct from the existing swappable <code class="language-plaintext highlighter-rouge">userFx</code>) — running in series
+after Core 1’s full dub-chain output, every block, unconditionally:
+<code class="language-plaintext highlighter-rouge">homeFx.process(fout.data(), N); userFx.process(fout.data(), N);</code>. Per the
+confirmed design, this is a genuinely free capacity win, not a
+redistribution: all 3 banks’ effects are now simultaneously, permanently
+active (never gated by bank selection), matching “Both guitar and lofi-fx
+always stack together with dub.”</p>
+
+<ul>
+  <li><code class="language-plaintext highlighter-rouge">guitar_lofi_fx.dsp</code>’s chain: <code class="language-plaintext highlighter-rouge">flanger -&gt; tremolo -&gt; phaser -&gt; compressor -&gt;
+bitcrush -&gt; vinyl -&gt; flutter -&gt; samplerate</code>, each stage reading its own
+permanent <code class="language-plaintext highlighter-rouge">fx2/*</code> zone directly (no shared-zone reinterpretation).</li>
+  <li><code class="language-plaintext highlighter-rouge">Lv2Host::setControl(symbol, value)</code> (new) pushes a live control value into
+every loaded plugin’s matching LV2 port by symbol — <code class="language-plaintext highlighter-rouge">ApcGrid::onFxKnobCC</code>
+calls this for every Guitar/LofiFx knob whose target is <code class="language-plaintext highlighter-rouge">FxKnobKind::
+Lv2Control</code> (see the per-bank target table above), the same way it calls
+<code class="language-plaintext highlighter-rouge">ParamStore::setByName</code> for Dub’s Faust zones.</li>
+  <li><code class="language-plaintext highlighter-rouge">effects/home/faust/compressor.dsp</code> (guitar bank’s “compress” control) is
+now wired to CC57/<code class="language-plaintext highlighter-rouge">fx2/COMPRESSAMT</code>, filling the 7th guitar-bank knob slot
+the earlier design left unassigned.</li>
+  <li>Verified via <code class="language-plaintext highlighter-rouge">dsp_cli</code>: <code class="language-plaintext highlighter-rouge">guitar_lofi_fx.dsp</code> compiles clean, exposes
+exactly the 9 expected <code class="language-plaintext highlighter-rouge">fx2/*</code> zones, byte-exact passthrough at all
+defaults, and audibly engages when driven (flange+bitcrush test case).
+CI-built and confirmed green (<code class="language-plaintext highlighter-rouge">guitar-lofi-fx-lv2</code> artifact uploads
+alongside the existing <code class="language-plaintext highlighter-rouge">home-fx-lv2</code> job).</li>
+</ul>
+
+<h3 id="sidechain-pump-dsp-routing--landed">Sidechain-pump DSP routing — LANDED</h3>
+<p><code class="language-plaintext highlighter-rouge">dsp/loop.dsp</code>’s <code class="language-plaintext highlighter-rouge">oneLooper</code> gained a 7th <code class="language-plaintext highlighter-rouge">process()</code>-level signal input,
+<code class="language-plaintext highlighter-rouge">sidechainEnv</code> — broadcast identically to all 20 loopers via the same
+par()-duplication-avoidance technique as <code class="language-plaintext highlighter-rouge">masterPhase</code>/<code class="language-plaintext highlighter-rouge">masterLen</code>/
+<code class="language-plaintext highlighter-rouge">effSpeed</code>/<code class="language-plaintext highlighter-rouge">clearAll</code> (confirmed safe scaling from 6 to 7 signal inputs via a
+standalone Faust repro this session, no zone duplication, correct per-
+instance broadcast) — plus a per-looper <code class="language-plaintext highlighter-rouge">sidechainsrc</code> checkbox (safe as a
+per-instance UI control, unlike the shared broadcast signal). <code class="language-plaintext highlighter-rouge">audio_thread.cpp</code>
+computes <code class="language-plaintext highlighter-rouge">sidechainEnv</code> each block as the max/peak of every currently-
+source-designated looper’s own <code class="language-plaintext highlighter-rouge">level</code> telemetry (one-block-lag, same
+staleness class already accepted for <code class="language-plaintext highlighter-rouge">prevFiltIn</code>/<code class="language-plaintext highlighter-rouge">prevLoopSum</code>’s own
+one-block-lag folds). Ducking: <code class="language-plaintext highlighter-rouge">out = loopSig * playN * volN * duckGain</code>,
+where <code class="language-plaintext highlighter-rouge">duckGain = 1.0 - sidechainEnv*(1.0-isSourceN)</code> — a source looper’s own
+<code class="language-plaintext highlighter-rouge">isSourceN</code> gates the duck factor back to 1 so it is never ducked by its own
+signal. Verified via a standalone Faust repro isolating the exact formula: a
+non-source looper’s RMS dropped under a full-envelope step while a source
+looper’s RMS stayed byte-identical to its unducked value under the identical
+step.</p>
+
+<h2 id="link--transport">Link / transport</h2>
+<p>Ableton Link tempo/phase drives the loop grid; loop record start quantizes to the
+Link phase; the first loop can propose the tempo to the session (ported logic).</p>
+
+<p>Every one of these behaviors is the <em>ported looper logic</em> — same code, same
+result. The mapping table above is the same one dubfx verified against the real
+control plane (param_mapping.md).</p>
+
+
+      </section>
+      <footer>
+        
+        <p>This project is maintained by <a href="https://github.com/AnEntrypoint">AnEntrypoint</a></p>
+        
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="/aloop/assets/js/scale.fix.js"></script>
+  </body>
+</html>

@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>aloop architecture | aloop</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="aloop architecture" />
+<meta property="og:locale" content="en_US" />
+<link rel="canonical" href="https://anentrypoint.github.io/aloop/ARCHITECTURE.html" />
+<meta property="og:url" content="https://anentrypoint.github.io/aloop/ARCHITECTURE.html" />
+<meta property="og:site_name" content="aloop" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="aloop architecture" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","headline":"aloop architecture","url":"https://anentrypoint.github.io/aloop/ARCHITECTURE.html"}</script>
+<!-- End Jekyll SEO tag -->
+
+    <link rel="stylesheet" href="/aloop/assets/css/style.css?v=2e279a87748b76ad7c5e7c1d866d8982985bdcef">
+    <!--[if lt IE 9]>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
+    <![endif]-->
+    <!-- start custom head snippets, customize with your own _includes/head-custom.html file -->
+
+<!-- Setup Google Analytics -->
+
+
+
+<!-- You can set your favicon here -->
+<!-- link rel="shortcut icon" type="image/x-icon" href="/aloop/favicon.ico" -->
+
+<!-- end custom head snippets -->
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a href="https://anentrypoint.github.io/aloop/">aloop</a></h1>
+
+        
+
+        <p></p>
+
+        
+        <p class="view"><a href="https://github.com/AnEntrypoint/aloop">View the Project on GitHub <small>AnEntrypoint/aloop</small></a></p>
+        
+
+        
+
+        
+      </header>
+      <section>
+
+      <h1 id="aloop-architecture">aloop architecture</h1>
+
+<p>This document explains <strong>how aloop is structured and why</strong> — every design choice
+here traces to a witnessed finding in <a href="/aloop/FEASIBILITY.html"><code class="language-plaintext highlighter-rouge">FEASIBILITY.md</code></a>. Read
+that first if you want the raw evidence; this is the distilled architecture.</p>
+
+<h2 id="design-principle-keep-the-good-bare-metal-ideas-delete-the-hand-rolled-ones">Design principle: keep the good bare-metal ideas, delete the hand-rolled ones</h2>
+
+<p>The bare-metal looper got the <em>hard</em> things right — a lock-free 4-core audio
+architecture with no mutexes in the audio path — and got the <em>tedious</em> things
+wrong-then-painfully-fixed (a hand-rolled USB-audio decoder, a hand-rolled WiFi</p>
+<ul>
+  <li>DHCP + ARP + Ableton-Link wire stack). aloop <strong>keeps the architecture and
+deletes the reimplementations</strong>, replacing each with the tested kernel/userspace
+equivalent.</li>
+</ul>
+
+<h2 id="the-4-core-partition">The 4-core partition</h2>
+
+<p>The Pi 4 has four cores. aloop assigns them exactly as the bare-metal looper did
+(<code class="language-plaintext highlighter-rouge">multicore.cpp:10-34</code>), because that partition already works and already keeps
+the audio core clean:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Core</th>
+      <th>Role</th>
+      <th>Bare-metal origin</th>
+      <th>aloop mechanism</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>0</strong></td>
+      <td>USB audio I/O</td>
+      <td>USB completion ISR + dispatch</td>
+      <td>kernel <code class="language-plaintext highlighter-rouge">f_uac2</code> gadget IRQ + ALSA</td>
+    </tr>
+    <tr>
+      <td><strong>1</strong></td>
+      <td><strong>home-FX DSP</strong></td>
+      <td>audio DSP worker (<code class="language-plaintext highlighter-rouge">AudioSystem::doUpdate</code>)</td>
+      <td>RT thread, <code class="language-plaintext highlighter-rouge">SCHED_FIFO</code>, pinned</td>
+    </tr>
+    <tr>
+      <td><strong>3</strong></td>
+      <td><strong>user-FX DSP</strong></td>
+      <td><em>idle / reserved</em></td>
+      <td>RT thread, <code class="language-plaintext highlighter-rouge">SCHED_FIFO</code>, pinned — <strong>now used</strong></td>
+    </tr>
+    <tr>
+      <td><strong>2</strong></td>
+      <td>control</td>
+      <td>net / MIDI / Link / WiFi</td>
+      <td>Ableton Link lib, <code class="language-plaintext highlighter-rouge">hostapd</code>/<code class="language-plaintext highlighter-rouge">wpa_supplicant</code>, ALSA MIDI, telemetry</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The single new thing: <strong>Core 3, which sat idle on bare metal, now runs the
+user’s swappable effect.</strong> That’s where the “add your own effect on the free
+core” goal lands.</p>
+
+<h3 id="why-networkwifi-lives-on-core-2-not-the-audio-cores">Why network/WiFi lives on Core 2, not the audio cores</h3>
+
+<p>Ableton Link and WiFi generate interrupts and CPU load. If they landed on the
+audio core they would blow the 1.333 ms per-block deadline and cause audible
+xruns. By pinning all network work to Core 2 and using <code class="language-plaintext highlighter-rouge">isolcpus</code> +
+<code class="language-plaintext highlighter-rouge">/proc/irq/*/smp_affinity</code> to steer WiFi/network IRQs <em>off</em> the audio cores, the
+audio cores meet their deadline regardless of network activity. (This is
+achievable on Pi 4; see the Pi-5 caveat in <code class="language-plaintext highlighter-rouge">FEASIBILITY.md</code>.)</p>
+
+<h2 id="the-audio-path-faust-lock-free-allocation-free">The audio path: Faust, lock-free, allocation-free</h2>
+
+<p>The audio DSP — the loop engine (<code class="language-plaintext highlighter-rouge">dsp/loop.dsp</code>) and the effects (the dubfx Faust
+chain) — is <strong>Faust</strong>, composed into one home-FX program (<code class="language-plaintext highlighter-rouge">dsp/aloop.dsp</code>) that
+Faust compiles to allocation-free C++. It contains no Circle/looper source; it
+reproduces the looper’s behavior natively. (The paragraph below describes the
+lock-free control→audio handoff that the Faust program’s param inputs use.)</p>
+
+<p>The former note about a ported C++ DSP core no longer applies —
+<strong>no dependency on Circle</strong> and does <strong>no allocation, locking, or syscalls in the
+audio callback</strong>. That’s why it ports to Linux unchanged: it drops onto a Linux
+<code class="language-plaintext highlighter-rouge">SCHED_FIFO</code> audio thread exactly as it sat on a bare-metal core. The dubfx
+project already proved the effects compile standalone and produce
+sample-identical output.</p>
+
+<p>Control parameters (Link tempo/phase, MIDI knob values) reach the audio thread
+through the same <strong>double-buffered atomic snapshot</strong> the looper used
+(<code class="language-plaintext highlighter-rouge">paramSnapshot.h</code>): a single writer on the control core fills an inactive buffer
+and flips an index; the audio thread reads the active buffer. No locks, no
+tearing, no priority inversion. On Linux the cross-core wakeup primitive changes
+from bare-metal <code class="language-plaintext highlighter-rouge">SEV</code>/<code class="language-plaintext highlighter-rouge">WFE</code> to a <code class="language-plaintext highlighter-rouge">futex</code>/<code class="language-plaintext highlighter-rouge">eventfd</code>, but the lock-free discipline
+is identical.</p>
+
+<h2 id="effects-topology-faust-home-stack-in-binary--dynamic-user-lv2s-in-process">Effects topology: Faust home stack in-binary + dynamic user LV2s in-process</h2>
+
+<p>This is the load-bearing decision, and it exists to satisfy two goals at once —
+<strong>hot-swappable effects</strong> <em>and</em> <strong>zero added latency</strong>.</p>
+
+<h3 id="home-effects--the-faust-home-stack-compiled-into-the-binary">Home effects = the Faust home stack, compiled INTO the binary</h3>
+
+<p>The home-FX chain is the Faust program <code class="language-plaintext highlighter-rouge">dsp/aloop.dsp</code> (<code class="language-plaintext highlighter-rouge">loop : effects_runtime</code> —
+the loop engine composed with the dubfx effect chain). It is compiled to C++ and
+linked into the <code class="language-plaintext highlighter-rouge">aloop</code> binary; the audio thread runs it directly as <code class="language-plaintext highlighter-rouge">faustHome</code>
+each block (Core 1). It is <strong>not</strong> dynamically loaded — there is no home LV2 to
+find at boot, so there is nothing to name-mismatch.</p>
+<ul>
+  <li><code class="language-plaintext highlighter-rouge">faust2lv2</code> also packages that <em>same</em> home stack as an <code class="language-plaintext highlighter-rouge">aloop.lv2</code> bundle
+(<code class="language-plaintext highlighter-rouge">build-lv2</code>) — that bundle is the alternative, drop-into-another-host packaging
+and the A/B artifact, <strong>not</strong> what the aloop binary loads.</li>
+</ul>
+
+<h3 id="user-effects--dynamic-lv2-hosted-in-process">User effects = dynamic LV2, hosted in-process</h3>
+
+<p>A user drops their own <code class="language-plaintext highlighter-rouge">.lv2</code> bundle into <code class="language-plaintext highlighter-rouge">user_dir</code> (<code class="language-plaintext highlighter-rouge">/effects/user</code>) on flash and
+the audio thread’s in-process host loads it <strong>by directory</strong> (any <code class="language-plaintext highlighter-rouge">*.lv2</code> present)
+onto the free core (Core 3) — no recompile, no firmware flash. This is the
+moddability the whole project is for. LV2 gives the standard plugin ABI
+(<code class="language-plaintext highlighter-rouge">instantiate</code> / <code class="language-plaintext highlighter-rouge">connect_port</code> / <code class="language-plaintext highlighter-rouge">run</code>) + <code class="language-plaintext highlighter-rouge">.ttl</code> metadata. The effect dirs come
+from <code class="language-plaintext highlighter-rouge">aloop.conf [effects]</code> (<code class="language-plaintext highlighter-rouge">home_dir</code> / <code class="language-plaintext highlighter-rouge">user_dir</code>), never hardcoded.</p>
+
+<h3 id="why-in-process-and-never-a-jackpipewire-graph">Why <em>in-process</em>, and never a JACK/PipeWire graph</h3>
+
+<p>The obvious way to run two plugins on two cores is a graph host (JACK2/PipeWire
+run each client on its own core). <strong>aloop deliberately does not do this.</strong> A
+graph host schedules clients across period boundaries, which adds <strong>one full
+audio period (1.333 ms) of latency per hop</strong>. That violates the no-added-latency
+goal.</p>
+
+<p>Instead, aloop <code class="language-plaintext highlighter-rouge">dlopen</code>s the LV2 bundles and calls their <code class="language-plaintext highlighter-rouge">run()</code> <strong>directly
+inside its own audio callback</strong>. The witnessed latency arithmetic
+(<code class="language-plaintext highlighter-rouge">FEASIBILITY.md</code>, Requirement 3) shows why this is enough:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Topology</th>
+      <th style="text-align: center">Parallel across cores?</th>
+      <th style="text-align: center">Added latency</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Serial chain, in-process, one core</td>
+      <td style="text-align: center">✗</td>
+      <td style="text-align: center"><strong>0 ms</strong></td>
+    </tr>
+    <tr>
+      <td>Parallel FX, fork-join across two cores</td>
+      <td style="text-align: center">✓</td>
+      <td style="text-align: center"><strong>0 ms</strong></td>
+    </tr>
+    <tr>
+      <td>JACK/PipeWire graph</td>
+      <td style="text-align: center">✓</td>
+      <td style="text-align: center"><strong>+1 period</strong></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The home + user chain (~0.9 ms of work) <strong>fits inside one 1.333 ms block on a
+single core</strong>, so the default is to run it serial in-process — zero added
+latency, no cross-core coordination needed. Cross-core fork-join (Core 1 + Core
+3 joined within the same block, ~0.51 ms wall) is available for genuinely
+<em>parallel</em> effects or if the chain ever becomes CPU-bound. <strong>A graph host is
+never used.</strong></p>
+
+<h3 id="user-plugin-crash-isolation">User-plugin crash isolation</h3>
+
+<p>A user’s LV2 is untrusted code running in the audio process. In-process hosting
+means a segfaulting plugin could take down audio — so the host installs a
+<code class="language-plaintext highlighter-rouge">SIGSEGV</code> handler + watchdog that <strong>disables a misbehaving plugin and continues
+with the home chain</strong>, degraded rather than dead. (True process isolation would
+require a graph and its latency; that tradeoff is documented in <code class="language-plaintext highlighter-rouge">DECISIONS.md</code>.)</p>
+
+<h2 id="the-home-stack-has-grown-into-a-real-instrument-not-just-loopeffects">The home stack has grown into a real instrument, not just loop+effects</h2>
+
+<p>Everything below runs inside the same always-on Faust program on Core 1,
+alongside the original loop engine and effects chain — Faust has no runtime
+branching, so every stage below is computed every block whether or not it is
+currently engaged (see <code class="language-plaintext highlighter-rouge">AGENTS.md</code>’s “Faust has no runtime branching” entry);
+this is the accepted cost model here, not a regression to fix.</p>
+
+<ul>
+  <li><strong>6-voice polyphonic pitch-lock</strong> (<code class="language-plaintext highlighter-rouge">effects/home/faust/multitranspose.dsp</code>) —
+a pitch tracker plus 6 crossfaded-delay-line shifter voices, each gated by a
+held key. Locked output <em>replaces</em> the dry signal via a dedicated gate, it
+never layers over it.</li>
+  <li><strong>Resonode</strong> (<code class="language-plaintext highlighter-rouge">effects/home/faust/resonode_synth.dsp</code>) — a 4-voice, 6-mode-
+per-voice modal resonator synth excited by the live input signal, with
+velocity-scaled exciter gain, alias-guarded higher modes (a mode above
+Nyquist fades to silence rather than folding back into an unrelated
+frequency), and click-free voice stealing (a stolen voice gets a synthetic
+one-sample gate dip to re-trigger its envelopes, plus a frequency-glide to
+avoid a biquad-coefficient discontinuity).</li>
+  <li><strong>The granulator</strong> lives in <code class="language-plaintext highlighter-rouge">Sampler</code> (C++, not Faust — it needs dynamic
+grain scheduling that doesn’t fit Faust’s static dataflow model), sharing the
+same post-fx capture tap as loop recording.</li>
+</ul>
+
+<p>These are genuinely <em>new</em> instrument capabilities, not ports of anything the
+original bare-metal looper had — see <code class="language-plaintext highlighter-rouge">docs/MIGRATION-MAP.md</code> for which parts of
+this codebase are Circle ports versus net-new.</p>
+
+<h2 id="ableton-link-the-official-library-rt-safe-by-the-same-pattern">Ableton Link: the official library, RT-safe by the same pattern</h2>
+
+<p>The bare-metal looper reimplemented the Link wire protocol from scratch because
+it had no IP stack. Linux has one, so aloop uses the <strong>official Ableton Link
+library</strong> over ordinary UDP multicast. Link’s design already matches the
+looper’s: its network thread runs on the control core; the audio thread reads
+the session state through the RT-safe <code class="language-plaintext highlighter-rouge">captureAudioSessionState</code> /
+snapshot boundary. WiFi jitter therefore degrades Link <em>sync accuracy</em>, never the
+audio deadline.</p>
+
+<h2 id="wifi-sta-when-theres-a-network-ap-when-there-isnt-autoap">WiFi: STA when there’s a network, AP when there isn’t (autoAP)</h2>
+
+<p>The Pi tries to join a known network (station mode); if none is available it
+hosts its own access point so peer devices can still discover it for Link. This
+is <em>mode-switching</em>, not simultaneous AP+STA (which is flaky on a single Pi
+radio). <code class="language-plaintext highlighter-rouge">wpa_supplicant</code> + <code class="language-plaintext highlighter-rouge">hostapd</code> + <code class="language-plaintext highlighter-rouge">dnsmasq</code> under OpenRC, with a switch
+service — the exact behavior the looper hand-rolled, now on the tested stack.
+The AP passes multicast between clients (<code class="language-plaintext highlighter-rouge">ap_isolate=0</code>) so Link works over it.</p>
+
+<h2 id="mesh-networking-aloop--esp-idf-link-form-one-ad-hoc-link-mesh">Mesh networking: aloop + esp-idf-link form one ad-hoc Link mesh</h2>
+
+<p>Ableton Link’s peer discovery is UDP multicast, so every device that should
+share tempo/transport needs to be on the same L2 network. aloop pairs with a
+sibling ESP32-based project (<code class="language-plaintext highlighter-rouge">../esp-idf-link</code>, the “ticker” box) to form
+<strong>one ad-hoc, single-AP mesh</strong> with no credential provisioning: exactly one
+device hosts an open SSID (<code class="language-plaintext highlighter-rouge">ticker</code>), and everyone else joins as a station.</p>
+
+<ul>
+  <li><strong>Host election is MAC-ordered</strong>, not “host if nothing was found” — both
+projects hold for a duration monotonic in their own MAC address (lowest
+MAC ≈ 0s, highest ≈ 6s) before deciding to host, rescanning every second and
+joining the instant a peer’s AP appears. This avoids the failure mode where
+two devices cold-booting together each scan before the other’s AP exists and
+both end up hosting, splitting into two isolated L2 domains Link can never
+cross.</li>
+  <li>Every AP/channel/Link-quantum/start-stop-sync value is a <strong>paired invariant</strong>
+between the two codebases — changing one without the other silently breaks
+meshing with no error on either side. <code class="language-plaintext highlighter-rouge">AGENTS.md</code>’s Mesh Networking section
+carries the authoritative paired-invariant table.</li>
+  <li>Link’s own tempo-authority rule (a peer joining must never hijack the
+session’s tempo) is audited against Ableton’s own 12-case Link Test Plan,
+not just informally — see <code class="language-plaintext highlighter-rouge">AGENTS.md</code>’s “Ableton’s Link Test Plan” entry.</li>
+</ul>
+
+<p>Whether Link’s multicast crosses the Pi’s own AP to its stations on the
+Broadcom WiFi chip (<code class="language-plaintext highlighter-rouge">ap_isolate=0</code> may or may not be sufficient alone) is
+currently <strong>unverified on real hardware</strong> — see <code class="language-plaintext highlighter-rouge">docs/LINK-MESH-TESTING.md</code>.</p>
+
+<h2 id="usb-audio-the-kernel-f_uac2-gadget">USB audio: the kernel <code class="language-plaintext highlighter-rouge">f_uac2</code> gadget</h2>
+
+<p>The Pi presents itself <em>as</em> a USB audio device (a UAC2 gadget) so a host computer
+sees it as a soundcard. The bare-metal looper hand-wrote this, and every
+buzz/crackle bug in its history came from that code. aloop uses the Linux
+<strong><code class="language-plaintext highlighter-rouge">f_uac2</code> configfs gadget</strong> on the <code class="language-plaintext highlighter-rouge">dwc2</code> controller — the kernel lays out the
+isochronous USB packets correctly by construction, deleting that entire class of
+bug. This is the hardest single port, but it removes the most maintenance.</p>
+
+<h2 id="boot-to-appliance">Boot to appliance</h2>
+
+<p>Alpine boots <strong>diskless from RAM</strong> with a read-only root and only the services
+aloop needs (the audio binary, <code class="language-plaintext highlighter-rouge">hostapd</code>/<code class="language-plaintext highlighter-rouge">wpa_supplicant</code>, RT tuning). No
+desktop, no background daemons stealing cycles — near-bare-metal determinism.
+The full startup order is in <a href="/aloop/BOOT.html"><code class="language-plaintext highlighter-rouge">BOOT.md</code></a>.</p>
+
+
+      </section>
+      <footer>
+        
+        <p>This project is maintained by <a href="https://github.com/AnEntrypoint">AnEntrypoint</a></p>
+        
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="/aloop/assets/js/scale.fix.js"></script>
+  </body>
+</html>

@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>aloop &lt;-&gt; esp-idf-link mesh: first-contact test plan | aloop</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="aloop &lt;-&gt; esp-idf-link mesh: first-contact test plan" />
+<meta property="og:locale" content="en_US" />
+<link rel="canonical" href="https://anentrypoint.github.io/aloop/LINK-MESH-TESTING.html" />
+<meta property="og:url" content="https://anentrypoint.github.io/aloop/LINK-MESH-TESTING.html" />
+<meta property="og:site_name" content="aloop" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="aloop &lt;-&gt; esp-idf-link mesh: first-contact test plan" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","headline":"aloop &lt;-&gt; esp-idf-link mesh: first-contact test plan","url":"https://anentrypoint.github.io/aloop/LINK-MESH-TESTING.html"}</script>
+<!-- End Jekyll SEO tag -->
+
+    <link rel="stylesheet" href="/aloop/assets/css/style.css?v=2e279a87748b76ad7c5e7c1d866d8982985bdcef">
+    <!--[if lt IE 9]>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
+    <![endif]-->
+    <!-- start custom head snippets, customize with your own _includes/head-custom.html file -->
+
+<!-- Setup Google Analytics -->
+
+
+
+<!-- You can set your favicon here -->
+<!-- link rel="shortcut icon" type="image/x-icon" href="/aloop/favicon.ico" -->
+
+<!-- end custom head snippets -->
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a href="https://anentrypoint.github.io/aloop/">aloop</a></h1>
+
+        
+
+        <p></p>
+
+        
+        <p class="view"><a href="https://github.com/AnEntrypoint/aloop">View the Project on GitHub <small>AnEntrypoint/aloop</small></a></p>
+        
+
+        
+
+        
+      </header>
+      <section>
+
+      <h1 id="aloop---esp-idf-link-mesh-first-contact-test-plan">aloop &lt;-&gt; esp-idf-link mesh: first-contact test plan</h1>
+
+<p><strong>Status: still not run on hardware — but the code-level blockers it
+assumed are now fixed.</strong> This is prep for the first-ever test of aloop
+(Pi 4, hardware looper) and esp-idf-link (ESP32) Link peers on the same
+network. Nothing below has been executed against real hardware yet — treat
+every “expect” as a hypothesis to falsify, not a known result.</p>
+
+<h2 id="update-the-two-projects-could-not-have-meshed-at-all-before">Update: the two projects could not have meshed at all before</h2>
+
+<p>A source-level pass found four independent defects that each alone made
+Test 1 impossible, so any earlier attempt would have failed for reasons
+having nothing to do with the multicast question this doc was written to
+answer. All four are fixed (see AGENTS.md “aloop &lt;-&gt; esp-idf-link mesh:
+paired invariants”):</p>
+
+<ol>
+  <li>aloop hosted SSID <code class="language-plaintext highlighter-rouge">aloop</code>; esp-idf-link hosts/joins <code class="language-plaintext highlighter-rouge">ticker</code>. Different
+networks. <strong>Now both use <code class="language-plaintext highlighter-rouge">ticker</code>.</strong></li>
+  <li>aloop’s <code class="language-plaintext highlighter-rouge">wpa_supplicant.conf</code> had zero active <code class="language-plaintext highlighter-rouge">network={}</code> blocks, so it
+could never join anything and always fell through to hosting. <strong>Now
+contains a real open <code class="language-plaintext highlighter-rouge">ticker</code> block.</strong></li>
+  <li><code class="language-plaintext highlighter-rouge">autoap.sh</code>’s AP-mode rescan matched a commented-out placeholder
+(<code class="language-plaintext highlighter-rouge">YourHomeWiFi</code>) because <code class="language-plaintext highlighter-rouge">grep</code> does not skip comments.</li>
+  <li>That same line used <code class="language-plaintext highlighter-rouge">grep -qFf &lt;(...)</code> — process substitution, a
+bashism, in a <code class="language-plaintext highlighter-rouge">#!/bin/sh</code> script that runs under busybox ash. Verified a
+POSIX shell rejects it: <code class="language-plaintext highlighter-rouge">Syntax error: "(" unexpected</code>. The AP→STA path
+was a hard syntax error on the device.</li>
+</ol>
+
+<p>aloop’s <code class="language-plaintext highlighter-rouge">autoap.sh</code> also gained the MAC-ordered election and self-healing
+supervisor this doc’s “If Test 3 fails” section specified, and
+<code class="language-plaintext highlighter-rouge">LinkBridge::start</code> now calls <code class="language-plaintext highlighter-rouge">enableStartStopSync(true)</code> to match
+esp-idf-link. Quantum (<code class="language-plaintext highlighter-rouge">16.0</code>), open auth, <code class="language-plaintext highlighter-rouge">192.168.4.1/24</code>, and channel 6
+were each verified already identical across the two projects.</p>
+
+<p>So Tests 1–3 below are now worth actually running: the remaining unknown is
+genuinely the multicast-forwarding question, not configuration drift.</p>
+
+<h2 id="why-this-doc-exists">Why this doc exists</h2>
+
+<p>aloop and esp-idf-link were built independently. Both vendor real Ableton
+Link and speak the identical wire protocol (verified: <code class="language-plaintext highlighter-rouge">Messages.hpp</code> is
+byte-identical between the two trees, and both use Link’s own hardcoded
+multicast group <code class="language-plaintext highlighter-rouge">224.76.78.75:20808</code> — this cannot drift, it’s baked into
+Link itself). Both implement standards-compliant tempo-write
+(<code class="language-plaintext highlighter-rouge">LinkBridge::proposeTempo</code> on aloop’s side, ordinary <code class="language-plaintext highlighter-rouge">setTempo</code>/
+<code class="language-plaintext highlighter-rouge">commitAppSessionState</code> on esp-idf-link’s side) — so <strong>two-way sync should
+work automatically once discovery completes</strong>, no protocol-level glue code
+needed between the two projects specifically.</p>
+
+<p>The real open question is <strong>discovery</strong>, not protocol compatibility:
+whichever device is a WiFi access point, does Link’s UDP multicast traffic
+actually reach a station connected to it?</p>
+
+<h2 id="what-we-already-know-and-whats-still-a-guess">What we already know, and what’s still a guess</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Claim</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Both projects vendor real Ableton Link, same wire protocol</td>
+      <td><strong>Confirmed</strong> (file diff)</td>
+    </tr>
+    <tr>
+      <td>Same multicast group/port</td>
+      <td><strong>Confirmed</strong> (Link’s own hardcoded constant)</td>
+    </tr>
+    <tr>
+      <td>aloop’s Pi 4 WiFi chip is Broadcom BCM4343-series (<code class="language-plaintext highlighter-rouge">brcmfmac</code> driver)</td>
+      <td><strong>Confirmed</strong> (docs/MIGRATION-MAP.md cites <code class="language-plaintext highlighter-rouge">CBcm4343Device</code> as the bare-metal reference this was ported from)</td>
+    </tr>
+    <tr>
+      <td>ESP32 SoftAP does not forward multicast between host and stations at all</td>
+      <td><strong>Confirmed for ESP32</strong> (esp-idf-link’s own <code class="language-plaintext highlighter-rouge">wifi_config.cpp</code> comments + its unicast-relay workaround exist because of this)</td>
+    </tr>
+    <tr>
+      <td>Broadcom <code class="language-plaintext highlighter-rouge">brcmfmac</code> AP-mode on Linux has the SAME structural gap (not just a client-isolation setting <code class="language-plaintext highlighter-rouge">ap_isolate=0</code> already addresses)</td>
+      <td><strong>UNKNOWN — this is what the live test below determines</strong></td>
+    </tr>
+    <tr>
+      <td>aloop’s <code class="language-plaintext highlighter-rouge">autoap.sh</code> avoids a two-devices-both-AP race the way esp-idf-link’s MAC-rank election does</td>
+      <td><strong>FIXED — it did not, and now does.</strong> The old script hosted purely on a STA-fail counter with no election. <code class="language-plaintext highlighter-rouge">autoap.sh</code> now ports esp-idf-link’s scheme: MAC-ordered hold (0–6s, same bound as its <code class="language-plaintext highlighter-rouge">HOLD_MAX_MS=6000</code>), rescan-and-join during the hold, and an AP-role yield to any strictly-lower BSSID (never while clients are attached). Hold monotonicity and the BSSID comparator were unit-verified by execution; live multi-device behaviour is still Test 3.</td>
+    </tr>
+    <tr>
+      <td>Both projects host the same SSID / auth / subnet / channel / Link quantum</td>
+      <td><strong>Confirmed by source comparison</strong> — <code class="language-plaintext highlighter-rouge">ticker</code>, open (<code class="language-plaintext highlighter-rouge">key_mgmt=NONE</code> vs empty-password join), <code class="language-plaintext highlighter-rouge">192.168.4.1/24</code>, ch6, quantum <code class="language-plaintext highlighter-rouge">16.0</code>. Tabulated in AGENTS.md as paired invariants.</td>
+    </tr>
+    <tr>
+      <td>Both projects enable Link start-stop-sync</td>
+      <td><strong>FIXED</strong> — esp-idf-link always did; aloop did not (<code class="language-plaintext highlighter-rouge">grep</code> found no <code class="language-plaintext highlighter-rouge">enableStartStopSync</code> in <code class="language-plaintext highlighter-rouge">src/</code>). Added to <code class="language-plaintext highlighter-rouge">LinkBridge::start</code>; compiled green on aarch64/musl CI.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="test-1-does-standard-link-discovery-complete-at-all-ap-role--aloop">Test 1: does standard Link discovery complete at all, AP role = aloop</h2>
+
+<ol>
+  <li>Power on one aloop unit with no existing WiFi network available, so
+<code class="language-plaintext highlighter-rouge">autoap.sh</code> falls through STA failures and hosts its own AP (<code class="language-plaintext highlighter-rouge">aloop</code>
+SSID, <code class="language-plaintext highlighter-rouge">192.168.4.1/24</code>, per <code class="language-plaintext highlighter-rouge">src/net/config/hostapd.conf</code>).</li>
+  <li>Power on one esp-idf-link ESP32, configured to join that <code class="language-plaintext highlighter-rouge">aloop</code> SSID as
+a station (NOT scanning for its own <code class="language-plaintext highlighter-rouge">"ticker"</code> SSID — you may need to
+temporarily point esp-idf-link’s STA join target at aloop’s AP SSID for
+this test, since its own auto-election logic assumes a different SSID
+name).</li>
+  <li>On the aloop side, check Link peer count. aloop’s telemetry surface
+(<code class="language-plaintext highlighter-rouge">docs/REMOTE-CONTROL.md</code> / the udp/4445 telemetry socket, see
+<code class="language-plaintext highlighter-rouge">src/control/telemetry.cpp</code>) should expose Link sync state
+(<code class="language-plaintext highlighter-rouge">AudioThread::Telemetry::linkSynced</code>, <code class="language-plaintext highlighter-rouge">bpm</code>) — poll it and confirm
+<code class="language-plaintext highlighter-rouge">linkSynced</code> flips true and <code class="language-plaintext highlighter-rouge">bpm</code> matches whatever the ESP32 is
+broadcasting.</li>
+  <li>On the ESP32 side, esp-idf-link’s own serial log (or its own Link peer
+count, if exposed — check <code class="language-plaintext highlighter-rouge">main/link_sync.cpp</code> for a log line printing
+<code class="language-plaintext highlighter-rouge">numPeers()</code>) should also show 1 peer.</li>
+  <li><strong>If both sides see each other: standard Link discovery works fine with
+aloop as AP.</strong> No relay/forwarding fix needed for this direction — the
+<code class="language-plaintext highlighter-rouge">ap_isolate=0</code> config-level fix was sufficient.</li>
+  <li><strong>If either side never sees the other: this is the AP-mode multicast
+gap, confirmed real on Broadcom too.</strong> Proceed to the prepared fix
+(see “If Test 1 fails” below).</li>
+</ol>
+
+<h2 id="test-2-same-as-test-1-but-ap-role--esp-idf-link-the-esp32-hosts">Test 2: same as Test 1, but AP role = esp-idf-link (the ESP32 hosts)</h2>
+
+<p>Swap roles: ESP32 hosts its own SoftAP, aloop’s <code class="language-plaintext highlighter-rouge">autoap.sh</code> joins it as a
+station. Same peer-count check both directions.</p>
+
+<p>esp-idf-link’s own SoftAP is ALREADY known to have the multicast-forwarding
+gap (that’s why its unicast-relay workaround exists) — but that relay only
+activates for peers it explicitly resolves and unicasts to. Confirm whether
+its existing relay mechanism, built for interop with the older bare-metal
+“Pi looper,” also picks up aloop’s own Link traffic correctly, or whether
+it needs to be told about this new peer type.</p>
+
+<h2 id="test-3-cold-boot-start-order--ap-role-stability-with-22-devices">Test 3: cold-boot start-order / AP-role stability with 2+2 devices</h2>
+
+<p>With all four devices (2x aloop, 2x esp-idf-link) powered off, power them
+on in several different orders and combinations across repeated trials:</p>
+<ul>
+  <li>All four simultaneously</li>
+  <li>Both aloop units first, ESP32s 30s later</li>
+  <li>Both ESP32 units first, aloop units 30s later</li>
+  <li>One of each first, the other pair 30s later</li>
+</ul>
+
+<p>For each trial, confirm: exactly one device becomes AP, all others become
+stations, and every device eventually shows 3 peers (all devices “N”)
+in its own Link session. Record which device won AP role each time —
+if it’s non-deterministic or sometimes results in two APs / zero APs
+(a split network), that is exactly the race esp-idf-link’s MAC-rank
+election was built to prevent, and aloop’s <code class="language-plaintext highlighter-rouge">autoap.sh</code> does not currently
+have an equivalent (see the “if Test 3 fails” section).</p>
+
+<h2 id="if-test-1-or-2-fails-ap-mode-multicast-gap-confirmed-on-aloop">If Test 1 or 2 fails (AP-mode multicast gap confirmed on aloop)</h2>
+
+<p>Port esp-idf-link’s relay technique into aloop’s networking layer:</p>
+<ul>
+  <li>esp-idf-link’s <code class="language-plaintext highlighter-rouge">wifi_link_multicast_forward()</code> + <code class="language-plaintext highlighter-rouge">link_multicast_relay_task()</code>
+(see <code class="language-plaintext highlighter-rouge">main/wifi_config.cpp</code>) unicast-copy Link’s multicast discovery
+packets to every associated station (if AP) or to the gateway (if STA),
+preserving original source IP.</li>
+  <li>On Linux/hostapd, the equivalent is almost certainly simpler than the
+ESP32 workaround: a raw multicast-forwarding daemon (<code class="language-plaintext highlighter-rouge">smcroute</code>,
+<code class="language-plaintext highlighter-rouge">igmpproxy</code>, or a small custom relay using <code class="language-plaintext highlighter-rouge">SO_REUSEADDR</code> + explicit
+<code class="language-plaintext highlighter-rouge">sendto()</code> fan-out to each DHCP lease IP from <code class="language-plaintext highlighter-rouge">dnsmasq</code>’s lease file) run
+alongside <code class="language-plaintext highlighter-rouge">hostapd</code> whenever aloop is in AP mode. This does NOT require
+touching aloop’s own C++ (<code class="language-plaintext highlighter-rouge">link_bridge.cpp</code>) at all — it’s a networking-
+layer fix (systemd service / OpenRC init script alongside <code class="language-plaintext highlighter-rouge">hostapd</code>), so
+Ableton’s own Link library on aloop’s side is untouched.</li>
+  <li>Do NOT attempt this port speculatively before Test 1/2 actually fail —
+<code class="language-plaintext highlighter-rouge">ap_isolate=0</code> may already be sufficient on Broadcom’s AP-mode stack even
+though ESP32’s SoftAP needed more. Confirm the gap is real first.</li>
+</ul>
+
+<h2 id="if-test-3-fails-ap-role-racedeadlock-with-2-devices">If Test 3 fails (AP-role race/deadlock with 2+ devices)</h2>
+
+<p>Port esp-idf-link’s deterministic MAC-rank election + self-healing
+supervisor loop (<code class="language-plaintext highlighter-rouge">main/wifi_config.cpp</code>’s <code class="language-plaintext highlighter-rouge">wifi_supervisor_task</code>) into
+aloop’s <code class="language-plaintext highlighter-rouge">src/net/autoap.sh</code>:</p>
+<ul>
+  <li>Each aloop unit needs to know its own WiFi MAC address (<code class="language-plaintext highlighter-rouge">cat
+/sys/class/net/wlan0/address</code>) and compare against any other AP-mode
+aloop units it can see (scan for the <code class="language-plaintext highlighter-rouge">aloop</code> SSID’s BSSID before
+deciding to host).</li>
+  <li>Lowest-MAC-wins (or highest, pick one convention and match esp-idf-link’s
+for consistency) with a randomized/staggered hold-off before hosting, so
+simultaneous cold boots don’t all decide to host at the same instant.</li>
+  <li>A background loop that keeps re-scanning for a higher-priority AP even
+after this unit has started hosting, and gracefully tears down its own
+AP + rejoins as STA if a better-ranked peer appears — mirroring
+esp-idf-link’s “only rescans while it has zero AP clients” caution (to
+avoid dropping already-connected peers by flapping off-channel).</li>
+</ul>
+
+<h2 id="run-it-with-one-command-instead-of-two-consoles">Run it with one command instead of two consoles</h2>
+
+<p>Both sides now expose comparable, machine-readable Link state, so the tests
+below no longer need a human watching a serial console next to a curl:</p>
+
+<ul>
+  <li><strong>aloop</strong>: <code class="language-plaintext highlighter-rouge">/run/aloop/status.json</code> carries
+<code class="language-plaintext highlighter-rouge">link.{synced,bpm,peers,playing}</code> plus <code class="language-plaintext highlighter-rouge">wifi: "ap"|"sta"</code>.</li>
+  <li><strong>esp-idf-link</strong>: a UDP status responder on port <strong>20812</strong>
+(<code class="language-plaintext highlighter-rouge">main/link_sync.cpp</code>’s <code class="language-plaintext highlighter-rouge">status_responder_task</code>) replies to any datagram
+with one JSON line: <code class="language-plaintext highlighter-rouge">peers</code>, <code class="language-plaintext highlighter-rouge">bpm</code>, <code class="language-plaintext highlighter-rouge">playing</code>, <code class="language-plaintext highlighter-rouge">beat</code>, <code class="language-plaintext highlighter-rouge">phase</code>,
+<code class="language-plaintext highlighter-rouge">quantum</code>, <code class="language-plaintext highlighter-rouge">ap</code>.</li>
+</ul>
+
+<p><code class="language-plaintext highlighter-rouge">test/hardware/link-mesh-status.js</code> polls both and prints one comparable row
+per device:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>node test/hardware/link-mesh-status.js --aloop 192.168.4.1 --esp 192.168.4.2
+node test/hardware/link-mesh-status.js --aloop 192.168.137.100 --esp 192.168.4.3 --watch
+</code></pre></div></div>
+
+<p><code class="language-plaintext highlighter-rouge">--watch</code> repolls every 2s, which is what Test 3 wants while power-cycling
+devices: you can watch exactly one device settle on <code class="language-plaintext highlighter-rouge">role=ap</code>, everyone
+else on <code class="language-plaintext highlighter-rouge">role=sta</code>, and all of them converge on the same <code class="language-plaintext highlighter-rouge">bpm</code> and a peer
+count of (devices - 1).</p>
+
+<h2 id="next-step">Next step</h2>
+
+<p>Run Test 1, 2, and 3 against real hardware and report the actual peer-count
+/ AP-role results back here (or update this doc’s “what we already know”
+table directly) before writing any relay/election code — per the standing
+rule that a fix only gets built once its target failure is actually
+witnessed, not assumed from a chip-family resemblance alone.</p>
+
+
+      </section>
+      <footer>
+        
+        <p>This project is maintained by <a href="https://github.com/AnEntrypoint">AnEntrypoint</a></p>
+        
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="/aloop/assets/js/scale.fix.js"></script>
+  </body>
+</html>

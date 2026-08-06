@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Remote control — reboot + log-tail over the network | aloop</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="Remote control — reboot + log-tail over the network" />
+<meta property="og:locale" content="en_US" />
+<link rel="canonical" href="https://anentrypoint.github.io/aloop/REMOTE-CONTROL.html" />
+<meta property="og:url" content="https://anentrypoint.github.io/aloop/REMOTE-CONTROL.html" />
+<meta property="og:site_name" content="aloop" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Remote control — reboot + log-tail over the network" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","headline":"Remote control — reboot + log-tail over the network","url":"https://anentrypoint.github.io/aloop/REMOTE-CONTROL.html"}</script>
+<!-- End Jekyll SEO tag -->
+
+    <link rel="stylesheet" href="/aloop/assets/css/style.css?v=2e279a87748b76ad7c5e7c1d866d8982985bdcef">
+    <!--[if lt IE 9]>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
+    <![endif]-->
+    <!-- start custom head snippets, customize with your own _includes/head-custom.html file -->
+
+<!-- Setup Google Analytics -->
+
+
+
+<!-- You can set your favicon here -->
+<!-- link rel="shortcut icon" type="image/x-icon" href="/aloop/favicon.ico" -->
+
+<!-- end custom head snippets -->
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a href="https://anentrypoint.github.io/aloop/">aloop</a></h1>
+
+        
+
+        <p></p>
+
+        
+        <p class="view"><a href="https://github.com/AnEntrypoint/aloop">View the Project on GitHub <small>AnEntrypoint/aloop</small></a></p>
+        
+
+        
+
+        
+      </header>
+      <section>
+
+      <h1 id="remote-control--reboot--log-tail-over-the-network">Remote control — reboot + log-tail over the network</h1>
+
+<p>aloop ports two of looper’s dev-tooling conveniences — remote reboot and
+live log streaming — adapted for aloop’s Linux/Alpine architecture. See
+<code class="language-plaintext highlighter-rouge">src/control/remote_control.h</code>/<code class="language-plaintext highlighter-rouge">.cpp</code> for the device side and
+<code class="language-plaintext highlighter-rouge">image/aloop-reboot.js</code>/<code class="language-plaintext highlighter-rouge">image/aloop-logtail.js</code> for the host side.</p>
+
+<h2 id="why-not-loopers-protocol-unchanged">Why not looper’s protocol unchanged</h2>
+
+<p>looper’s UDP <code class="language-plaintext highlighter-rouge">REBOOT</code> (port 4444) and syslog capture (port 514) are:</p>
+<ul>
+  <li><strong>Unauthenticated</strong> — a bare 6-byte <code class="language-plaintext highlighter-rouge">"REBOOT"</code> string reboots the Pi from
+anyone on the LAN. aloop requires a shared-secret token instead.</li>
+  <li><strong>Bare-metal-specific</strong> — looper’s firmware has no OS, so a UDP packet sets
+a flag another core polls to perform the reboot, and syslog is a hand-rolled
+UDP protocol because there’s no real filesystem to log to. aloop <strong>is</strong>
+Linux: <code class="language-plaintext highlighter-rouge">reboot(2)</code> is a real syscall, and aloop’s log is already a real file
+(<code class="language-plaintext highlighter-rouge">/var/log/aloop.log</code>, via OpenRC’s <code class="language-plaintext highlighter-rouge">output_log</code>/<code class="language-plaintext highlighter-rouge">error_log</code>).</li>
+</ul>
+
+<h2 id="enabling-it">Enabling it</h2>
+
+<p>Unset (no <code class="language-plaintext highlighter-rouge">token=</code> line) = the listener is <strong>disabled</strong> — the safe default.
+To enable, add to <code class="language-plaintext highlighter-rouge">/etc/aloop.conf</code>:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>[remote]
+token = &lt;a real secret, not the example below&gt;
+</code></pre></div></div>
+
+<p>Anyone who knows this token can reboot the device over the network. Treat it
+like a password.</p>
+
+<h2 id="protocol-udp4446">Protocol (udp/4446)</h2>
+
+<p>Two verbs, both <code class="language-plaintext highlighter-rouge">&lt;VERB&gt;:&lt;token&gt;</code> as the UDP payload:</p>
+
+<ul>
+  <li><strong><code class="language-plaintext highlighter-rouge">REBOOT:&lt;token&gt;</code></strong> — <code class="language-plaintext highlighter-rouge">sync()</code>s the filesystem, then calls <code class="language-plaintext highlighter-rouge">reboot(2)</code>
+(<code class="language-plaintext highlighter-rouge">RB_AUTOBOOT</code>). No reply (the device reboots). Needs <code class="language-plaintext highlighter-rouge">CAP_SYS_BOOT</code> — the
+diskless boot runs <code class="language-plaintext highlighter-rouge">aloop</code> as root, so this is satisfied by default.</li>
+  <li><strong><code class="language-plaintext highlighter-rouge">LOGTAIL:&lt;token&gt;</code></strong> — replies with whatever bytes have been appended to
+<code class="language-plaintext highlighter-rouge">/var/log/aloop.log</code> since the <em>previous</em> <code class="language-plaintext highlighter-rouge">LOGTAIL</code> request from any
+client (one shared read offset per process lifetime, not per-client — a
+deliberate simplification matching looper’s single-dev-host assumption).
+The <strong>first</strong> <code class="language-plaintext highlighter-rouge">LOGTAIL</code> call after boot establishes a baseline at
+end-of-file and returns nothing — a freshly-connecting client sees only
+new lines going forward, like <code class="language-plaintext highlighter-rouge">tail -f</code>, not the whole boot history like
+<code class="language-plaintext highlighter-rouge">cat</code>. Capped at 4096 bytes per reply (poll more often for a busy log).</li>
+</ul>
+
+<p>Telemetry’s existing <code class="language-plaintext highlighter-rouge">udp/4445</code> (<code class="language-plaintext highlighter-rouge">src/control/telemetry.cpp</code>) is deliberately
+<strong>not</strong> reused for this — its “any packet gets a status reply” semantics must
+never be confused with a destructive verb like reboot.</p>
+
+<h2 id="host-side-scripts">Host-side scripts</h2>
+
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code>node image/aloop-reboot.js  <span class="nt">--host</span> 192.168.137.100 <span class="nt">--token</span> &lt;secret&gt;
+node image/aloop-logtail.js <span class="nt">--host</span> 192.168.137.100 <span class="nt">--token</span> &lt;secret&gt;
+</code></pre></div></div>
+
+<p>Or via env vars: <code class="language-plaintext highlighter-rouge">PI_HOST</code>, <code class="language-plaintext highlighter-rouge">PI_PORT</code>, <code class="language-plaintext highlighter-rouge">PI_TOKEN</code>, <code class="language-plaintext highlighter-rouge">PI_LOGTAIL_INTERVAL</code>
+(logtail poll interval, default 1000ms).</p>
+
+<p><code class="language-plaintext highlighter-rouge">aloop-logtail.js</code> highlights lines matching <code class="language-plaintext highlighter-rouge">panic|crash|kernel panic|fatal</code>
+(case-insensitive) with a <code class="language-plaintext highlighter-rouge">!!!</code> prefix, the same live-visibility looper’s
+<code class="language-plaintext highlighter-rouge">syslog-listener.js</code>/<code class="language-plaintext highlighter-rouge">tftp-server.js</code> gave during dev.</p>
+
+<h2 id="what-was-already-there--no-new-mechanism-needed">What was already there — no new mechanism needed</h2>
+
+<ul>
+  <li><strong>Crash-loop recovery</strong> (looper’s <code class="language-plaintext highlighter-rouge">dev-server.js</code> restarts a crashed child
+2s after exit, forever): aloop’s <code class="language-plaintext highlighter-rouge">etc/init.d/aloop</code> OpenRC service already
+has <code class="language-plaintext highlighter-rouge">respawn_delay=2 respawn_max=0</code> (unlimited respawns) — the same
+guarantee, at the OS/service-supervisor level instead of a Node wrapper.</li>
+  <li><strong>Status query</strong> (looper’s <code class="language-plaintext highlighter-rouge">pi-debug.js</code> sends <code class="language-plaintext highlighter-rouge">STATUS</code> to udp/4445):
+<code class="language-plaintext highlighter-rouge">src/control/telemetry.cpp</code>’s <code class="language-plaintext highlighter-rouge">Telemetry::publish()</code> already answers <em>any</em>
+UDP packet on <code class="language-plaintext highlighter-rouge">udp/4445</code> with the full status JSON, and also writes
+<code class="language-plaintext highlighter-rouge">/run/aloop/status.json</code> for local <code class="language-plaintext highlighter-rouge">curl</code>/shell inspection.</li>
+  <li><strong>Serial console capture</strong> (looper’s <code class="language-plaintext highlighter-rouge">otg-monitor.js</code>, Windows-COM-port
+specific): not ported as a new script — <code class="language-plaintext highlighter-rouge">docs/NETBOOT.md</code>’s debug-boot
+section already documents the serial-console procedure for aloop’s specific
+hardware (<code class="language-plaintext highlighter-rouge">dwc2</code>/<code class="language-plaintext highlighter-rouge">enable_uart=1</code>), and <code class="language-plaintext highlighter-rouge">otg-monitor.js</code>’s hardcoded <code class="language-plaintext highlighter-rouge">COM11</code>
+    <ul>
+      <li><code class="language-plaintext highlighter-rouge">pnputil</code> phantom-device-clearing logic is machine-specific enough that a
+generic port would need per-machine configuration anyway.</li>
+    </ul>
+  </li>
+</ul>
+
+
+      </section>
+      <footer>
+        
+        <p>This project is maintained by <a href="https://github.com/AnEntrypoint">AnEntrypoint</a></p>
+        
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="/aloop/assets/js/scale.fix.js"></script>
+  </body>
+</html>

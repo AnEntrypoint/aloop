@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Feasibility: looper → Alpine Linux with LV2 effects, multi-core, and Ableton-Link-over-WiFi AP | aloop</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="Feasibility: looper → Alpine Linux with LV2 effects, multi-core, and Ableton-Link-over-WiFi AP" />
+<meta property="og:locale" content="en_US" />
+<link rel="canonical" href="https://anentrypoint.github.io/aloop/FEASIBILITY.html" />
+<meta property="og:url" content="https://anentrypoint.github.io/aloop/FEASIBILITY.html" />
+<meta property="og:site_name" content="aloop" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Feasibility: looper → Alpine Linux with LV2 effects, multi-core, and Ableton-Link-over-WiFi AP" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","headline":"Feasibility: looper → Alpine Linux with LV2 effects, multi-core, and Ableton-Link-over-WiFi AP","url":"https://anentrypoint.github.io/aloop/FEASIBILITY.html"}</script>
+<!-- End Jekyll SEO tag -->
+
+    <link rel="stylesheet" href="/aloop/assets/css/style.css?v=2e279a87748b76ad7c5e7c1d866d8982985bdcef">
+    <!--[if lt IE 9]>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
+    <![endif]-->
+    <!-- start custom head snippets, customize with your own _includes/head-custom.html file -->
+
+<!-- Setup Google Analytics -->
+
+
+
+<!-- You can set your favicon here -->
+<!-- link rel="shortcut icon" type="image/x-icon" href="/aloop/favicon.ico" -->
+
+<!-- end custom head snippets -->
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a href="https://anentrypoint.github.io/aloop/">aloop</a></h1>
+
+        
+
+        <p></p>
+
+        
+        <p class="view"><a href="https://github.com/AnEntrypoint/aloop">View the Project on GitHub <small>AnEntrypoint/aloop</small></a></p>
+        
+
+        
+
+        
+      </header>
+      <section>
+
+      <h1 id="feasibility-looper--alpine-linux-with-lv2-effects-multi-core-and-ableton-link-over-wifi-ap">Feasibility: looper → Alpine Linux with LV2 effects, multi-core, and Ableton-Link-over-WiFi AP</h1>
+
+<p>Investigation of four requirements for migrating the bare-metal (Circle, Pi 4)
+looper to Alpine Linux. Every claim is grounded in looper’s actual source
+(cited <code class="language-plaintext highlighter-rouge">file:line</code>) or a witnessed computation/toolchain check — not estimates.</p>
+
+<h2 id="tldr-verdicts">TL;DR verdicts</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>Requirement</th>
+      <th>Verdict</th>
+      <th>Key condition</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>1</strong></td>
+      <td>Ableton Link over WiFi without glitching audio</td>
+      <td>✅ <strong>Feasible — and <em>improved</em> vs today</strong></td>
+      <td>Isolate the audio core from WiFi IRQs (achievable on Pi 4)</td>
+    </tr>
+    <tr>
+      <td><strong>2</strong></td>
+      <td>Home FX as LV2 on one core + user-swappable FX as LV2 on a free core</td>
+      <td>✅ <strong>Feasible</strong></td>
+      <td>In-process host (not a JACK/PipeWire graph); Core 3 is already free</td>
+    </tr>
+    <tr>
+      <td><strong>3</strong></td>
+      <td>No added latency vs bare-metal</td>
+      <td>✅ <strong>Achievable, with a topology rule</strong></td>
+      <td>Keep the chain in-process; the multi-core split is optional, and must avoid a graph host</td>
+    </tr>
+    <tr>
+      <td><strong>4</strong></td>
+      <td>Pi as its own AP for Link when no external AP</td>
+      <td>✅ <strong>Feasible, low-risk</strong></td>
+      <td>AP/STA <em>mode-switching</em> (autoAP), which looper already does</td>
+    </tr>
+  </tbody>
+</table>
+
+<p><strong>The single most important finding:</strong> looper’s <em>current</em> architecture already
+does ~80% of what’s asked (Core 3 is free; Link is core-isolated behind a
+lock-free snapshot; WiFi already does AP/STA role-negotiation). The Alpine
+migration mostly <strong>replaces hand-rolled bare-metal subsystems with tested kernel
+ones</strong> — and in doing so <em>fixes</em> the existing once-a-second Link glitch rather
+than inheriting it.</p>
+
+<hr />
+
+<h2 id="the-looper-baseline-witnessed-looper">The looper baseline (witnessed, <code class="language-plaintext highlighter-rouge">../looper</code>)</h2>
+
+<ul>
+  <li><strong>Pi 4, bare-metal Circle</strong>, 48 kHz, 64-sample block → <strong>1.333 ms/block budget</strong>
+(<code class="language-plaintext highlighter-rouge">AudioTypes.h:12-14</code>; <code class="language-plaintext highlighter-rouge">audio.cpp:214</code> <code class="language-plaintext highlighter-rouge">USB_FREERUN_TICKS = CLOCKHZ*64/48000</code>).</li>
+  <li><strong>4-core partition</strong> (<code class="language-plaintext highlighter-rouge">multicore.cpp:10-34</code>): Core 0 = USB ISR + dispatch,
+<strong>Core 1 = audio DSP</strong>, <strong>Core 2 = control / network / Link / WiFi</strong>,
+<strong>Core 3 = free / idle-forever</strong>.</li>
+  <li><strong>Inter-core = lock-free</strong>: SPSC ring for audio dispatch (<code class="language-plaintext highlighter-rouge">coreDispatch.cpp</code>),
+double-buffered atomic <code class="language-plaintext highlighter-rouge">LiveParams</code> snapshot for control→DSP (<code class="language-plaintext highlighter-rouge">paramSnapshot.h</code>).
+<strong>No mutexes in the audio path.</strong></li>
+  <li><strong>Ableton Link = a custom raw-Ethernet reimplementation</strong> (not the official
+lib — bare metal has no IP stack): <code class="language-plaintext highlighter-rouge">linkWire.h</code>/<code class="language-plaintext highlighter-rouge">linkGhost.h</code>/<code class="language-plaintext highlighter-rouge">linkSession.h</code> +
+<code class="language-plaintext highlighter-rouge">abletonLink.cpp</code> (938 lines) hand-building Ethernet/IP/UDP frames, multicast
+<code class="language-plaintext highlighter-rouge">224.76.78.75:20808</code>. Runs <strong>entirely on Core 2</strong>; hands phase to audio via the
+snapshot.</li>
+  <li><strong>WiFi already does AP + STA</strong> with automatic role negotiation
+(<code class="language-plaintext highlighter-rouge">JoinOpenNet</code> → fallback <code class="language-plaintext highlighter-rouge">CreateOpenNet</code>, <code class="language-plaintext highlighter-rouge">kernel.cpp:131-169</code>), plus
+hand-rolled DHCP client/server, ARP, IGMP — but it is <strong>opt-in
+(<code class="language-plaintext highlighter-rouge">LOOPER_ENABLE_WLAN</code>) and unvalidated under audio load</strong> (<code class="language-plaintext highlighter-rouge">kernel.cpp:268</code>).</li>
+  <li><strong>USB = a UAC2 <em>gadget</em></strong> (<code class="language-plaintext highlighter-rouge">dwusbgadget.cpp</code>, <code class="language-plaintext highlighter-rouge">usbaudiogadget*</code>): the Pi
+presents itself <em>as</em> an audio device to a host.</li>
+</ul>
+
+<hr />
+
+<h2 id="requirement-1--link-over-wifi-without-audio-glitch--improved">Requirement 1 — Link over WiFi without audio glitch ✅ (improved)</h2>
+
+<p><strong>Why it’s decoupled:</strong> Link carries <em>timing</em>, not audio. Its network thread
+runs on Core 2 and hands tempo/phase to the audio thread through the lock-free
+<code class="language-plaintext highlighter-rouge">LiveParams</code> snapshot; the audio callback only reads the snapshot and does cheap
+integer phase math (<code class="language-plaintext highlighter-rouge">loopMachine.cpp:620, 628-696</code>). So <strong>WiFi jitter degrades
+Link <em>sync accuracy</em>, never the audio callback deadline.</strong> On Linux the official
+Ableton Link library is explicitly RT-safe (<code class="language-plaintext highlighter-rouge">captureAudioSessionState</code>/commit
+pair) and maps directly onto this same snapshot pattern.</p>
+
+<p><strong>The one real glitch — and why migration fixes it:</strong> looper <em>does</em> have a
+known “once-a-second audio glitch,” root-caused (<code class="language-plaintext highlighter-rouge">abletonLink.cpp:725-736</code>) to
+the <strong>1 Hz proactive ALIVE beacon <code class="language-plaintext highlighter-rouge">SendFrame</code></strong> on the single shared bare-metal
+WiFi radio. It runs on Core 2 but glitches Core-1 audio through <strong>hardware
+contention</strong> (shared SDIO/DMA bus / IRQ stall) — the author added a runtime
+<code class="language-plaintext highlighter-rouge">LTX0/LTX1</code> toggle specifically to A/B-confirm this. On Linux the WiFi TX goes
+through the kernel <code class="language-plaintext highlighter-rouge">mac80211</code>/<code class="language-plaintext highlighter-rouge">brcmfmac</code> driver with <strong>threaded IRQs on an
+isolated core</strong>, decoupling WiFi TX from the audio DMA path. <strong>The bare-metal
+contention glitch is a migration <em>fix</em>, not something inherited.</strong></p>
+
+<p><strong>Condition:</strong> <code class="language-plaintext highlighter-rouge">isolcpus</code> + <code class="language-plaintext highlighter-rouge">/proc/irq/*/smp_affinity</code> must steer WiFi/network
+IRQs off the audio core. This is <strong>achievable on Pi 4</strong> (see the Pi-5 caveat
+below).</p>
+
+<hr />
+
+<h2 id="requirement-2--home-fx--user-fx-as-lv2s-on-separate-cores-">Requirement 2 — home FX + user FX as LV2s on separate cores ✅</h2>
+
+<ul>
+  <li><strong>Home FX as LV2:</strong> <em>witnessed</em> — <code class="language-plaintext highlighter-rouge">faust -a lv2.cpp dsp/chain.dsp</code> generated a
+complete 69 KB LV2 architecture (7 <code class="language-plaintext highlighter-rouge">LV2_Descriptor</code>/<code class="language-plaintext highlighter-rouge">connect_port</code> refs), and
+<code class="language-plaintext highlighter-rouge">faust2lv2</code> ships in the native Faust install. The verified dubfx chain
+(pitch + delay + reverb + microrepeat + filters, pitch engine linked via
+<code class="language-plaintext highlighter-rouge">ffunction</code>) packages as one LV2 bundle.</li>
+  <li><strong>User-swappable FX:</strong> a directory on flash the user drops an LV2 bundle
+(<code class="language-plaintext highlighter-rouge">.so</code> + <code class="language-plaintext highlighter-rouge">.ttl</code>) into; the host scans and <code class="language-plaintext highlighter-rouge">dlopen</code>s it. <strong>This is the whole
+point of the migration</strong> — a filesystem and a dynamic linker, both <em>absent</em>
+on bare-metal Circle. Users can author their own with <code class="language-plaintext highlighter-rouge">faust2lv2</code> or any LV2
+toolchain.</li>
+  <li><strong>Core placement:</strong> slots onto looper’s existing map — Core 1 = home FX,
+<strong>Core 3 (already free) = user FX</strong>, Core 2 = control/Link. Linux
+<code class="language-plaintext highlighter-rouge">pthread_setaffinity_np</code> + <code class="language-plaintext highlighter-rouge">SCHED_FIFO</code> replaces Circle’s <code class="language-plaintext highlighter-rouge">CMultiCoreSupport</code>.</li>
+  <li><strong>Crash isolation tradeoff:</strong> a user plugin is untrusted. Full process
+isolation (PipeWire nodes as separate processes) survives a user-plugin crash
+but <strong>adds a graph period of latency</strong>. For zero latency, host in-process with
+a <code class="language-plaintext highlighter-rouge">SIGSEGV</code> handler + watchdog that disables a misbehaving plugin and continues
+(degraded, not dead). This is a user-facing tradeoff to choose.</li>
+</ul>
+
+<hr />
+
+<h2 id="requirement-3--no-added-latency-️-with-a-topology-rule">Requirement 3 — no added latency ⚠️→✅ (with a topology rule)</h2>
+
+<p>This is the one with real physics. <strong>Witnessed arithmetic</strong> (1.333 ms budget,
+illustrative FX costs home 0.5 ms / user 0.4 ms, RT cross-core wake ~5 µs):</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Topology</th>
+      <th style="text-align: center">Parallel across cores?</th>
+      <th style="text-align: center">Added latency</th>
+      <th style="text-align: center">Fits budget?</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>A. Serial chain, in-process, one core</strong></td>
+      <td style="text-align: center">❌</td>
+      <td style="text-align: center"><strong>0 ms</strong></td>
+      <td style="text-align: center">✅ (0.9 ms cpu)</td>
+    </tr>
+    <tr>
+      <td><strong>B. Serial chain, pipelined across 2 cores</strong></td>
+      <td style="text-align: center">✅</td>
+      <td style="text-align: center"><strong>+1 block (1.333 ms)</strong></td>
+      <td style="text-align: center">✅</td>
+    </tr>
+    <tr>
+      <td><strong>C. Parallel FX, fork-join across 2 cores</strong></td>
+      <td style="text-align: center">✅</td>
+      <td style="text-align: center"><strong>0 ms</strong></td>
+      <td style="text-align: center">✅ (0.51 ms wall)</td>
+    </tr>
+    <tr>
+      <td><strong>D. JACK/PipeWire graph, 2 clients</strong></td>
+      <td style="text-align: center">✅</td>
+      <td style="text-align: center"><strong>+1 period</strong></td>
+      <td style="text-align: center">✅</td>
+    </tr>
+  </tbody>
+</table>
+
+<p><strong>The hard truth:</strong> you cannot have <em>serial chain</em> + <em>cross-core parallel</em> +
+<em>zero latency</em> at once — pick two. A serial chain across two cores is either
+same-block-serial (no parallelism, no added latency) or pipelined (parallel,
++1 block).</p>
+
+<p><strong>The resolution:</strong> the home + user FX combined (~0.9 ms) <strong>fits one core inside
+the 1.333 ms budget</strong>, so run them serial <em>in-process on the free Core 3</em> →
+<strong>zero added latency, no parallelism needed.</strong> Cross-core fork-join (topology C,
+0.51 ms wall, zero added latency) is available for <em>parallel</em> effect topologies
+(sends/sum) or if the chain ever becomes CPU-bound. <strong>Never use a JACK/PipeWire
+graph (topology D) — it adds a full period.</strong> So <em>zero added latency is
+achievable</em>; multi-core splitting is an optimization, not a requirement, and the
+implementation must stay in-process.</p>
+
+<hr />
+
+<h2 id="requirement-4--pi-as-ap-fallback-for-link--low-risk">Requirement 4 — Pi as AP fallback for Link ✅ (low-risk)</h2>
+
+<p>The requirement — “AP <em>when</em> external AP unavailable” — is <strong>mode-switching
+(AP-or-STA)</strong>, <em>not</em> simultaneous AP+STA. That distinction is everything:
+simultaneous single-radio AP+STA is flaky on the Pi (<code class="language-plaintext highlighter-rouge">nl80211: Could not
+configure driver mode</code>), but mode-switching is a solved pattern
+(<a href="https://github.com/gitbls/autoAP">autoAP</a>). <strong>looper already implements the
+switch logic</strong> (join first → fall back to hosting AP → yield if another AP
+appears → 40 s safety net, <code class="language-plaintext highlighter-rouge">kernel.cpp:85-169</code>). On Alpine this becomes
+<code class="language-plaintext highlighter-rouge">wpa_supplicant</code> (STA) + <code class="language-plaintext highlighter-rouge">hostapd</code> + <code class="language-plaintext highlighter-rouge">dnsmasq</code> (AP) with a state-driven switch
+under OpenRC.</p>
+
+<ul>
+  <li><strong>Link over the Pi’s own AP works</strong> — looper already runs Link over its
+self-hosted AP (DHCP server <code class="language-plaintext highlighter-rouge">192.168.4.1</code>, hand-rolled ARP responder so AP
+clients resolve the Pi, <code class="language-plaintext highlighter-rouge">abletonLink.cpp:667-694</code>). On Linux, ensure the AP
+passes multicast between clients (<code class="language-plaintext highlighter-rouge">ap_isolate=0</code>) so peer devices see Link.</li>
+  <li><strong>AP IRQ load</strong> (~5–15 % CPU for hostapd/beacon/multicast) steers onto the
+control core on Pi 4, keeping the audio core clean.</li>
+  <li><strong>If simultaneous AP+STA is ever actually needed</strong> (Pi on home WiFi <em>and</em>
+hosting a Link AP at once): add a USB WiFi dongle for a clean second radio.
+Not needed for the stated requirement.</li>
+</ul>
+
+<hr />
+
+<h2 id="the-pi-4-vs-pi-5-caveat-a-real-risk-gate">The Pi-4 vs Pi-5 caveat (a real risk gate)</h2>
+
+<p>The audio-core-isolation story depends on being able to steer network/WiFi IRQs
+off the audio core. <strong>This works on Pi 4</strong> (the target). On <strong>Pi 5</strong>, the RP1
+I/O controller has <code class="language-plaintext highlighter-rouge">PF_NO_SETAFFINITY</code> on force-threaded IRQ handlers
+(<a href="https://github.com/raspberrypi/linux/issues/7301">raspberrypi/linux#7301</a>) —
+you <em>cannot</em> always move those IRQs, which would put requirement 1’s no-glitch
+guarantee at risk. <strong>Verdict holds for Pi 4; re-open this if the project moves
+to Pi 5.</strong></p>
+
+<hr />
+
+<h2 id="migration-architecture-recommended">Migration architecture (recommended)</h2>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Alpine Linux (diskless / RAM, OpenRC), PREEMPT_RT kernel
+├── Core 0: USB audio I/O — kernel f_uac2 configfs gadget (replaces hand-rolled UAC2)
+├── Core 1: home-FX LV2  (dubfx Faust chain via faust2lv2, pitch ffunction linked)   ┐ in-process
+├── Core 3: user-FX LV2  (dlopen'd from /effects on flash, watchdog-isolated)         ┘ host, no graph
+├── Core 2: control — official Ableton Link lib, wpa_supplicant/hostapd (autoAP),
+│           MIDI (ALSA rawmidi), telemetry sockets, isolcpus target for network IRQs
+└── DSP core (loopMachine/effects/pitch/sampler): ported unchanged (Circle-free, alloc-free)
+</code></pre></div></div>
+
+<h3 id="effort-by-subsystem-from-the-circle-dependency-map">Effort, by subsystem (from the Circle-dependency map)</h3>
+
+<table>
+  <thead>
+    <tr>
+      <th>Subsystem</th>
+      <th>Move</th>
+      <th>Effort</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>DSP core (loopMachine, effects, pitch, sampler)</td>
+      <td>port unchanged (Circle-free, alloc-free)</td>
+      <td><strong>low</strong></td>
+    </tr>
+    <tr>
+      <td>Ableton Link</td>
+      <td>delete raw-Ethernet clone → official Link lib over UDP</td>
+      <td><strong>low–medium</strong></td>
+    </tr>
+    <tr>
+      <td>WiFi + AP/STA + DHCP/ARP</td>
+      <td>delete hand-rolled stack → wpa_supplicant/hostapd/dnsmasq/autoAP</td>
+      <td><strong>low–medium</strong></td>
+    </tr>
+    <tr>
+      <td>Ethernet / sockets / timers / scheduler / SD / LED / serial</td>
+      <td>trivial Linux equivalents</td>
+      <td><strong>low</strong></td>
+    </tr>
+    <tr>
+      <td>Multicore IPC (SEV/WFE + rings)</td>
+      <td>pthreads + affinity + SCHED_FIFO + futex/eventfd</td>
+      <td><strong>medium</strong></td>
+    </tr>
+    <tr>
+      <td>PREEMPT_RT kernel build + RT tuning</td>
+      <td>RT-patched kernel, isolcpus, IRQ affinity, mlockall</td>
+      <td><strong>medium–high</strong> (biggest single task)</td>
+    </tr>
+    <tr>
+      <td><strong>USB UAC2 gadget</strong> (<code class="language-plaintext highlighter-rouge">dwusbgadget</code>)</td>
+      <td>→ configfs <code class="language-plaintext highlighter-rouge">f_uac2</code> via dwc2</td>
+      <td><strong>high</strong> (hardest port; but <em>deletes</em> looper’s buggiest code)</td>
+    </tr>
+    <tr>
+      <td>LV2 hosting + user-swap</td>
+      <td>in-process host + lilv/dlopen + flash dir</td>
+      <td><strong>medium</strong> (new capability)</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3 id="the-two-sided-ledger">The two-sided ledger</h3>
+
+<ul>
+  <li><strong>What migration <em>deletes/evicts</em>:</strong> the hand-rolled UAC2 decode (source of
+every buzz/crackle lesson), the entire raw WLAN/DHCP/ARP/IGMP/Link-wire stack,
+and the effects-maintenance burden (already reproduced as Faust LV2). All
+become tested kernel/userspace components.</li>
+  <li><strong>What migration <em>costs</em>:</strong> a PREEMPT_RT kernel + RT tuning, the <code class="language-plaintext highlighter-rouge">f_uac2</code>
+gadget port, unwinding the multicore SEV/WFE IPC to pthreads, musl
+verification, and accepting a slightly worse <em>worst-case</em> jitter than
+bare-metal (mitigated to tens of µs by RT + isolation — inaudible if tuned).</li>
+</ul>
+
+<p><strong>Net:</strong> all four requirements are feasible on Pi 4; requirement 1 is <em>improved</em>;
+requirement 3 is achievable with the in-process (no-graph) rule; the tall poles
+are the RT kernel and the <code class="language-plaintext highlighter-rouge">f_uac2</code> gadget, both of which retire more maintenance
+than they add.</p>
+
+
+      </section>
+      <footer>
+        
+        <p>This project is maintained by <a href="https://github.com/AnEntrypoint">AnEntrypoint</a></p>
+        
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="/aloop/assets/js/scale.fix.js"></script>
+  </body>
+</html>

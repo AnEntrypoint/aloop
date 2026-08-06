@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Degraded modes — every failure path is explicit | aloop</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="Degraded modes — every failure path is explicit" />
+<meta property="og:locale" content="en_US" />
+<link rel="canonical" href="https://anentrypoint.github.io/aloop/DEGRADED-MODES.html" />
+<meta property="og:url" content="https://anentrypoint.github.io/aloop/DEGRADED-MODES.html" />
+<meta property="og:site_name" content="aloop" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Degraded modes — every failure path is explicit" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","headline":"Degraded modes — every failure path is explicit","url":"https://anentrypoint.github.io/aloop/DEGRADED-MODES.html"}</script>
+<!-- End Jekyll SEO tag -->
+
+    <link rel="stylesheet" href="/aloop/assets/css/style.css?v=2e279a87748b76ad7c5e7c1d866d8982985bdcef">
+    <!--[if lt IE 9]>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
+    <![endif]-->
+    <!-- start custom head snippets, customize with your own _includes/head-custom.html file -->
+
+<!-- Setup Google Analytics -->
+
+
+
+<!-- You can set your favicon here -->
+<!-- link rel="shortcut icon" type="image/x-icon" href="/aloop/favicon.ico" -->
+
+<!-- end custom head snippets -->
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a href="https://anentrypoint.github.io/aloop/">aloop</a></h1>
+
+        
+
+        <p></p>
+
+        
+        <p class="view"><a href="https://github.com/AnEntrypoint/aloop">View the Project on GitHub <small>AnEntrypoint/aloop</small></a></p>
+        
+
+        
+
+        
+      </header>
+      <section>
+
+      <h1 id="degraded-modes--every-failure-path-is-explicit">Degraded modes — every failure path is explicit</h1>
+
+<p>An engineering invariant of aloop: <strong>no silent catastrophic mode.</strong> Every way the
+system can be partially broken has a defined, non-crashing behavior. This is the
+full-→degraded-→safe-fail-→explicit-error ladder applied to each subsystem.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Subsystem</th>
+      <th>Failure</th>
+      <th>Behavior</th>
+      <th>Where</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>User effect</strong></td>
+      <td>LV2 bundle malformed / won’t load</td>
+      <td>Skipped at load; logged; boot continues with home-FX only</td>
+      <td><code class="language-plaintext highlighter-rouge">Lv2Host::loadDir</code></td>
+    </tr>
+    <tr>
+      <td><strong>User effect</strong></td>
+      <td>LV2 segfaults or divides-by-zero in <code class="language-plaintext highlighter-rouge">run()</code></td>
+      <td>SIGSEGV/SIGFPE handler → <code class="language-plaintext highlighter-rouge">disablePlugin()</code> → block continues with it bypassed; home chain unaffected</td>
+      <td>crash watchdog (ADR-002)</td>
+    </tr>
+    <tr>
+      <td><strong>User effect</strong></td>
+      <td>LV2 overruns its time budget repeatedly</td>
+      <td>Watchdog disables it after N overruns (same path); telemetry flags it</td>
+      <td><code class="language-plaintext highlighter-rouge">runOne</code> + watchdog</td>
+    </tr>
+    <tr>
+      <td><strong>Home effect</strong></td>
+      <td>(should never fail — it’s the verified chain)</td>
+      <td>If it faults, the host bypasses it to raw passthrough rather than dropping audio</td>
+      <td>crash watchdog</td>
+    </tr>
+    <tr>
+      <td><strong>Ableton Link</strong></td>
+      <td>No peers on the network</td>
+      <td>Free-run the internal tempo; publish it so a peer that joins later syncs to us</td>
+      <td>Link session default</td>
+    </tr>
+    <tr>
+      <td><strong>Ableton Link</strong></td>
+      <td>WiFi jitter / packet loss</td>
+      <td>Sync accuracy degrades gracefully (Link re-measures the offset); audio is never gated on Link</td>
+      <td>snapshot boundary (R1)</td>
+    </tr>
+    <tr>
+      <td><strong>WiFi</strong></td>
+      <td>No known network in range</td>
+      <td>Host the AP so peers can still Link</td>
+      <td><code class="language-plaintext highlighter-rouge">autoap.sh</code></td>
+    </tr>
+    <tr>
+      <td><strong>WiFi</strong></td>
+      <td>Radio init fails entirely</td>
+      <td>Run standalone (Link disabled); audio + effects still work locally</td>
+      <td>autoap error path</td>
+    </tr>
+    <tr>
+      <td><strong>USB audio</strong></td>
+      <td>Host disconnects</td>
+      <td>Output silence; loops keep their state and play position; resume cleanly on reconnect</td>
+      <td>ALSA xrun/disconnect handling</td>
+    </tr>
+    <tr>
+      <td><strong>USB audio</strong></td>
+      <td>Host changes sample rate</td>
+      <td>Reject rates ≠ 48k (the gadget advertises only 48k/mono); host must match</td>
+      <td>f_uac2 descriptor</td>
+    </tr>
+    <tr>
+      <td><strong>RT scheduling</strong></td>
+      <td>An xrun happens under extreme load</td>
+      <td>Count it in telemetry; recover on the next block (never spin or stall)</td>
+      <td>audio callback</td>
+    </tr>
+    <tr>
+      <td><strong>MIDI</strong></td>
+      <td>Controller unplugged</td>
+      <td>Params hold their last value; reconnect re-binds</td>
+      <td>ALSA rawmidi hotplug</td>
+    </tr>
+    <tr>
+      <td><strong>Config</strong></td>
+      <td><code class="language-plaintext highlighter-rouge">aloop.conf</code> missing / malformed</td>
+      <td>Fall back to documented defaults; log which keys were defaulted</td>
+      <td>config loader</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The rule behind all of these: <strong>fail loud in logs, degrade quietly in audio.</strong> A
+performer must never hear a crash — at worst they hear one effect drop out while
+everything else keeps running.</p>
+
+
+      </section>
+      <footer>
+        
+        <p>This project is maintained by <a href="https://github.com/AnEntrypoint">AnEntrypoint</a></p>
+        
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="/aloop/assets/js/scale.fix.js"></script>
+  </body>
+</html>

@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Boot sequence — from power-on to making sound | aloop</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="Boot sequence — from power-on to making sound" />
+<meta property="og:locale" content="en_US" />
+<link rel="canonical" href="https://anentrypoint.github.io/aloop/BOOT.html" />
+<meta property="og:url" content="https://anentrypoint.github.io/aloop/BOOT.html" />
+<meta property="og:site_name" content="aloop" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Boot sequence — from power-on to making sound" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","headline":"Boot sequence — from power-on to making sound","url":"https://anentrypoint.github.io/aloop/BOOT.html"}</script>
+<!-- End Jekyll SEO tag -->
+
+    <link rel="stylesheet" href="/aloop/assets/css/style.css?v=2e279a87748b76ad7c5e7c1d866d8982985bdcef">
+    <!--[if lt IE 9]>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
+    <![endif]-->
+    <!-- start custom head snippets, customize with your own _includes/head-custom.html file -->
+
+<!-- Setup Google Analytics -->
+
+
+
+<!-- You can set your favicon here -->
+<!-- link rel="shortcut icon" type="image/x-icon" href="/aloop/favicon.ico" -->
+
+<!-- end custom head snippets -->
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a href="https://anentrypoint.github.io/aloop/">aloop</a></h1>
+
+        
+
+        <p></p>
+
+        
+        <p class="view"><a href="https://github.com/AnEntrypoint/aloop">View the Project on GitHub <small>AnEntrypoint/aloop</small></a></p>
+        
+
+        
+
+        
+      </header>
+      <section>
+
+      <h1 id="boot-sequence--from-power-on-to-making-sound">Boot sequence — from power-on to making sound</h1>
+
+<p>The whole runtime, in order, so the device is legible. Configured by
+<code class="language-plaintext highlighter-rouge">config/aloop.conf</code> and the overlay laid down by <code class="language-plaintext highlighter-rouge">.github/workflows/build-image.yml</code>.</p>
+
+<h2 id="board-support-matrix">Board support matrix</h2>
+
+<p><code class="language-plaintext highlighter-rouge">build-image.yml</code> builds one image per board via <code class="language-plaintext highlighter-rouge">image/build-image.sh BOARD=&lt;x&gt;</code>
+(see <code class="language-plaintext highlighter-rouge">image/lib-boot-tree.sh</code>’s <code class="language-plaintext highlighter-rouge">board_supports_usb_gadget</code>/<code class="language-plaintext highlighter-rouge">board_wifi_irq_name</code>
+for the authoritative capability table):</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Board</th>
+      <th>Boot chain</th>
+      <th>USB-audio gadget (step 3 below)</th>
+      <th>WiFi</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>pi4 (+ CM4, Zero2)</td>
+      <td>Pi firmware (FAT partition)</td>
+      <td>dwc2 peripheral mode — real UAC2 gadget</td>
+      <td>Broadcom brcmfmac</td>
+    </tr>
+    <tr>
+      <td>pi3</td>
+      <td>Pi firmware (FAT partition)</td>
+      <td>none — Pi 3 has no OTG-capable controller</td>
+      <td>Broadcom brcmfmac</td>
+    </tr>
+    <tr>
+      <td>pi5</td>
+      <td>Pi firmware (FAT partition)</td>
+      <td>none — RP1 southbridge USB is host-only</td>
+      <td>Broadcom brcmfmac</td>
+    </tr>
+    <tr>
+      <td>opi-prime (Orange Pi Prime, Allwinner H5)</td>
+      <td>Armbian-sourced U-Boot (raw SD sectors) + ext4 root + extlinux.conf</td>
+      <td>unproven (MUSB dual-role controller exists on the micro-USB OTG port; no confirmed f_uac2 report for this SoC)</td>
+      <td>Realtek RTL8723BS</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Boards without a working USB-audio gadget still run the full aloop DSP/effects
+stack and Ableton Link — they just cannot present themselves as a USB soundcard
+to a host computer the way pi4 does; see <code class="language-plaintext highlighter-rouge">docs/CLONE-PARITY.md</code>/AGENTS.md for the
+audio-I/O implications on those boards.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>power on
+  │
+  ├─ 1. Alpine boots diskless from RAM (read-only root, OpenRC)
+  │      WHY: no disk writes, no background daemons — near-bare-metal determinism.
+  │
+  ├─ 2. RT tuning applied  (/etc/local.d/10-rt-tune.start → kernel/rt-tune.sh)
+  │      · governor=performance, deep C-states off on the audio cores
+  │      · network/USB IRQs steered onto the control core (Core 2)
+  │      · (isolcpus/nohz_full/rcu_nocbs already set by kernel/cmdline.txt)
+  │      WHY: so the audio cores meet the 1.333 ms deadline regardless of load.
+  │
+  ├─ 3. USB gadget up  (libcomposite + configfs f_uac2 on dwc2)
+  │      The Pi now presents itself to a host as a UAC2 soundcard (mono/48k).
+  │      WHY: replaces looper's hand-rolled UAC2 — the kernel does microframes right.
+  │
+  ├─ 4. aloop process starts  (/opt/aloop/aloop --config /etc/aloop.conf)
+  │      · reads aloop.conf (cores, RT priority, effect dirs, topology)
+  │      · mlockall(); spawns the audio threads SCHED_FIFO, pinned:
+  │           Core 1 → home-FX,  Core 3 → user-FX,  Core 2 → control
+  │      · loads the home-FX LV2 (/effects/home) + any user LV2 (/effects/user)
+  │        into the in-process host (no graph — ADR-002)
+  │      · opens the ALSA PCM bridged to the f_uac2 gadget
+  │
+  ├─ 5. Control plane comes up on Core 2
+  │      · Ableton Link (official lib) joins the session over UDP multicast
+  │      · MIDI (ALSA rawmidi) — the APC / controller knobs → the param snapshot
+  │      · telemetry socket (core load, xruns, Link sync, AP/STA state)
+  │
+  ├─ 6. WiFi / autoAP  (/opt/aloop/autoap.sh, or an OpenRC service)
+  │      · try to join a known network (STA)
+  │      · if none: host the 'aloop' AP so peers can Link (ap_isolate=0)
+  │
+  └─ READY: audio flows USB-in → home-FX (Core 1) → user-FX (Core 3) → USB-out,
+            synced to Link, tunable from MIDI, no added latency vs bare metal.
+</code></pre></div></div>
+
+<h2 id="what-can-go-wrong-and-what-happens-degraded-modes">What can go wrong, and what happens (degraded modes)</h2>
+
+<p>None of these crash the device — every failure path is explicit (see
+<code class="language-plaintext highlighter-rouge">docs/DEGRADED-MODES.md</code>):</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Situation</th>
+      <th>Behavior</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>No user LV2 present</td>
+      <td>Home-FX only. Normal.</td>
+    </tr>
+    <tr>
+      <td>A user LV2 crashes/hangs</td>
+      <td>Watchdog disables it; home chain + audio continue (ADR-002).</td>
+    </tr>
+    <tr>
+      <td>No external WiFi network</td>
+      <td>Host the AP; peers still Link.</td>
+    </tr>
+    <tr>
+      <td>No Link peers</td>
+      <td>Free-run the internal tempo.</td>
+    </tr>
+    <tr>
+      <td>USB host disconnects</td>
+      <td>Output silence; loops keep their state; resume on reconnect.</td>
+    </tr>
+    <tr>
+      <td>An RT xrun occurs under extreme load</td>
+      <td>Logged in telemetry; audio recovers next block (the tuning exists to make this rare).</td>
+    </tr>
+  </tbody>
+</table>
+
+
+      </section>
+      <footer>
+        
+        <p>This project is maintained by <a href="https://github.com/AnEntrypoint">AnEntrypoint</a></p>
+        
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="/aloop/assets/js/scale.fix.js"></script>
+  </body>
+</html>

@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Netbooting aloop over TFTP/DHCP — the pre-SD dry run | aloop</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="Netbooting aloop over TFTP/DHCP — the pre-SD dry run" />
+<meta property="og:locale" content="en_US" />
+<link rel="canonical" href="https://anentrypoint.github.io/aloop/NETBOOT.html" />
+<meta property="og:url" content="https://anentrypoint.github.io/aloop/NETBOOT.html" />
+<meta property="og:site_name" content="aloop" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Netbooting aloop over TFTP/DHCP — the pre-SD dry run" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","headline":"Netbooting aloop over TFTP/DHCP — the pre-SD dry run","url":"https://anentrypoint.github.io/aloop/NETBOOT.html"}</script>
+<!-- End Jekyll SEO tag -->
+
+    <link rel="stylesheet" href="/aloop/assets/css/style.css?v=2e279a87748b76ad7c5e7c1d866d8982985bdcef">
+    <!--[if lt IE 9]>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
+    <![endif]-->
+    <!-- start custom head snippets, customize with your own _includes/head-custom.html file -->
+
+<!-- Setup Google Analytics -->
+
+
+
+<!-- You can set your favicon here -->
+<!-- link rel="shortcut icon" type="image/x-icon" href="/aloop/favicon.ico" -->
+
+<!-- end custom head snippets -->
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a href="https://anentrypoint.github.io/aloop/">aloop</a></h1>
+
+        
+
+        <p></p>
+
+        
+        <p class="view"><a href="https://github.com/AnEntrypoint/aloop">View the Project on GitHub <small>AnEntrypoint/aloop</small></a></p>
+        
+
+        
+
+        
+      </header>
+      <section>
+
+      <h1 id="netbooting-aloop-over-tftpdhcp--the-pre-sd-dry-run">Netbooting aloop over TFTP/DHCP — the pre-SD dry run</h1>
+
+<p>Before you burn an SD card, boot the <strong>exact same</strong> aloop diskless Alpine tree
+over the network. The Pi 4 fetches its firmware, kernel, and config over TFTP
+(address from DHCP), then Alpine boots diskless into RAM and restores the aloop
+apkovl — identical to the SD path (<code class="language-plaintext highlighter-rouge">docs/FLASHING.md</code>), but with <strong>zero
+reflashing</strong> between iterations. This is the fastest way to shake out boot issues.</p>
+
+<p>Everything the Pi runs is the same as the card: same firmware chain, same
+kernel + initramfs, same <code class="language-plaintext highlighter-rouge">aloop.apkovl.tar.gz</code>, same dwc2/serial/isolcpus config.
+The SD image and the netboot root are assembled from <strong>one source of truth</strong>
+(<code class="language-plaintext highlighter-rouge">image/lib-boot-tree.sh</code>), so what you netboot is what you’d flash.</p>
+
+<h2 id="1-build-the-netboot-root">1. Build the netboot root</h2>
+
+<p>On any Linux/Alpine host with <code class="language-plaintext highlighter-rouge">curl tar</code> (no <code class="language-plaintext highlighter-rouge">mtools</code>/FAT tooling needed — the
+netboot root is a plain directory):</p>
+
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">ALOOP_BIN</span><span class="o">=</span>build/aloop <span class="nv">LV2_DIR</span><span class="o">=</span>effects/home image/build-netboot.sh   <span class="c"># -&gt; aloop-netboot/</span>
+image/validate-netboot.sh aloop-netboot                              <span class="c"># structural check</span>
+</code></pre></div></div>
+
+<p>A build with no <code class="language-plaintext highlighter-rouge">ALOOP_BIN</code>/<code class="language-plaintext highlighter-rouge">LV2_DIR</code> still produces a valid, bootable layout
+(it just warns and has no binary/effects yet) — good for validating the boot path.</p>
+
+<p>The result is a directory containing the Pi 4 firmware chain (<code class="language-plaintext highlighter-rouge">bootcode.bin</code>,
+<code class="language-plaintext highlighter-rouge">start4.elf</code>, <code class="language-plaintext highlighter-rouge">fixup4.dat</code>, <code class="language-plaintext highlighter-rouge">bcm2711-rpi-4-b.dtb</code>), the kernel payload
+(<code class="language-plaintext highlighter-rouge">boot/vmlinuz-rpi</code>, <code class="language-plaintext highlighter-rouge">boot/initramfs-rpi</code>, <code class="language-plaintext highlighter-rouge">boot/modloop-rpi</code>), <code class="language-plaintext highlighter-rouge">config.txt</code> /
+<code class="language-plaintext highlighter-rouge">cmdline.txt</code> / <code class="language-plaintext highlighter-rouge">usercfg.txt</code>, and <code class="language-plaintext highlighter-rouge">aloop.apkovl.tar.gz</code>.</p>
+
+<h2 id="2-enable-network-boot-on-the-pi-4-one-time">2. Enable network boot on the Pi 4 (one-time)</h2>
+
+<p>The Pi 4 boot order lives in the bootloader EEPROM. Set it to try network boot.
+Easiest is the Raspberry Pi Imager → <em>Misc utility images</em> → <em>Bootloader</em> →
+<em>Network Boot</em>, flashed to a throwaway SD (it only rewrites the EEPROM, then you
+remove the card). Or from a running Pi OS:</p>
+
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">sudo </span>rpi-eeprom-config <span class="nt">--edit</span>
+<span class="c"># set:  BOOT_ORDER=0xf21   (0x2 = network, 0x1 = SD — tries network first, SD fallback)</span>
+</code></pre></div></div>
+
+<p>With no SD inserted, the Pi 4 will DHCP + TFTP on power-up.</p>
+
+<h2 id="3-serve-it-from-the-host">3. Serve it from the host</h2>
+
+<p><code class="language-plaintext highlighter-rouge">image/serve-netboot.sh</code> runs the whole serving stack (DHCP + TFTP + the HTTP root
+server) with the exact flags witnessed booting a real Pi 4. Build the netboot root
+with a <code class="language-plaintext highlighter-rouge">NETBOOT_SERVER</code> that matches the host’s IP on the Pi’s link (so the baked-in
+<code class="language-plaintext highlighter-rouge">alpine_repo</code>/<code class="language-plaintext highlighter-rouge">modloop</code>/<code class="language-plaintext highlighter-rouge">apkovl</code> URLs point back at this host), then serve:</p>
+
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c"># build so the cmdline's HTTP URLs point at THIS host (default 192.168.137.1)</span>
+<span class="nv">NETBOOT_SERVER</span><span class="o">=</span>192.168.137.1 <span class="nv">ALOOP_BIN</span><span class="o">=</span>build/aloop <span class="nv">LV2_DIR</span><span class="o">=</span>effects/home <span class="se">\</span>
+  <span class="nv">OUT</span><span class="o">=</span>/srv/tftp/aloop-netboot image/build-netboot.sh
+
+<span class="nb">sudo </span>image/serve-netboot.sh <span class="nt">--iface</span> eth0 <span class="nt">--server</span> 192.168.137.1 <span class="se">\</span>
+     <span class="nt">--root</span> /srv/tftp/aloop-netboot
+</code></pre></div></div>
+
+<p>Three things get served, and <strong>all three are needed</strong> (learned the hard way on a
+real boot):</p>
+
+<ol>
+  <li><strong>DHCP</strong> hands the Pi an address + the boot filename. Default is <strong>standalone</strong>
+(dnsmasq owns the lease). Use <code class="language-plaintext highlighter-rouge">--proxy</code> only if another DHCP server on the LAN
+actually leases to the Pi — in the witnessed Windows-ICS case ICS did <em>not</em> lease
+the Pi, so proxy mode left it with no address and it never reached TFTP;
+standalone is the working default.</li>
+  <li><strong>TFTP</strong> serves the firmware/kernel/initramfs. The Pi 4 requests them under its
+<strong>board-serial</strong> subdir (<code class="language-plaintext highlighter-rouge">&lt;serial&gt;/start4.elf</code>, e.g. <code class="language-plaintext highlighter-rouge">7bec0617/</code>) — the serve
+script auto-creates <code class="language-plaintext highlighter-rouge">&lt;root&gt;/&lt;serial&gt;/</code> as symlinks to the root the first time it
+sees the serial in the log, so you don’t have to know it in advance.</li>
+  <li><strong>HTTP (:8080)</strong> serves the Alpine <em>root</em> (the apks repo, <code class="language-plaintext highlighter-rouge">modloop-rpi</code>, and the
+apkovl). The diskless initramfs fetches these over HTTP per the cmdline — this is
+what makes the whole thing work; see the panic note in §5.</li>
+</ol>
+
+<h3 id="running-it-on-windows-via-wsl2">Running it on Windows via WSL2</h3>
+
+<p>The witnessed setup was a Windows host with WSL2 Ubuntu (mirrored networking, so WSL
+sees <code class="language-plaintext highlighter-rouge">eth0 = 192.168.137.1/24</code>, the Internet-Connection-Sharing subnet the Pi is
+cabled to). <code class="language-plaintext highlighter-rouge">dnsmasq</code> + <code class="language-plaintext highlighter-rouge">python3</code> live in WSL. Two Windows-specific gotchas:</p>
+
+<ul>
+  <li><strong>WSL2 kills all distro processes when the last <code class="language-plaintext highlighter-rouge">wsl</code> session exits</strong> — detached
+<code class="language-plaintext highlighter-rouge">setsid</code>/<code class="language-plaintext highlighter-rouge">nohup</code> do <em>not</em> survive. Run the serve command in a session that stays
+open (a background terminal), or the servers die the moment the launcher returns.</li>
+  <li><strong>Git-Bash rewrites <code class="language-plaintext highlighter-rouge">/mnt/c/...</code> paths</strong> — prefix <code class="language-plaintext highlighter-rouge">wsl</code> calls with
+<code class="language-plaintext highlighter-rouge">MSYS_NO_PATHCONV=1</code> when passing a <code class="language-plaintext highlighter-rouge">/mnt/c/...</code> script path.</li>
+  <li>Windows Firewall must allow the inbound DHCP(67)/TFTP(69)/HTTP(8080) — in the
+witnessed run all firewall profiles were off, so nothing was blocked.</li>
+</ul>
+
+<h2 id="4-boot-and-watch-serial-console">4. Boot and watch (serial console)</h2>
+
+<p>Wire the 3.3 V USB-UART exactly as for the SD path (<code class="language-plaintext highlighter-rouge">docs/FLASHING.md</code> §3:
+GND→pin 6, Pi TX GPIO14→adapter RX, Pi RX GPIO15→adapter TX, <strong>115200 8N1</strong> —
+<code class="language-plaintext highlighter-rouge">enable_uart=1</code> is carried into the netboot config too). <code class="language-plaintext highlighter-rouge">screen /dev/ttyUSB0
+115200</code>, power the Pi, and watch:</p>
+
+<ul>
+  <li>dnsmasq (<code class="language-plaintext highlighter-rouge">-d</code>) logs the DHCP handshake then each TFTP fetch: <code class="language-plaintext highlighter-rouge">bootcode.bin</code> →
+<code class="language-plaintext highlighter-rouge">start4.elf</code> → <code class="language-plaintext highlighter-rouge">config.txt</code> → <code class="language-plaintext highlighter-rouge">bcm2711-rpi-4-b.dtb</code> → kernel + initramfs.</li>
+  <li>The initramfs brings up the NIC (<code class="language-plaintext highlighter-rouge">ip=dhcp</code>, added by the netboot builder), mounts
+<code class="language-plaintext highlighter-rouge">modloop-rpi</code>, restores <code class="language-plaintext highlighter-rouge">aloop.apkovl.tar.gz</code>, and OpenRC starts the <code class="language-plaintext highlighter-rouge">aloop</code> +
+<code class="language-plaintext highlighter-rouge">autoap</code> services — same as <code class="language-plaintext highlighter-rouge">docs/BOOT.md</code>.</li>
+  <li>The USB-audio gadget still comes up (<code class="language-plaintext highlighter-rouge">dtoverlay=dwc2,dr_mode=peripheral</code>); network
+boot uses the Pi’s <strong>Ethernet</strong>, not the USB-C/OTG port, so the f_uac2 gadget and
+netboot do not conflict.</li>
+</ul>
+
+<h2 id="what-netboot-is-and-isnt-good-for">What netboot is (and isn’t) good for</h2>
+
+<ul>
+  <li><strong>Good for:</strong> iterating the boot config, the apkovl layout, the service startup,
+and catching “a shipped path doesn’t resolve on the device” issues — all without
+reflashing. <code class="language-plaintext highlighter-rouge">validate-netboot.sh</code> catches the structural class in CI before you
+even boot.</li>
+  <li><strong>Not a substitute for</strong> the on-hardware measurements (<code class="language-plaintext highlighter-rouge">docs/HARDWARE-TESTS.md</code>):
+RT jitter, f_uac2 round-trip latency, and Link-over-WiFi still need a real Pi 4
+and are measured there. Netboot just gets you to a booted appliance faster.</li>
+</ul>
+
+<h2 id="5-known-first-boot-issues--all-found-on-a-real-pi-4-and-solved-in-the-build">5. Known first-boot issues — all found on a real Pi 4 and solved in the build</h2>
+
+<p>These are the actual problems a live netboot surfaced (Pi 4, board serial
+<code class="language-plaintext highlighter-rouge">7bec0617</code>), each fixed in <code class="language-plaintext highlighter-rouge">image/build-netboot.sh</code> / <code class="language-plaintext highlighter-rouge">image/serve-netboot.sh</code>:</p>
+
+<ul>
+  <li><strong>Initramfs never DHCPs → drops to an emergency shell (<code class="language-plaintext highlighter-rouge">cmdline.txt</code> had an embedded
+newline)</strong> — the single highest-impact bug. The Pi 4 firmware reads <strong>only the first
+line</strong> of <code class="language-plaintext highlighter-rouge">cmdline.txt</code> as the kernel command line. The stock Alpine <code class="language-plaintext highlighter-rouge">cmdline.txt</code>
+ends with a trailing newline, and the builder appended the RT + netboot params
+<em>after</em> it, leaving an <strong>embedded <code class="language-plaintext highlighter-rouge">\n</code></strong> — so <code class="language-plaintext highlighter-rouge">isolcpus</code>, <code class="language-plaintext highlighter-rouge">ip=dhcp</code>, <code class="language-plaintext highlighter-rouge">alpine_repo</code>,
+<code class="language-plaintext highlighter-rouge">modloop</code> and <code class="language-plaintext highlighter-rouge">apkovl</code> were <strong>all silently dropped</strong>. Without <code class="language-plaintext highlighter-rouge">ip=dhcp</code> the Alpine
+init sets <code class="language-plaintext highlighter-rouge">do_networking=false</code>, the initramfs <code class="language-plaintext highlighter-rouge">udhcpc</code> never runs (the live log
+showed <strong>only the firmware’s DHCP, never the initramfs’s</strong>), no root arrives over
+the network, and init drops to the emergency recovery shell. (It also silently
+disabled <code class="language-plaintext highlighter-rouge">isolcpus</code> RT isolation on the <strong>SD card</strong> too.) <strong>Fix:</strong> <code class="language-plaintext highlighter-rouge">boot_tree_config</code>
+(<code class="language-plaintext highlighter-rouge">image/lib-boot-tree.sh</code>) and the netboot append (<code class="language-plaintext highlighter-rouge">image/build-netboot.sh</code>) now
+collapse <code class="language-plaintext highlighter-rouge">cmdline.txt</code> to a <strong>single line</strong> (strip all newlines, join, one trailing
+<code class="language-plaintext highlighter-rouge">\n</code>). Witness with <code class="language-plaintext highlighter-rouge">od -c aloop-netboot/cmdline.txt</code> — there must be exactly one
+<code class="language-plaintext highlighter-rouge">\n</code>, at EOF, and <code class="language-plaintext highlighter-rouge">ip=dhcp</code>/<code class="language-plaintext highlighter-rouge">alpine_repo</code>/<code class="language-plaintext highlighter-rouge">modloop</code>/<code class="language-plaintext highlighter-rouge">apkovl</code>/<code class="language-plaintext highlighter-rouge">isolcpus</code> must all be
+on that one line.</li>
+  <li><strong>Kernel panic <code class="language-plaintext highlighter-rouge">unable to mount root fs, unknown-block(0,0)</code></strong> — the Pi 4 firmware
+TFTP-loads config/kernel/initramfs fine, but the Alpine <em>diskless</em> initramfs then
+has no block device to find the apks/modloop/apkovl on. <strong>Fix:</strong> the Alpine RPi
+initramfs honors HTTP boot params, so <code class="language-plaintext highlighter-rouge">build-netboot.sh</code> adds
+<code class="language-plaintext highlighter-rouge">alpine_repo=http://&lt;server&gt;:8080/apks modloop=…/boot/modloop-rpi
+apkovl=…/aloop.apkovl.tar.gz</code> to the cmdline, and <code class="language-plaintext highlighter-rouge">serve-netboot.sh</code> runs an HTTP
+server for the root. The initramfs then fetches the whole root over HTTP (watch
+for <code class="language-plaintext highlighter-rouge">GET /apks/aarch64/APKINDEX.tar.gz</code>, <code class="language-plaintext highlighter-rouge">GET /boot/modloop-rpi</code>,
+<code class="language-plaintext highlighter-rouge">GET /aloop.apkovl.tar.gz</code>, all <code class="language-plaintext highlighter-rouge">200</code>).</li>
+  <li><strong>Pi drops off the wired LAN after boot</strong> — <code class="language-plaintext highlighter-rouge">ip=dhcp</code> brings <code class="language-plaintext highlighter-rouge">eth0</code> up only inside
+the <em>initramfs</em>; the aloop overlay manages <code class="language-plaintext highlighter-rouge">wlan0</code> (autoap) but nothing brings
+<code class="language-plaintext highlighter-rouge">eth0</code> back up once userspace starts, so a netbooted Pi became unreachable right
+after the HTTP root fetches. <strong>Fix:</strong> the netboot build injects
+<code class="language-plaintext highlighter-rouge">/etc/network/interfaces</code> (<code class="language-plaintext highlighter-rouge">eth0 inet dhcp</code>) + enables the <code class="language-plaintext highlighter-rouge">networking</code> service in
+the apkovl for the netboot build only (the SD image boots from local media and
+doesn’t need it).</li>
+  <li><strong>No DHCP address in proxy mode</strong> — with Windows ICS on the link <em>not</em> actually
+leasing to the Pi, proxy DHCP gave the Pi no address at all. <strong>Fix:</strong> standalone
+DHCP is the serve-script default (<code class="language-plaintext highlighter-rouge">--proxy</code> only when a real DHCP server leases).</li>
+  <li><strong>DHCP loops DISCOVER↔OFFER, never REQUEST</strong> — when a <em>second</em> DHCP server shares
+the link (Windows ICS runs one on the same NIC and can’t easily be stopped without
+admin), the Pi 4 saw two offers and never accepted ours, looping forever without
+reaching TFTP. <strong>Fix:</strong> <code class="language-plaintext highlighter-rouge">serve-netboot.sh</code> runs dnsmasq <code class="language-plaintext highlighter-rouge">--dhcp-authoritative</code> so it
+answers decisively and the handshake completes (DISCOVER→OFFER→REQUEST→ACK).</li>
+  <li><strong>Kernel panic with NO initramfs (TFTP <code class="language-plaintext highlighter-rouge">Permission denied</code>)</strong> — the Alpine tarball
+ships <code class="language-plaintext highlighter-rouge">boot/initramfs-rpi</code> as mode <code class="language-plaintext highlighter-rouge">600</code> (root-only) and <code class="language-plaintext highlighter-rouge">cp -a</code> preserves it; the
+TFTP server drops privileges to <code class="language-plaintext highlighter-rouge">nobody</code>, so it got <em>Permission denied</em> and sent the
+kernel with <strong>no initramfs</strong> → panic “unable to mount root fs”. (Distinct from the
+<code class="language-plaintext highlighter-rouge">unknown-block(0,0)</code> panic above — here the initramfs never loads at all.) <strong>Fix:</strong>
+<code class="language-plaintext highlighter-rouge">build-netboot.sh</code> (and <code class="language-plaintext highlighter-rouge">serve-netboot.sh</code>) <code class="language-plaintext highlighter-rouge">chmod -R a+rX</code> the served tree so any
+unprivileged TFTP/HTTP server can read every file. Watch the dnsmasq log for
+<code class="language-plaintext highlighter-rouge">sent .../boot/initramfs-rpi</code> — a <code class="language-plaintext highlighter-rouge">Permission denied</code> there is this bug.</li>
+  <li><strong>Per-serial TFTP path</strong> — the Pi 4 requests <code class="language-plaintext highlighter-rouge">&lt;board-serial&gt;/start4.elf</code>, not the
+MAC. <strong>Fix:</strong> <code class="language-plaintext highlighter-rouge">serve-netboot.sh</code> auto-creates <code class="language-plaintext highlighter-rouge">&lt;root&gt;/&lt;serial&gt;/</code> as symlinks to
+the root when it first sees the serial in the TFTP log.</li>
+  <li><strong>apkovl + modloop reachable</strong> — served over HTTP (above), not assumed on a local
+FS. <strong>firmware completeness</strong> — the Alpine RPi tarball already ships the full Pi 4
+TFTP firmware chain (<code class="language-plaintext highlighter-rouge">start4.elf</code>/<code class="language-plaintext highlighter-rouge">fixup4.dat</code>/<code class="language-plaintext highlighter-rouge">bootcode.bin</code>/<code class="language-plaintext highlighter-rouge">bcm2711-rpi-4-b.dtb</code>);
+no external firmware sourcing is required.</li>
+</ul>
+
+<h2 id="6-debug-boot--see-exactly-where-the-initramfs-stalls">6. Debug boot — see exactly where the initramfs stalls</h2>
+
+<p>When a netboot stalls in the initramfs, don’t guess — build with <code class="language-plaintext highlighter-rouge">NETBOOT_DEBUG=1</code>
+and read the serial console. The debug cmdline drops <code class="language-plaintext highlighter-rouge">quiet</code> and adds <code class="language-plaintext highlighter-rouge">debug_init</code>
+(the Alpine init runs <code class="language-plaintext highlighter-rouge">set -x</code>), so every step prints:</p>
+
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">NETBOOT_DEBUG</span><span class="o">=</span>1 <span class="nv">NETBOOT_SERVER</span><span class="o">=</span>192.168.137.1 <span class="nv">OUT</span><span class="o">=</span>/srv/tftp/aloop-netboot image/build-netboot.sh
+</code></pre></div></div>
+
+<p>Attach a serial console (the <code class="language-plaintext highlighter-rouge">dwc2</code>/<code class="language-plaintext highlighter-rouge">enable_uart=1</code> config is already in <code class="language-plaintext highlighter-rouge">usercfg.txt</code>)
+and power-cycle. A <strong>healthy</strong> boot prints, in order:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Loading boot drivers    → Mounting boot media    → Obtaining IP via DHCP (eth0)
+→ GET /apks/aarch64/APKINDEX.tar.gz  → GET /boot/modloop-rpi  → GET /aloop.apkovl.tar.gz
+</code></pre></div></div>
+
+<p>Where it stops tells you the layer:</p>
+
+<ul>
+  <li><strong>No <code class="language-plaintext highlighter-rouge">Obtaining IP via DHCP (eth0)</code> line at all</strong> → the kernel never got <code class="language-plaintext highlighter-rouge">ip=dhcp</code>
+(the embedded-newline bug above — check <code class="language-plaintext highlighter-rouge">od -c cmdline.txt</code>).</li>
+  <li><strong><code class="language-plaintext highlighter-rouge">Obtaining IP via DHCP (eth0)</code> but no DHCP in the serve log</strong> → the initramfs
+<code class="language-plaintext highlighter-rouge">udhcpc</code> DISCOVER isn’t reaching your dnsmasq. <strong>The wired link must have no other
+DHCP server for the initramfs round</strong> — Windows ICS runs a second one on the same
+NIC; <code class="language-plaintext highlighter-rouge">--dhcp-authoritative</code> covers the firmware round but the cleanest fix is to
+serve on a link with ICS disabled (or no competing DHCP). Watch the serve log for a
+DHCPDISCOVER <em>seconds after</em> the firmware’s TFTP GETs — that one is the initramfs.</li>
+  <li><strong>DHCP ok but no <code class="language-plaintext highlighter-rouge">GET /…modloop-rpi</code></strong> → the HTTP root server (<code class="language-plaintext highlighter-rouge">:8080</code>) is
+unreachable from the Pi, or the URLs in <code class="language-plaintext highlighter-rouge">cmdline.txt</code> point at the wrong
+<code class="language-plaintext highlighter-rouge">NETBOOT_SERVER</code>.</li>
+</ul>
+
+<h2 id="6-self-updating-serve-windows--auto-refresh-from-ci-like-loopers-tftp-serverjs">6. Self-updating serve (Windows) — auto-refresh from CI, like looper’s tftp-server.js</h2>
+
+<p><code class="language-plaintext highlighter-rouge">image/serve-netboot-win.js</code> (the native Windows DHCP+TFTP+HTTP server, §3’s
+Windows path) polls GitHub Actions every 30 seconds for a newer green
+<code class="language-plaintext highlighter-rouge">build-binary</code>/<code class="language-plaintext highlighter-rouge">build-lv2</code> run and, when one appears, downloads the artifacts,
+rebuilds the served netboot root <strong>in place</strong> (<code class="language-plaintext highlighter-rouge">image/build-netboot.sh</code>), and
+sends <code class="language-plaintext highlighter-rouge">REBOOT</code> to the already-running Pi (<code class="language-plaintext highlighter-rouge">src/control/remote_control.cpp</code>,
+udp/4446) so it picks up the fresh build on its next boot — no manual re-serve,
+no manual re-flash, matching looper’s <code class="language-plaintext highlighter-rouge">tftp-server.js</code> <code class="language-plaintext highlighter-rouge">checkAndUpdate()</code> loop.</p>
+
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c"># aloop's repo is PRIVATE, so a token with `repo` + `actions:read` scope is</span>
+<span class="c"># REQUIRED (unlike looper's public-repo Releases, which need no auth at all).</span>
+<span class="c"># `gh auth token` works if you're already `gh auth login`'d.</span>
+<span class="nv">GITHUB_TOKEN</span><span class="o">=</span><span class="si">$(</span>gh auth token<span class="si">)</span> node image/serve-netboot-win.js <span class="se">\</span>
+  <span class="nt">--root</span> .netboot-serve <span class="nt">--server</span> 192.168.137.1 <span class="se">\</span>
+  <span class="nt">--pi</span> 192.168.137.100 <span class="nt">--pi-token</span> &lt;the aloop.conf <span class="o">[</span>remote] <span class="nv">token</span><span class="o">=&gt;</span>
+</code></pre></div></div>
+
+<p>What it does each poll tick:</p>
+
+<ol>
+  <li>Lists the latest successful run of <code class="language-plaintext highlighter-rouge">build-binary.yml</code> and <code class="language-plaintext highlighter-rouge">build-lv2.yml</code> on
+<code class="language-plaintext highlighter-rouge">main</code> via the Actions API (no <code class="language-plaintext highlighter-rouge">gh</code> CLI dependency — raw <code class="language-plaintext highlighter-rouge">https.get</code>, same
+shape as looper’s <code class="language-plaintext highlighter-rouge">httpsGet</code>/<code class="language-plaintext highlighter-rouge">downloadFile</code>).</li>
+  <li>Compares the pair of <code class="language-plaintext highlighter-rouge">head_sha</code>s against <code class="language-plaintext highlighter-rouge">.netboot-update-sha</code> (sibling of
+the netboot root) — matches looper’s <code class="language-plaintext highlighter-rouge">.tftp-sha</code> tracking file.</li>
+  <li>On a new sha: downloads both artifacts (<code class="language-plaintext highlighter-rouge">aloop-aarch64-musl</code>,
+<code class="language-plaintext highlighter-rouge">home-fx-lv2</code>), unzips them (PowerShell <code class="language-plaintext highlighter-rouge">Expand-Archive</code> — no extra
+dependency), and re-runs <code class="language-plaintext highlighter-rouge">build-netboot.sh</code> with <code class="language-plaintext highlighter-rouge">ALOOP_BIN</code>/<code class="language-plaintext highlighter-rouge">LV2_DIR</code>
+pointed at them and <code class="language-plaintext highlighter-rouge">OUT</code> pointed at the live-served root.</li>
+  <li>Sends <code class="language-plaintext highlighter-rouge">REBOOT:&lt;token&gt;</code> to <code class="language-plaintext highlighter-rouge">--pi</code>/<code class="language-plaintext highlighter-rouge">--pi-token</code> so a Pi that’s already running
+picks up the change immediately; a Pi that’s mid-boot or off just gets the
+new build on its next power-cycle regardless (the whole root is re-fetched
+fresh every boot — there’s no stale-kernel risk like an SD card).</li>
+</ol>
+
+<p>Options: <code class="language-plaintext highlighter-rouge">--update-interval &lt;ms&gt;</code> (default 30000, matches looper’s 30s poll);
+<code class="language-plaintext highlighter-rouge">ALOOP_NO_AUTO_UPDATE=1</code> disables the loop entirely (matches looper’s
+<code class="language-plaintext highlighter-rouge">LOOPER_NO_AUTO_UPDATE</code>); omitting <code class="language-plaintext highlighter-rouge">--pi-token</code>/<code class="language-plaintext highlighter-rouge">PI_TOKEN</code> skips the <code class="language-plaintext highlighter-rouge">REBOOT</code>
+step with a clear log line (the rebuild still happens — only the “poke a
+running Pi right now” step is skipped).</p>
+
+<p><strong>Windows commonly has 3 different <code class="language-plaintext highlighter-rouge">bash.exe</code> on PATH</strong> (Git-Bash, the WSL
+launcher stub under <code class="language-plaintext highlighter-rouge">System32</code>, a WindowsApps alias) — <code class="language-plaintext highlighter-rouge">build-netboot.sh</code> is
+invoked via an explicitly-pinned Git-Bash path (<code class="language-plaintext highlighter-rouge">C:\Program Files\Git\bin\bash.exe</code>
+by default), not a bare <code class="language-plaintext highlighter-rouge">bash</code> lookup, because a bare lookup can resolve to the
+WSL stub depending on launch environment, which cannot see <code class="language-plaintext highlighter-rouge">C:/...</code> paths at
+all and fails with a misleading “No such file or directory” on a path that
+verifiably exists. If the rebuild step ever fails with that exact error, check
+which <code class="language-plaintext highlighter-rouge">bash.exe</code> actually ran, not whether the script path is correct.</p>
+
+<p><strong>WITNESSED live</strong> (real Pi 4, board serial <code class="language-plaintext highlighter-rouge">7bec0617</code>): the update loop found
+a green build, downloaded + rebuilt the root, and the Pi’s own DHCP/TFTP fetch
+of firmware/kernel/initramfs was served correctly <strong>concurrently</strong>, with no
+interference between the two. The rebuilt <code class="language-plaintext highlighter-rouge">aloop.apkovl.tar.gz</code> carried the
+fresh binary+LV2 (grew from a smaller layout-only size to a real payload).</p>
+
+
+      </section>
+      <footer>
+        
+        <p>This project is maintained by <a href="https://github.com/AnEntrypoint">AnEntrypoint</a></p>
+        
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="/aloop/assets/js/scale.fix.js"></script>
+  </body>
+</html>

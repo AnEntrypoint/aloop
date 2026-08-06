@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Glossary | aloop</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="Glossary" />
+<meta property="og:locale" content="en_US" />
+<link rel="canonical" href="https://anentrypoint.github.io/aloop/GLOSSARY.html" />
+<meta property="og:url" content="https://anentrypoint.github.io/aloop/GLOSSARY.html" />
+<meta property="og:site_name" content="aloop" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Glossary" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","headline":"Glossary","url":"https://anentrypoint.github.io/aloop/GLOSSARY.html"}</script>
+<!-- End Jekyll SEO tag -->
+
+    <link rel="stylesheet" href="/aloop/assets/css/style.css?v=2e279a87748b76ad7c5e7c1d866d8982985bdcef">
+    <!--[if lt IE 9]>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
+    <![endif]-->
+    <!-- start custom head snippets, customize with your own _includes/head-custom.html file -->
+
+<!-- Setup Google Analytics -->
+
+
+
+<!-- You can set your favicon here -->
+<!-- link rel="shortcut icon" type="image/x-icon" href="/aloop/favicon.ico" -->
+
+<!-- end custom head snippets -->
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a href="https://anentrypoint.github.io/aloop/">aloop</a></h1>
+
+        
+
+        <p></p>
+
+        
+        <p class="view"><a href="https://github.com/AnEntrypoint/aloop">View the Project on GitHub <small>AnEntrypoint/aloop</small></a></p>
+        
+
+        
+
+        
+      </header>
+      <section>
+
+      <h1 id="glossary">Glossary</h1>
+
+<p>Domain terms used throughout aloop, so the docs are self-contained.</p>
+
+<ul>
+  <li><strong>Ableton Link</strong> — a protocol/library that keeps the tempo, beat, and bar
+phase of musical apps and devices synchronized over a local network (UDP
+multicast). It syncs <em>timing</em>, not audio samples.</li>
+  <li><strong>aloop</strong> — this project: the looper migrated to Alpine Linux, now the
+codebase behind the MC-420.</li>
+  <li><strong>ALSA</strong> — Advanced Linux Sound Architecture; the Linux kernel audio API. aloop
+reads/writes audio through an ALSA PCM.</li>
+  <li><strong>autoAP</strong> — a mode-switching pattern: a device runs as a WiFi <em>station</em> when a
+known network is available and hosts its own <em>access point</em> when none is,
+switching automatically.</li>
+  <li><strong>block / period</strong> — the batch of audio samples processed at once. aloop uses
+64 samples at 48 kHz = a <strong>1.333 ms</strong> block; all per-block work must finish
+inside that budget.</li>
+  <li><strong>Circle</strong> — the bare-metal C++ framework the original looper runs on (no OS).</li>
+  <li><strong>configfs</strong> — a Linux kernel filesystem for configuring kernel objects at
+runtime; used to set up the USB gadget.</li>
+  <li><strong>dwc2</strong> — the USB controller on the Pi that supports device/gadget mode.</li>
+  <li><strong>f_uac2 / UAC2 gadget</strong> — the Linux function that makes the Pi present itself
+<em>as</em> a USB Audio Class 2 device (a soundcard) to a host computer.</li>
+  <li><strong>Faust</strong> — a functional DSP language that compiles to C++/LV2/etc. aloop’s home
+effects are written in Faust.</li>
+  <li><strong>ffunction</strong> — a Faust mechanism to call an external C function; used to link
+the exact C++ pitch engine into the Faust chain.</li>
+  <li><strong>fork-join</strong> — running two tasks on two cores and waiting for both to finish
+within the same block; how aloop can use two cores for <em>parallel</em> effects with
+zero added latency.</li>
+  <li><strong>in-process host</strong> — running plugins by calling their code directly inside
+aloop’s own audio callback (as opposed to a separate graph-server process).</li>
+  <li><strong>isolcpus</strong> — a Linux boot parameter that removes CPUs from the general
+scheduler so only pinned threads run on them (used for the audio cores).</li>
+  <li><strong>LV2</strong> — an open standard plugin format (a <code class="language-plaintext highlighter-rouge">.so</code> + a <code class="language-plaintext highlighter-rouge">.ttl</code> metadata file).
+aloop’s effects are LV2 plugins.</li>
+  <li><strong>lilv</strong> — the reference library for discovering and loading LV2 plugins.</li>
+  <li><strong>MC-420</strong> — the right-to-repair live-performance workstation this codebase
+implements: looping, polyphonic pitch-lock, Resonode, and the granulator, on a
+Pi 4 running Alpine + PREEMPT_RT.</li>
+  <li><strong>mlockall</strong> — a syscall that locks a process’s memory into RAM so it never
+page-faults (page faults would blow the audio deadline).</li>
+  <li><strong>Resonode</strong> — the 4-voice, 6-mode-per-voice modal-resonator synth mode
+reachable by holding the LofiFx pad past a 1-second threshold; excited by the
+live input signal (“reactor mode”), not a synthetic oscillator, and replaces
+(never layers over) the dry signal while engaged.</li>
+  <li><strong>PREEMPT_RT</strong> — the Linux real-time preemption patch/config that bounds
+worst-case scheduling latency to the tens of microseconds.</li>
+  <li><strong>RP1</strong> — the Pi 5 I/O controller; its IRQ handling breaks the audio-core
+isolation aloop relies on, which is why aloop targets Pi 4 (ADR-006).</li>
+  <li><strong>SCHED_FIFO</strong> — a Linux real-time scheduling policy; the audio threads run
+under it at high priority.</li>
+  <li><strong>pitch-lock (multitranspose)</strong> — the 6-voice polyphonic harmonizer (SHIFT +
+keybed) that locks the input’s pitch to whichever keys are held, Whammy/
+Manipulator-style, replacing the original pitch rather than layering over it.</li>
+  <li><strong>right-to-repair</strong> — the MC-420’s core design premise: every DSP algorithm
+is readable/editable Faust source, every control binding is a plain-text
+mapping, and the runtime is standard Linux — no sealed firmware blob or
+proprietary tooling gates modifying or repairing the instrument.</li>
+  <li><strong>snapshot (double-buffered atomic)</strong> — the lock-free handoff of control
+parameters (Link tempo, MIDI values) from the control core to the audio core:
+a single writer flips between two buffers, the reader always sees a complete
+one. No locks, no tearing.</li>
+  <li><strong>SPSC ring</strong> — single-producer/single-consumer lock-free queue; how audio work
+is dispatched between cores.</li>
+  <li><strong>STA / AP</strong> — WiFi <em>station</em> (client, joins a network) vs <em>access point</em>
+(hosts a network). autoAP switches between them.</li>
+  <li><strong>ticker</strong> — the open SSID hosted by whichever device (aloop or the paired
+<code class="language-plaintext highlighter-rouge">esp-idf-link</code> ESP32 project) wins MAC-ordered host election, forming the
+ad-hoc mesh Ableton Link’s multicast discovery needs.</li>
+  <li><strong>UAC2</strong> — USB Audio Class 2, the USB spec for audio devices.</li>
+  <li><strong>xrun</strong> — an audio buffer under/overrun: the audio thread missed its deadline
+and produced a glitch. The enemy. RT tuning exists to prevent xruns.</li>
+</ul>
+
+
+      </section>
+      <footer>
+        
+        <p>This project is maintained by <a href="https://github.com/AnEntrypoint">AnEntrypoint</a></p>
+        
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="/aloop/assets/js/scale.fix.js"></script>
+  </body>
+</html>

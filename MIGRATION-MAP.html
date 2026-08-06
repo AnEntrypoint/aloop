@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Migration map: Circle (bare metal) → Alpine Linux | aloop</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="Migration map: Circle (bare metal) → Alpine Linux" />
+<meta property="og:locale" content="en_US" />
+<link rel="canonical" href="https://anentrypoint.github.io/aloop/MIGRATION-MAP.html" />
+<meta property="og:url" content="https://anentrypoint.github.io/aloop/MIGRATION-MAP.html" />
+<meta property="og:site_name" content="aloop" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Migration map: Circle (bare metal) → Alpine Linux" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","headline":"Migration map: Circle (bare metal) → Alpine Linux","url":"https://anentrypoint.github.io/aloop/MIGRATION-MAP.html"}</script>
+<!-- End Jekyll SEO tag -->
+
+    <link rel="stylesheet" href="/aloop/assets/css/style.css?v=2e279a87748b76ad7c5e7c1d866d8982985bdcef">
+    <!--[if lt IE 9]>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
+    <![endif]-->
+    <!-- start custom head snippets, customize with your own _includes/head-custom.html file -->
+
+<!-- Setup Google Analytics -->
+
+
+
+<!-- You can set your favicon here -->
+<!-- link rel="shortcut icon" type="image/x-icon" href="/aloop/favicon.ico" -->
+
+<!-- end custom head snippets -->
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a href="https://anentrypoint.github.io/aloop/">aloop</a></h1>
+
+        
+
+        <p></p>
+
+        
+        <p class="view"><a href="https://github.com/AnEntrypoint/aloop">View the Project on GitHub <small>AnEntrypoint/aloop</small></a></p>
+        
+
+        
+
+        
+      </header>
+      <section>
+
+      <h1 id="migration-map-circle-bare-metal--alpine-linux">Migration map: Circle (bare metal) → Alpine Linux</h1>
+
+<p>Every bare-metal looper subsystem, what it becomes on aloop, and the effort/risk.
+This is the traceability record — each Linux component points back at the
+hand-rolled thing it replaces, so nothing is lost or silently dropped.</p>
+
+<p>Classification: <strong>delete</strong> (kernel/userspace replaces it entirely) · <strong>trivial</strong>
+(a one-liner Linux equivalent) · <strong>port</strong> (real code to move) · <strong>new</strong>
+(capability that didn’t exist on bare metal).</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Bare-metal (Circle)</th>
+      <th>aloop (Linux)</th>
+      <th>Class</th>
+      <th>Effort</th>
+      <th>Notes</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Loop engine + effects (the whole audio DSP)</td>
+      <td><strong>reimplemented in Faust</strong> (<code class="language-plaintext highlighter-rouge">dsp/loop.dsp</code> + the dubfx effect chain, composed into <code class="language-plaintext highlighter-rouge">dsp/aloop.dsp</code>)</td>
+      <td><strong>new (native)</strong></td>
+      <td>low–med</td>
+      <td>No Circle source; the effects are the dubfx A/B-verified chain, the loop engine is a native Faust looper (witnessed)</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">CMultiCoreSupport</code> + SEV/WFE rings + <code class="language-plaintext highlighter-rouge">paramSnapshot</code></td>
+      <td>pthreads + <code class="language-plaintext highlighter-rouge">sched_setaffinity</code> + <code class="language-plaintext highlighter-rouge">SCHED_FIFO</code>; <code class="language-plaintext highlighter-rouge">futex</code>/<code class="language-plaintext highlighter-rouge">eventfd</code> wakeups; the atomic snapshot unchanged</td>
+      <td><strong>port</strong></td>
+      <td>medium</td>
+      <td>Lock-free discipline transfers; only the wakeup primitive changes</td>
+    </tr>
+    <tr>
+      <td>Ableton Link raw-Ethernet clone (<code class="language-plaintext highlighter-rouge">abletonLink.cpp</code>, <code class="language-plaintext highlighter-rouge">linkWire/linkGhost/linkSession.h</code>, 938+ lines)</td>
+      <td>official Ableton Link library over UDP multicast</td>
+      <td><strong>delete</strong></td>
+      <td>low–med</td>
+      <td>Existed only for the missing IP stack; the lib is RT-safe and interoperable</td>
+    </tr>
+    <tr>
+      <td>WiFi: <code class="language-plaintext highlighter-rouge">CBcm4343Device</code> + <code class="language-plaintext highlighter-rouge">JoinOpenNet</code>/<code class="language-plaintext highlighter-rouge">CreateOpenNet</code> + <code class="language-plaintext highlighter-rouge">wlanDHCP</code>/<code class="language-plaintext highlighter-rouge">wlanDHCPServer</code> + hand-rolled ARP/IGMP</td>
+      <td><code class="language-plaintext highlighter-rouge">brcmfmac</code> (mainline) + <code class="language-plaintext highlighter-rouge">wpa_supplicant</code> (STA) + <code class="language-plaintext highlighter-rouge">hostapd</code> (AP) + <code class="language-plaintext highlighter-rouge">dnsmasq</code> (DHCP) + autoAP switch</td>
+      <td><strong>delete</strong></td>
+      <td>low–med</td>
+      <td>The whole raw stack collapses into standard userspace</td>
+    </tr>
+    <tr>
+      <td>USB UAC2 gadget: <code class="language-plaintext highlighter-rouge">dwusbgadget.cpp</code>, <code class="language-plaintext highlighter-rouge">usbaudiogadget*</code></td>
+      <td><code class="language-plaintext highlighter-rouge">f_uac2</code> configfs gadget on dwc2 + ALSA PCM</td>
+      <td><strong>delete</strong></td>
+      <td><strong>high</strong></td>
+      <td>Hardest port; deletes the buzz/crackle bug class (kernel does microframes right)</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">CNetSubSystem</code>, <code class="language-plaintext highlighter-rouge">CSocket</code>, <code class="language-plaintext highlighter-rouge">CIPAddress</code>, <code class="language-plaintext highlighter-rouge">CSysLogDaemon</code></td>
+      <td>Linux kernel netstack + BSD <code class="language-plaintext highlighter-rouge">socket()</code>; <code class="language-plaintext highlighter-rouge">syslog(3)</code></td>
+      <td><strong>trivial</strong></td>
+      <td>low</td>
+      <td>Ordinary sockets</td>
+    </tr>
+    <tr>
+      <td>USB-MIDI (APC Key25) via Circle USB</td>
+      <td>ALSA rawmidi / <code class="language-plaintext highlighter-rouge">snd-usb-audio</code>; the CC/note mapping logic (<code class="language-plaintext highlighter-rouge">apcKey25*.cpp</code>) ports unchanged</td>
+      <td><strong>port</strong></td>
+      <td>low</td>
+      <td>Only the input source changes</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">CTimer::GetClockTicks()</code> @ 1 MHz</td>
+      <td><code class="language-plaintext highlighter-rouge">clock_gettime(CLOCK_MONOTONIC)</code></td>
+      <td><strong>trivial</strong></td>
+      <td>low</td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">CScheduler</code> cooperative yield</td>
+      <td>native threads / <code class="language-plaintext highlighter-rouge">sched_yield</code></td>
+      <td><strong>trivial</strong></td>
+      <td>low</td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">CEMMCDevice</code> + FatFs</td>
+      <td>native VFS / <code class="language-plaintext highlighter-rouge">mount</code></td>
+      <td><strong>trivial</strong></td>
+      <td>low</td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">CScreenDevice</code>, <code class="language-plaintext highlighter-rouge">CActLED</code>, <code class="language-plaintext highlighter-rouge">CSerialDevice</code></td>
+      <td>framebuffer/DRM, sysfs LED, <code class="language-plaintext highlighter-rouge">/dev/ttyAMA0</code></td>
+      <td><strong>trivial</strong></td>
+      <td>low</td>
+      <td>Rarely needed at runtime</td>
+    </tr>
+    <tr>
+      <td>Circle boot / kernel image</td>
+      <td>Alpine diskless/RAM image + PREEMPT_RT kernel</td>
+      <td><strong>new</strong></td>
+      <td>med–high</td>
+      <td>The RT kernel is the biggest single task</td>
+    </tr>
+    <tr>
+      <td>— (Core 3 idle)</td>
+      <td>user-swappable LV2 on Core 3</td>
+      <td><strong>new</strong></td>
+      <td>medium</td>
+      <td>The moddability capability — impossible without a filesystem + linker</td>
+    </tr>
+    <tr>
+      <td>effects compiled into firmware</td>
+      <td>LV2 bundles on flash (home + user)</td>
+      <td><strong>new</strong></td>
+      <td>medium</td>
+      <td>The dubfx Faust chain via <code class="language-plaintext highlighter-rouge">faust2lv2</code></td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">:4445</code> telemetry verbs, core-busy %</td>
+      <td>Linux telemetry surface (UDP / status file)</td>
+      <td><strong>port</strong></td>
+      <td>low</td>
+      <td>Keep the diagnosability looper had</td>
+    </tr>
+    <tr>
+      <td>— (no bare-metal precedent)</td>
+      <td>6-voice polyphonic pitch-lock (<code class="language-plaintext highlighter-rouge">multitranspose.dsp</code>)</td>
+      <td><strong>new</strong></td>
+      <td>high</td>
+      <td>A Whammy/Manipulator-style harmonizer; possible only because the home stack has headroom the bare-metal core never had</td>
+    </tr>
+    <tr>
+      <td>— (no bare-metal precedent)</td>
+      <td>Resonode modal-resonator synth (<code class="language-plaintext highlighter-rouge">resonode_synth.dsp</code>)</td>
+      <td><strong>new</strong></td>
+      <td>high</td>
+      <td>A real-input-excited synth voice, not a loop/effect at all — the LofiFx pad’s real-hold gesture</td>
+    </tr>
+    <tr>
+      <td>— (no bare-metal precedent)</td>
+      <td>6-patch granulator (<code class="language-plaintext highlighter-rouge">Sampler</code>, C++)</td>
+      <td><strong>new</strong></td>
+      <td>high</td>
+      <td>Dynamic per-grain scheduling; deliberately C++ rather than Faust since it doesn’t fit static dataflow</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="the-two-sided-ledger">The two-sided ledger</h2>
+
+<p><strong>Deleted / evicted</strong> (maintenance that leaves the project): the hand-rolled UAC2
+decoder (source of every buzz/crackle lesson), the entire raw WLAN/DHCP/ARP/IGMP/
+Link-wire stack, and the effects-maintenance burden (now declarative Faust LV2).</p>
+
+<p><strong>Cost</strong> (new work this migration takes on): a PREEMPT_RT kernel + RT tuning, the
+<code class="language-plaintext highlighter-rouge">f_uac2</code> gadget port, unwinding the multicore SEV/WFE IPC to pthreads, musl
+verification, and accepting a slightly worse <em>worst-case</em> jitter than bare metal
+(mitigated to tens of µs by RT + core isolation — inaudible when tuned).</p>
+
+<p>The net is strongly positive: the migration <strong>retires two entire subsystems
+worth of hand-rolled bugs</strong> while adding the moddability the project exists for.</p>
+
+
+      </section>
+      <footer>
+        
+        <p>This project is maintained by <a href="https://github.com/AnEntrypoint">AnEntrypoint</a></p>
+        
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="/aloop/assets/js/scale.fix.js"></script>
+  </body>
+</html>

@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Hardware test runbook | aloop</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="Hardware test runbook" />
+<meta property="og:locale" content="en_US" />
+<link rel="canonical" href="https://anentrypoint.github.io/aloop/HARDWARE-TESTS.html" />
+<meta property="og:url" content="https://anentrypoint.github.io/aloop/HARDWARE-TESTS.html" />
+<meta property="og:site_name" content="aloop" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Hardware test runbook" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","headline":"Hardware test runbook","url":"https://anentrypoint.github.io/aloop/HARDWARE-TESTS.html"}</script>
+<!-- End Jekyll SEO tag -->
+
+    <link rel="stylesheet" href="/aloop/assets/css/style.css?v=2e279a87748b76ad7c5e7c1d866d8982985bdcef">
+    <!--[if lt IE 9]>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
+    <![endif]-->
+    <!-- start custom head snippets, customize with your own _includes/head-custom.html file -->
+
+<!-- Setup Google Analytics -->
+
+
+
+<!-- You can set your favicon here -->
+<!-- link rel="shortcut icon" type="image/x-icon" href="/aloop/favicon.ico" -->
+
+<!-- end custom head snippets -->
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a href="https://anentrypoint.github.io/aloop/">aloop</a></h1>
+
+        
+
+        <p></p>
+
+        
+        <p class="view"><a href="https://github.com/AnEntrypoint/aloop">View the Project on GitHub <small>AnEntrypoint/aloop</small></a></p>
+        
+
+        
+
+        
+      </header>
+      <section>
+
+      <h1 id="hardware-test-runbook">Hardware test runbook</h1>
+
+<p>Everything aloop can prove without hardware is already proven (CI is green; the
+DSP is A/B-verified against looper). The tests here are the ones that need a real
+<strong>Raspberry Pi 4</strong> — they <em>measure</em> physical timing, latency, and RF behavior
+that cannot be simulated on a dev host. The harnesses are all built and
+one-command runnable; this runbook is how you run them.</p>
+
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+  <li>A Raspberry Pi 4 running the aloop Alpine image (<code class="language-plaintext highlighter-rouge">image/build-image.sh</code>).</li>
+  <li>The Pi connected to a host computer via USB (so the f_uac2 gadget is active).</li>
+  <li>A second WiFi device (phone/laptop) with a Link-enabled app, for the Link/AP tests.</li>
+  <li><code class="language-plaintext highlighter-rouge">apk add rt-tests iw</code> on the Pi (cyclictest + iw).</li>
+</ul>
+
+<h2 id="run-everything">Run everything</h2>
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code>sh <span class="nb">test</span>/hardware/run-all.sh
+</code></pre></div></div>
+
+<h2 id="the-individual-tests--pass-criteria">The individual tests + pass criteria</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Test</th>
+      <th>What it measures</th>
+      <th>PASS when</th>
+      <th>PRD row</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">test-irq-affinity.sh</code></td>
+      <td>WiFi/USB IRQs are steered off the audio cores</td>
+      <td>no net/USB IRQ maps to cores 1,3</td>
+      <td>wifi-ap-irq-affinity</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">test-rt-jitter.sh</code></td>
+      <td>worst-case scheduling latency under load</td>
+      <td>cyclictest max &lt; 1333 µs, 0 xruns over 10 min</td>
+      <td>rt-cyclictest-verify</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">test-usb-latency.sh</code></td>
+      <td>f_uac2 round-trip latency</td>
+      <td>≤ bare-metal baseline (a few ms); device-side confirms the gadget PCM, host-side does the click round-trip</td>
+      <td>usb-gadget-latency-verify</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">test-link-glitch.sh</code></td>
+      <td>Link over WiFi does not glitch audio</td>
+      <td>~0 xruns over 10 min with Link active (bare-metal had ~1/s)</td>
+      <td>link-glitch-verify</td>
+    </tr>
+    <tr>
+      <td><code class="language-plaintext highlighter-rouge">test-ap-multicast.sh</code></td>
+      <td>a peer can Link over the Pi’s AP</td>
+      <td>AP up, <code class="language-plaintext highlighter-rouge">ap_isolate=0</code>, mcast joined; peer-side confirms tempo sync</td>
+      <td>wifi-ap-multicast</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="the-host-side-click-measurement-for-usb-latency">The host-side click measurement (for USB latency)</h2>
+<p>The device-side script confirms the gadget PCM is live and reports its period.
+The actual round-trip number is measured on the <strong>host</strong>: play a short click into
+the Pi (which is a soundcard to the host), record the Pi’s output, and measure
+the sample offset between the sent and returned click. Any DAW or a small
+<code class="language-plaintext highlighter-rouge">arecord</code>/<code class="language-plaintext highlighter-rouge">aplay</code> loopback on the host does this. Compare to looper’s baseline.</p>
+
+<h2 id="where-the-numbers-land">Where the numbers land</h2>
+<p>Each test prints PASS/FAIL + the measured value. Record the numbers against the
+matching PRD row (<code class="language-plaintext highlighter-rouge">hardware-test-execution</code>) so the 100%-tested state is
+witnessed with real output, not asserted.</p>
+
+
+      </section>
+      <footer>
+        
+        <p>This project is maintained by <a href="https://github.com/AnEntrypoint">AnEntrypoint</a></p>
+        
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="/aloop/assets/js/scale.fix.js"></script>
+  </body>
+</html>
