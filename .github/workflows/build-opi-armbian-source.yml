@@ -63,7 +63,8 @@ jobs:
         id: locate
         working-directory: armbian-build
         run: |
-          IMG=$(find output/images -iname 'Armbian*orangepiprime*.img*' | head -n1)
+          IMG=$(find output/images -iname 'Armbian*orangepiprime*.img.xz' | head -n1)
+          [ -z "$IMG" ] && IMG=$(find output/images -iname 'Armbian*orangepiprime*.img' | head -n1)
           echo "img=$IMG" >> "$GITHUB_OUTPUT"
           ls -la output/images/
 
