@@ -175,7 +175,7 @@ const DIVS = [1,2,4,8,16];
 const KNOB_CC = [48,49,50,51,54,55,57];
 const VU_MID = 0.32, VU_HIGH = 0.62;
 const GRAN_PATCHES = ['Glass','Cloud','Freeze','Chop','Tape','Shatter'];
-const RESONODE_PATCHES = ['Percussive','Metal/Glass','Strings','Dance Bass'];
+const RESONODE_PATCHES = ['Percussive','Metal/Glass','Strings','Wood/Membrane'];
 const DUB_LABELS = ['Reverb','Delay','Time','HP Cut','LP Res','LP Cut','Pitch'];
 const GUITAR_LABELS = ['Flange','Tremolo','Bank Spd','Phaser','Attack','Release','Compress'];
 
@@ -593,8 +593,8 @@ function view() {
       ' pitch-shift with the same control interface, see ', h('code', {}, 'docs/demo/faust/pitch_stub_browser.dsp'), '. ' +
       'Click a looper pad to arm/finish/pause/resume it, press-and-hold ~1s to erase, toggle Shift (a mouse can’t ' +
       'hold two controls at once, so it latches here instead of requiring a continuous hold) and play the keybed ' +
-      'to pitch-lock, tap LofiFx to latch the granulator knob or hold it 1s to switch to the real Resonode ' +
-      'resonator synth.'
+      'to pitch-lock, press LofiFx to latch the granulator knob (press again to unlatch) or hold it 1s to switch ' +
+      'to the real Resonode resonator synth.'
     ),
     !state.audioStarted ? h('div', {class: 'rack'},
       h('h3', {}, 'Audio'),
