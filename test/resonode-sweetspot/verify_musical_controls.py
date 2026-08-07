@@ -1,3 +1,4 @@
+import math
 import re
 import sys
 from pathlib import Path
@@ -347,6 +348,57 @@ def check_pitch_mod_gated_by_velocity_and_flexibility():
     return active_diff > 0.01 and stiff_diff < 1e-5
 
 
+def render_named_patch(position, decay, damping, stretch, collision, note, dur, seed):
+    text = DSP_PATH.read_text()
+    for name, val in [
+        ("position", position),
+        ("decay", decay),
+        ("damping", damping),
+        ("stretch", stretch),
+        ("collision", collision),
+    ]:
+        pattern = rf'hslider\("fx/resonode/{name}", [^,]+,'
+        new_text = re.sub(pattern, f'hslider("fx/resonode/{name}", {val},', text)
+        if new_text == text:
+            raise RuntimeError(f"no hslider match for {name}")
+        text = new_text
+    return render(text, note=note, dur=dur, seed=seed)
+
+
+def check_dance_bass_shipped_patch():
+    print("=== shipped Dance Bass patch: low-frequency-dominant, sustained bass character ===")
+    position, decay, damping, stretch, collision = 0.420, 7.000, 0.150, -0.100, 0.300
+    ok = True
+    for note in (28, 36, 48):
+        audio = render_named_patch(position, decay, damping, stretch, collision, note=note, dur=1.0, seed=13)
+        if not np.all(np.isfinite(audio)):
+            print(f"note={note}: NON-FINITE OUTPUT")
+            ok = False
+            continue
+        peak = float(np.max(np.abs(audio)))
+        f0 = 440.0 * (2.0 ** ((note - 69) / 12.0))
+        sr = SAMPLE_RATE
+        seg = audio[int(0.15 * sr):]
+        windowed = seg * np.hanning(len(seg))
+        spec = np.abs(np.fft.rfft(windowed))
+        freqs = np.fft.rfftfreq(len(seg), 1.0 / sr)
+        total_energy = float(np.sum(spec ** 2)) + 1e-20
+        low_energy = float(np.sum(spec[freqs <= 1.5 * f0] ** 2))
+        low_ratio = low_energy / total_energy
+        early = audio[int(0.05 * sr): int(0.15 * sr)].astype(np.float64)
+        late = audio[int(0.5 * sr): int(0.6 * sr)].astype(np.float64)
+        rms_early = math.sqrt(float(np.mean(early ** 2)) + 1e-20)
+        rms_late = math.sqrt(float(np.mean(late ** 2)) + 1e-20)
+        sustain_ratio = rms_late / (rms_early + 1e-9)
+        print(
+            f"note={note} f0={f0:6.1f}Hz peak={peak:.3f} lowFreqRatio={low_ratio:.3f} "
+            f"sustainRatio={sustain_ratio:.3f}"
+        )
+        if peak > 1.001 or low_ratio < 0.85 or sustain_ratio < 0.5:
+            ok = False
+    return ok
+
+
 def main():
     results = {
         "tone_taper": check_tone_taper(),
@@ -359,6 +411,7 @@ def main():
         "collision_zero_is_identity": check_collision_zero_is_identity(),
         "collision_bounded_and_monotonic_energy": check_collision_bounded_and_monotonic_energy(),
         "pitch_mod_gated_by_velocity_and_flexibility": check_pitch_mod_gated_by_velocity_and_flexibility(),
+        "dance_bass_shipped_patch": check_dance_bass_shipped_patch(),
     }
     print()
     print("=== summary ===")

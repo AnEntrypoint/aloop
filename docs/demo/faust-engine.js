@@ -15,7 +15,7 @@ const RESONODE_PATCHES = [
   { position: 0.08, decay: 0.15, damping: 0.8, stretch: -0.1, collision: 0.55 },
   { position: 0.08, decay: 7.0, damping: 0.97, stretch: 1.2, collision: 0.15 },
   { position: 0.08, decay: 7.0, damping: 0.97, stretch: -0.1, collision: 0.0 },
-  { position: 0.6, decay: 1.2, damping: 0.35, stretch: 0.05, collision: 0.25 },
+  { position: 0.42, decay: 7.0, damping: 0.15, stretch: -0.1, collision: 0.3 },
 ];
 const RESONODE_DIRECT_RANGES = [
   { zone: "fx/resonode/tone", lo: 200.0, hi: 18000.0, logTaper: true },
