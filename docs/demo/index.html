@@ -583,8 +583,8 @@ function view() {
     ),
     h('p', {class: 'lede'},
       'aloop’s APC Key25-class control surface running the REAL Faust DSP — ',
-      h('code', {}, 'dsp/aloop.dsp'), ' (20-looper engine + dub effects + pitch-lock + Resonode) chained into ',
-      h('code', {}, 'effects/home/faust/guitar_lofi_fx.dsp'), ' (guitar+lofi-fx), compiled at page-load by ',
+      h('code', {}, '/dsp/aloop.dsp'), ' (20-looper engine + dub effects + pitch-lock + Resonode) chained into ',
+      h('code', {}, '/effects/home/faust/guitar_lofi_fx.dsp'), ' (guitar+lofi-fx), compiled at page-load by ',
       h('code', {}, '@grame/faustwasm'), '’s real libfaust-wasm JIT and run in an AudioWorklet against your ' +
       'microphone — the same signal path ', h('code', {}, 'src/dsp/audio_thread.cpp'), ' runs on real hardware, ' +
       'not a simulation. The only substitution is ', h('code', {}, 'effects/home/faust/pitch.dsp'),
