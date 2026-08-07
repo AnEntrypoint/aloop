@@ -91,6 +91,7 @@ public:
     bool granulatorHeld() const { return m_granulatorHeld; }
     bool granulatorLatched() const { return m_granulatorLatched; }
     bool resonodeEngaged() const { return m_resonodeEngaged; }
+    bool resonodeLatched() const { return m_resonodeLatched; }
     void onGuitarFxPress(unsigned now_ms, ParamStore& ps);
     void onGuitarFxRelease(ParamStore& ps);
     void onFxKnobCC(int ccNumber, uint8_t data2, ParamStore& ps, Sampler* sampler, Lv2Host* homeFx);
@@ -162,6 +163,9 @@ private:
     void applyGranulatorMorph(Sampler* sampler);
 
     bool m_resonodeEngaged = false;
+    bool m_resonodeLatched = false;
+    bool m_resonodeHoldFiredThisPress = false;
+    int m_resonodeDroneNote = 57;
     int m_resonodeVoiceNote[kResonodeVoices] = {-1, -1, -1, -1};
     uint32_t m_resonodeVoiceOrder[kResonodeVoices] = {};
     uint32_t m_resonodeVoiceCounter = 0;
@@ -169,6 +173,7 @@ private:
     void releaseResonodeVoice(int note, ParamStore& ps);
     void releaseAllResonodeVoices(ParamStore& ps);
     void applyResonodePatchMorph(ParamStore& ps);
+    void engageResonodeDrone(ParamStore& ps);
 
     bool m_guitarFxHeld = false;
     bool m_guitarFxConsumedByLooperPress = false;
