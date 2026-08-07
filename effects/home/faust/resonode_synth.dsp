@@ -53,11 +53,17 @@ collisionDrive(x) = x;
 
 aliasGuard(f) = min(1.0, max(0.0, (ma.SR*0.5 - f) / (ma.SR*0.05)));
 
-bank(freqHz, exc) = exc <: (m1, m2) :> _
+bank(freqHz, exc) = exc <: (m1, m2, m3, m4) :> _
 with {
+    dp2 = damping*damping;
+    dp3 = dp2*damping;
     f2 = freqHz*pow(2.0, 1.0+stretch);
+    f3 = freqHz*pow(3.0, 1.0+stretch);
+    f4 = freqHz*pow(4.0, 1.0+stretch);
     m1 = pm.modeFilter(freqHz, decayTime,        1.00*abs(sin(ma.PI*position*1))*aliasGuard(freqHz));
     m2 = pm.modeFilter(f2,     decayTime*damping, 0.60*abs(sin(ma.PI*position*2))*aliasGuard(f2));
+    m3 = pm.modeFilter(f3,     decayTime*dp2,     0.40*abs(sin(ma.PI*position*3))*aliasGuard(f3));
+    m4 = pm.modeFilter(f4,     decayTime*dp3,     0.30*abs(sin(ma.PI*position*4))*aliasGuard(f4));
 };
 
 voice(exciteIn, note, gate, vel) = collisionDrive(bank(440.0, exciteFor(exciteIn, note, gate, vel))) * voiceGain;
