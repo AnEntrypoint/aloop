@@ -1,7 +1,7 @@
 declare name "Resonode";
 declare author "aloop";
 declare license "GPLv3";
-declare description "4-voice modal-resonator instrument: a bank of tuned resonant modes per voice, excited only by the live mic/dry input -- there is no synthetic strike or self-contained exciter anywhere in the signal path. Architecture (a shared exciter driving a mode-filter bank per voice) ported from DawDreamer's examples/resonaut/resonaut.py, sized to 4 voices x 4 modes to fit aloop's real-time Pi 4 budget (a 6-mode bank measurably overran the 1.333ms audio-thread block deadline on real aarch64 hardware, confirmed via readi diagnostic-gap growth and a real SIGSEGV bisection). exciteIn/note/gate/vel are signal inputs, not hslider/button UI elements, matching multitranspose.dsp's own convention for momentary per-voice state fed through as control-rate-free wires. collision is a per-patch bounded soft-clip/waveshape amount applied to each voice's own resonator output (0 = exact passthrough); pitch-mod is a small, velocity- and dispersion-scaled onset frequency deviation that decays back to the true pitch over ~40ms, modeling impact deformation without any synthetic exciter to carry it.";
+declare description "4-voice modal-resonator instrument: a bank of tuned resonant modes per voice, excited only by the live mic/dry input -- there is no synthetic strike or self-contained exciter anywhere in the signal path. Architecture (a shared exciter driving a mode-filter bank per voice) ported from DawDreamer's examples/resonaut/resonaut.py, sized to 4 voices x 2 modes to fit aloop's real-time Pi 4 budget (a 6-mode bank measurably overran the 1.333ms audio-thread block deadline on real aarch64 hardware; even 4 modes overran once freqGlide's real per-sample pitch glide was combined with the bank's own pow()-based per-mode frequency ratios, confirmed via readi diagnostic-gap growth and a real SIGSEGV bisection -- the cost driver is coefficient recomputation cost when frequency genuinely varies every sample, not fan-out width alone). exciteIn/note/gate/vel are signal inputs, not hslider/button UI elements, matching multitranspose.dsp's own convention for momentary per-voice state fed through as control-rate-free wires. collision is a per-patch bounded soft-clip/waveshape amount applied to each voice's own resonator output (0 = exact passthrough); pitch-mod is a small, velocity- and dispersion-scaled onset frequency deviation that decays back to the true pitch over ~40ms, modeling impact deformation without any synthetic exciter to carry it.";
 
 import("stdfaust.lib");
 
@@ -49,11 +49,20 @@ letrec {
     with { target = ba.midikey2hz(note) * (1.0 + pitchModDepth*velGain(vel)*flexibility*pitchEnv(note, gate)); };
 };
 
-collisionDrive(x) = x;
+collisionDrive(x) = x*(1.0 - collision) + collisionShaped(x)*collision
+with {
+    driveAmt = 1.0 + collision*6.0;
+    collisionShaped(x) = ma.tanh(x*driveAmt)/ma.tanh(driveAmt);
+};
 
 aliasGuard(f) = min(1.0, max(0.0, (ma.SR*0.5 - f) / (ma.SR*0.05)));
 
-bank(freqHz, exc) = exc : pm.modeFilter(freqHz, decayTime, 1.00*abs(sin(ma.PI*position*1))*aliasGuard(freqHz));
+bank(freqHz, exc) = exc <: (m1, m2) :> _
+with {
+    f2 = freqHz*pow(2.0, 1.0+stretch);
+    m1 = pm.modeFilter(freqHz, decayTime,        1.00*abs(sin(ma.PI*position*1))*aliasGuard(freqHz));
+    m2 = pm.modeFilter(f2,     decayTime*damping, 0.60*abs(sin(ma.PI*position*2))*aliasGuard(f2));
+};
 
 voice(exciteIn, note, gate, vel) = collisionDrive(bank(freqGlide(note, gate, vel), exciteFor(exciteIn, note, gate, vel))) * voiceGain;
 
