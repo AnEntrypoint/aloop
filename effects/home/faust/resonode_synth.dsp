@@ -33,10 +33,7 @@ attackEdge(note, gate) = (gate > gate') + stealEvent(note, gate);
 velGain(vel) = max(0.0, min(1.0, vel));
 flexibility = max(0.0, min(1.0, (0.5 - stretch)));
 
-pitchEnv(note, gate) = e
-letrec {
-    'e = ba.if(attackEdge(note, gate) > 0.5, 1.0, e * pitchModPole);
-};
+pitchEnv(note, gate) = 0.0;
 
 exciteFor(exciteIn, note, gate, vel) = exciteIn : fi.lowpass(2, tone) : *(en.asr(0.02, 1.0, 0.3, xgate) * velGain(vel))
 with {
