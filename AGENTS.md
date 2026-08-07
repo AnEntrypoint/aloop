@@ -1951,12 +1951,12 @@ output finite and sane across the whole keybed.
 
 | Patch (knob 1-4 slot) | position | decay | damping | stretch | collision | Measured character (6-mode) |
 |---|---|---|---|---|---|---|
-| Percussive | 0.08 | 0.15 | 0.80 | -0.10 | 0.55 | 60ms decay, transient ratio ~35.3 (sharp tap) |
+| Percussive | 0.08 | 0.15 | 0.80 | -0.40 | 0.55 | 60ms decay, transient ratio ~36.4 (sharp tap) |
 | Metal/Glass | 0.08 | 7.00 | 0.97 | 1.20 | 0.15 | ~2.5s ring, centroid ~1.85kHz, only 26% of energy below 1.5x f0 (bright, inharmonic) |
-| Strings | 0.08 | 7.00 | 0.97 | -0.10 | 0.00 | ~2.5s ring, centroid ~632Hz (~2-3x f0), harmonic partials audibly present (not a bare sine) |
-| Wood/Membrane | 0.60 | 1.20 | 0.35 | 0.05 | 0.25 | reasoned initial pick (moderate decay, dulled upper partials, near-harmonic, a light bounce), pending its own `sweep.py`/`select_patches.py` re-derivation |
+| Strings | 0.08 | 7.00 | 0.97 | -0.10 | 0.00 | ~2.5s ring, centroid ~647Hz (~2-3x f0), harmonic partials audibly present (not a bare sine) |
+| Wood/Membrane | 0.08 | 1.80 | 0.35 | -0.10 | 0.25 | ~620ms decay, transient ratio ~2.7 (present but not sharp), centroid ~266Hz (dark), 98% of energy at/near f0, near-harmonic |
 
-`collision` is hand-set per patch from Objekt-informed design intent (a
+`collision` is hand-set per patch from research-informed design intent (a
 percussive/mallet hit should have real "bounce," a clean plucked string
 should not) rather than swept jointly with `position`/`decay`/`damping`/
 `stretch` as a 5th search dimension — its own mechanism (bounded, click-safe,
@@ -1969,13 +1969,31 @@ grid-search-verified 6-mode values from the prior re-sweep (adding
 doesn't invalidate that search — pitch-mod settles to true pitch by ~40-50ms,
 well before the sweep's 100-400ms centroid measurement window, and
 `collision` defaults are outside the swept dimensions entirely).
-Wood/Membrane, replacing the old Dance Bass, needed a genuinely NEW target
-character (Objekt's own documented palette leans toward bells/mallets/
-strings/skin/wood body resonance, not a bass-pinned sine) and its own
-`sweep.py`/`select_patches.py` pass — same 625-combo grid, a new
-`WoodMembrane` target direction (moderate decay, a real but not razor-sharp
-attack, a darker-but-not-bass-pinned centroid, near-zero/mildly-warm
-`stretch`) — was run to confirm or refine the point above.
+
+**Wood/Membrane, replacing the old Dance Bass, needed a genuinely NEW target
+character and its own `sweep.py`/`select_patches.py` pass** (Objekt's own
+documented palette leans toward bells/mallets/strings/skin/wood body
+resonance, not a bass-pinned sine). The first attempt at a
+`TARGET_DIRECTION` entry (weak `decayTimeMs`/moderate `transientRatio`
+weights) collapsed onto nearly the SAME grid point as `Percussive`
+(`position=0.08, decay=0.15, damping=0.6, stretch=-0.1`) — a real, WITNESSED
+failure of the target-direction weighting, not a genuine acoustic result:
+this scorer's linear z-score form always pushes toward a grid EXTREME (a
+known, already-documented shape of this methodology, see the paragraph
+below), so a target asking for "not the sharpest possible transient, not the
+longest possible decay" — a genuine MIDDLE of the grid — cannot be reached
+by tuning the linear weights alone; a stronger `decayTimeMs` weight just
+pushed the pick to the OTHER extreme instead (`decay=7.0`, converging
+exactly onto the old Dance Bass point). Fixed by filtering the 625-row sweep
+to the grid's middle `decay=1.8` value FIRST (a genuine "moderate,
+body-resonance" duration, distinct from Percussive's 0.15s floor and the
+sustained patches' 7.0s ceiling), then re-running the same z-score+target
+search over just `position`/`damping`/`stretch` within that fixed-decay
+125-row subset (target: a real but moderate transient, a darker centroid,
+fundamental-heavy but not literally pinned, and a stretch-magnitude penalty
+to avoid both inharmonic extremes) — this produced a genuinely distinct
+character (own row above), confirmed via a same-methodology DawDreamer
+render at 3 notes (36/60/84) to be finite and bounded across the keybed.
 
 Metal/Glass and Strings share `position`/`decay`/`damping` and differ only
 in `stretch` — the sweep independently rediscovered (both times) that

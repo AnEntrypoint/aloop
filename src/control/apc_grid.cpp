@@ -681,7 +681,7 @@ static const ResonodePatch kResonodePatches[kResonodePatchCount] = {
     { 0.080f, 0.150f, 0.800f, -0.100f, 0.550f },
     { 0.080f, 7.000f, 0.970f,  1.200f, 0.150f },
     { 0.080f, 7.000f, 0.970f, -0.100f, 0.000f },
-    { 0.600f, 1.200f, 0.350f,  0.050f, 0.250f },
+    { 0.080f, 1.800f, 0.350f, -0.100f, 0.250f },
 };
 
 struct ResonodeDirectKnobRange { const char* zone; float lo; float hi; bool logTaper; };
