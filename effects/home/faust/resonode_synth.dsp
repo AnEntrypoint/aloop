@@ -72,7 +72,7 @@ with {
     m6 = pm.modeFilter(f6,     decayTime*dp5,     0.16*abs(sin(ma.PI*position*6))*aliasGuard(f6));
 };
 
-voice(exciteIn, note, gate, vel) = collisionDrive(bank(freqGlide(note, gate, vel), exciteFor(exciteIn, note, gate, vel))) * voiceGain;
+voice(exciteIn, note, gate, vel) = exciteFor(exciteIn, note, gate, vel) * voiceGain;
 
 process(exciteIn, note0,gate0,vel0, note1,gate1,vel1, note2,gate2,vel2, note3,gate3,vel3) =
     (voice(exciteIn,note0,gate0,vel0) + voice(exciteIn,note1,gate1,vel1) + voice(exciteIn,note2,gate2,vel2) + voice(exciteIn,note3,gate3,vel3)) : ma.tanh : *(outLevel);
