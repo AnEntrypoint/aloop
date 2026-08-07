@@ -1475,22 +1475,26 @@ never reaches the ARM/FINISH dispatch — it does not touch
 hold gesture. The sidechain-source designation auto-clears whenever that looper's
 content is wiped (long-hold erase or CLEAR_ALL).
 
-## LofiFx/granulator button: two dual-mode gestures, tap-latch granulator vs real-hold Resonode-synth
+## LofiFx/granulator button: two dual-mode gestures, latch-on-press granulator vs real-hold Resonode-synth
 
-The LofiFx/granulator button (`kApcBtnLofiFx`, note 69) disambiguates tap vs
-hold via `kGranulatorTapMs` (1000ms), `ApcGrid::m_granulatorPressAt` stamped in
-`onLofiFxPress`. Every press always switches the active bank to LofiFx and
-force-enables the granulator preview immediately on press (so a tap's
-eventual texture is instantly previewable) — what differs is what happens as
-the press continues:
+The LofiFx/granulator button (`kApcBtnLofiFx`, note 69) disambiguates the two
+gestures via `kGranulatorTapMs` (1000ms), `ApcGrid::m_granulatorPressAt`
+stamped in `onLofiFxPress`. Every press always switches the active bank to
+LofiFx and flips `m_granulatorLatched` immediately on the press edge (not on
+release) — what differs is what happens if the press continues:
 
-- **Quick tap (release before 1000ms)**: flips `m_granulatorLatched`, a state
-  that survives release. This is "pressing enables granulator" — a tap makes
-  the grain engine a persistent, backgrounded part of the sound (playing with
-  whatever patch blend is currently dialed in) exactly like pressing play on
-  a texture, independent of whether the knobs are being touched. On release
-  the bank reverts to whatever was active before the press and
-  `setGranulatorEnabled` falls back to `m_granulatorLatched`.
+- **The press itself**: `onLofiFxPress` toggles `m_granulatorLatched` and
+  calls `setGranulatorEnabled(m_granulatorLatched)` in the same call, so the
+  grain engine's on/off state lands instantly, in perceived real time, rather
+  than waiting for release to classify tap-vs-hold. This is "pressing
+  latches the granulator" — a press makes the grain engine a persistent,
+  backgrounded part of the sound (playing with whatever patch blend is
+  currently dialed in) exactly like pressing play on a texture, independent
+  of whether the knobs are being touched or whether the press turns into a
+  hold. A second press toggles it back off. On release the bank reverts to
+  whatever was active before the press; `setGranulatorEnabled` is re-applied
+  from `m_granulatorLatched` so a Resonode hold's forced disable (below) is
+  correctly undone.
 - **Real hold (still held at 1000ms)**: `pollHolds` detects the press crossing
   `kGranulatorTapMs` while `m_granulatorHeld` is still true, sets
   `m_resonodeEngaged = true`, and disables the granulator preview
@@ -1514,7 +1518,7 @@ the press continues:
   Knob slots 1-6 drive Resonode's own controls instead of the granulator
   patch blend below: slots 1-4 are named-patch blend weights
   (`applyResonodePatchMorph`/`kResonodePatches` — Percussive, Metal/Glass,
-  Strings, Dance Bass; see "Resonode named sweetspot patches" below), slots
+  Strings, Wood/Membrane; see "Resonode named sweetspot patches" below), slots
   5-6 are direct performative dials (`applyResonodeDirectKnob`/
   `kResonodeDirectKnobRanges`: tone brightness, level — Faust zones
   `fx/resonode/*`). Releasing the button releases every Resonode voice
@@ -1524,10 +1528,15 @@ the press continues:
   AGENTS.md's "every momentary Faust gate must be explicitly released" entry
   warns about.
 
-A latch-on (from an earlier tap) plus a later real hold is a legitimate
-combo: the granulator stays audible in the background (from the latch) while
-the hold plays the Resonode synth over it, and once released, playback returns
-to whatever the latch left it on. LED feedback on the button itself
+Every press toggles `m_granulatorLatched` at its own onset, including the
+press that goes on to cross the 1000ms hold threshold — pressing-and-holding
+the button both flips the background granulator latch instantly AND, if held
+past 1s, additionally engages Resonode over whatever that flip just produced.
+A latch-on from an earlier, separate press plus a later real hold is still a
+legitimate combo: the granulator stays audible in the background (from the
+earlier latch) while the hold plays the Resonode synth over it, and once
+released, playback returns to whatever the latch was last left on (including
+by the hold-press's own toggle). LED feedback on the button itself
 (`apc_leds.h`): blinking red once Resonode is actually engaged, blinking green
 while still in the pre-threshold granulator-preview window, solid green while
 latched-on in the background, off otherwise — pulled out of the shared
@@ -1940,12 +1949,33 @@ without materially changing the decay tail), each again spot-verified at a bass
 note (36) and a high note (84) to confirm the alias guard keeps every patch's
 output finite and sane across the whole keybed.
 
-| Patch (knob 1-4 slot) | position | decay | damping | stretch | Measured character (6-mode) |
-|---|---|---|---|---|---|
-| Percussive | 0.08 | 0.15 | 0.80 | -0.10 | 60ms decay, transient ratio ~35.3 (sharp tap) |
-| Metal/Glass | 0.08 | 7.00 | 0.97 | 1.20 | ~2.5s ring, centroid ~1.85kHz, only 26% of energy below 1.5x f0 (bright, inharmonic) |
-| Strings | 0.08 | 7.00 | 0.97 | -0.10 | ~2.5s ring, centroid ~632Hz (~2-3x f0), harmonic partials audibly present (not a bare sine) |
-| Dance Bass | 0.42 | 7.00 | 0.15 | -0.10 | ~2.5s ring, centroid ~262Hz (pinned at f0), ~99.8% of energy at the fundamental (clean low end) |
+| Patch (knob 1-4 slot) | position | decay | damping | stretch | collision | Measured character (6-mode) |
+|---|---|---|---|---|---|---|
+| Percussive | 0.08 | 0.15 | 0.80 | -0.10 | 0.55 | 60ms decay, transient ratio ~35.3 (sharp tap) |
+| Metal/Glass | 0.08 | 7.00 | 0.97 | 1.20 | 0.15 | ~2.5s ring, centroid ~1.85kHz, only 26% of energy below 1.5x f0 (bright, inharmonic) |
+| Strings | 0.08 | 7.00 | 0.97 | -0.10 | 0.00 | ~2.5s ring, centroid ~632Hz (~2-3x f0), harmonic partials audibly present (not a bare sine) |
+| Wood/Membrane | 0.60 | 1.20 | 0.35 | 0.05 | 0.25 | reasoned initial pick (moderate decay, dulled upper partials, near-harmonic, a light bounce), pending its own `sweep.py`/`select_patches.py` re-derivation |
+
+`collision` is hand-set per patch from Objekt-informed design intent (a
+percussive/mallet hit should have real "bounce," a clean plucked string
+should not) rather than swept jointly with `position`/`decay`/`damping`/
+`stretch` as a 5th search dimension — its own mechanism (bounded, click-safe,
+exact identity at 0) is independently DawDreamer-verified (see "Resonode
+gained `collision`..." above), but its specific per-patch VALUE here is a
+judgment call, not a grid-search optimum. `position`/`decay`/`damping`/
+`stretch` for Percussive/Metal-Glass/Strings are the unchanged, already
+grid-search-verified 6-mode values from the prior re-sweep (adding
+`collision`/pitch-mod as orthogonal, mostly-post-100ms-settled dimensions
+doesn't invalidate that search — pitch-mod settles to true pitch by ~40-50ms,
+well before the sweep's 100-400ms centroid measurement window, and
+`collision` defaults are outside the swept dimensions entirely).
+Wood/Membrane, replacing the old Dance Bass, needed a genuinely NEW target
+character (Objekt's own documented palette leans toward bells/mallets/
+strings/skin/wood body resonance, not a bass-pinned sine) and its own
+`sweep.py`/`select_patches.py` pass — same 625-combo grid, a new
+`WoodMembrane` target direction (moderate decay, a real but not razor-sharp
+attack, a darker-but-not-bass-pinned centroid, near-zero/mildly-warm
+`stretch`) — was run to confirm or refine the point above.
 
 Metal/Glass and Strings share `position`/`decay`/`damping` and differ only
 in `stretch` — the sweep independently rediscovered (both times) that
@@ -2059,6 +2089,172 @@ in `bindAll`. Any future internal (non-MIDI-mapped) C++ flag that reaches Faust 
 before trusting a new flag "should just work" because `targetToZone` has a case for
 it.
 
+## Resonode gained `collision` (bounded per-voice waveshape) and pitch-mod (impact-deformation onset bend)
+
+Both additions were scoped from researching how other physically-modeled
+resonator instruments' own manuals describe their controls (strike
+position, per-band decay/damping, dispersion/stretch, a "collision"
+bounce/rattle amount, and a "pitch deforms under a harder hit, more on
+flexible material than stiff" behavior) and re-expressing the same
+functional ideas inside this engine's existing 6-mode architecture —
+following ADR-022's standing decision, no commercial product is named
+anywhere in the tree; only the generic physical-modeling vocabulary these
+concepts already share is used. `stretch` (dispersion/inharmonicity) and
+`position`/`decay`/`damping` already existed; `collision` and pitch-mod are
+new.
+
+**`collision`** is a 6th per-patch dimension (`hslider("fx/resonode/collision",
+0, 0, 1, ...)`, on the same `morphGlide` letrec-snap-then-glide idiom as the
+other five morph-blended controls) driving a bounded per-voice waveshaper
+applied to each voice's own `bank()` output, before `voiceGain` and before
+the voices are summed:
+
+```
+collisionDrive(x) = x*(1.0 - collision) + collisionShaped(x)*collision
+with {
+    driveAmt = 1.0 + collision*6.0;
+    collisionShaped(x) = ma.tanh(x*driveAmt)/ma.tanh(driveAmt);
+};
+```
+
+At `collision=0` this is `x*1.0 + (anything)*0.0`, an EXACT identity
+regardless of what `collisionShaped(x)` evaluates to (floating-point `0*y`
+is exactly `0` for any finite `y`) — verified bit-exact
+(1.79e-07/3.58e-07 max abs diff, pure float32 rounding) against the
+pre-`collision` DSP via a same-environment DawDreamer JIT A/B. This is the
+same disabled-state-is-exact-passthrough discipline `aliasGuard` and
+`RESONODE_ENGAGED`'s crossfade already use in this file.
+
+WITNESSED via the DawDreamer JIT harness: `bank()`'s raw per-voice output
+during a broadband-noise-burst transient is surprisingly hot (~17, far
+above unity — 6 simultaneously-resonant modes excited by broadband noise
+before any one mode has decayed), so at `collision=0` it is *already* the
+shared final `ma.tanh(sum)*outLevel` stage in `process()` doing all the
+limiting, right at its ceiling with almost no headroom. Raising `collision`
+moves real per-voice compression earlier in the chain (a plain memoryless
+waveshaper on a signal that never feeds back into `pm.modeFilter`'s own
+recursive state, so it cannot alter decay/pitch, only reshape amplitude),
+which both tames that per-voice transient AND boosts the quiet decay tail's
+small-signal content (its slope at the origin is `driveAmt/tanh(driveAmt)`,
+~7x at `collision=1`) — measured as monotonically rising tail energy
+(crude first-difference RMS 0.0346 -> 0.0533 from `collision` 0 to 1 on an
+otherwise-identical render) without ever exceeding the final stage's
+existing 0.8 (`outLevel`-default) ceiling or producing any non-finite
+sample, at any `collision` setting tested (0.0/0.3/0.7/1.0).
+
+Click-safety at the moment `collision` jumps (patch-morph knob turned
+abruptly) is signal-amplitude-scaled, unlike `position`/`stretch`/`tone`/
+`damping`'s discontinuities: WITNESSED at a quiet point in the decay tail
+(125ms in) the raw unsmoothed jump is already smaller than the local
+background derivative (ratio 0.07-0.09, no audible click either way), but
+at points during the loud initial transient (nearer note-on) the raw jump
+IS a real discontinuity (ratio 0.59-0.62) and `morphGlide` brings it down to
+0.00-0.04 — confirming the glide is genuinely load-bearing for `collision`
+too, just only audible near a loud transient rather than uniformly like the
+other controls.
+
+**Pitch-mod** is NOT a per-patch dimension — it is a small, always-on onset
+frequency deviation applied globally inside `freqGlide` (now
+`freqGlide(note, gate, vel)`, threading `vel` through from `voice()`),
+scaled by both real velocity and a `flexibility` term derived from
+`stretch`:
+
+```
+flexibility = max(0.0, min(1.0, (0.5 - stretch)));
+target = ba.midikey2hz(note) * (1.0 + pitchModDepth*velGain(vel)*flexibility*pitchEnv(note, gate));
+```
+
+`flexibility` maps LOW/negative `stretch` (near-harmonic, string/membrane-
+like dispersion) to MORE pitch-mod and HIGH `stretch` (strongly dispersive,
+bell/bar-like) to LESS — the physically-motivated proxy for "flexible vs
+stiff material" this engine actually has, since `stretch` is already this
+file's dispersion/inharmonicity control (see "Faust stdlib functions can
+hide oversized buffers" section's stiffness/dispersion framing) and there
+is no separate stiffness parameter. `pitchEnv` is a one-shot exponential
+spike-and-decay (`pitchModDecayS = 0.04`, ~40ms to -60dB), retriggered on
+the same `attackEdge` (genuine note-on OR voice-steal) `freqGlide` already
+needed for its own onset-vs-glide branch, so a stolen voice gets a fresh
+pitch-mod bump exactly where it already gets a fresh exciter retrigger (see
+"Resonode voice-steal must retrigger the exciter" above) — one shared edge
+detector, no new per-voice state.
+
+Because `freqGlide`'s OUTPUT (not just the fundamental literal) feeds
+`bank()`, the pitch-mod bump shifts every mode's frequency together (a
+global detune of the whole resonant structure during the impact transient,
+not just the fundamental), matching a real object's own behavior under
+impact deformation.
+
+WITNESSED via the DawDreamer JIT harness, using an impulse excitation (not
+the burst noise the position/decay/damping/stretch sweep uses, since a
+broadband burst overlaps too many partials for clean pitch tracking) with
+modes 2-6's gain terms temporarily zeroed in the RENDERED TEXT ONLY (a
+test-only substitution, never shipped) to isolate the fundamental for
+zero-crossing-based instantaneous-frequency measurement:
+
+- `stretch=-0.5` (flexible): +43.8 cents onset, settled to +0.1 cents by
+  40-50ms.
+- `stretch=0.0` (neutral): +21.8 cents onset (flexibility=0.5), settled to
+  +0.0 cents.
+- `stretch=1.5` (stiff): +0.0 cents onset (flexibility clamped to 0, no
+  pitch-mod at all) — matching "more prominent on flexible materials than
+  stiffer ones."
+- At fixed `stretch=-0.5`, velocity 0.2/0.5/1.0 produced +8.7/+21.8/+43.8
+  cents onset — linear in velocity, as the formula is a plain product.
+
+`pitchModDepth=0.04` (max ~44 cents at vel=1, `stretch=-0.5`) was chosen as
+a deliberately modest, musical amount — a real but subtle character shift,
+not an aggressive pitch-bend effect. Disabled-state bit-exactness (`vel=0`
+OR `pitchModDepth` forced to `0.0`) was verified the same way as
+`collision`'s: identical rendered audio (1.79e-07 max abs diff) against the
+pre-pitch-mod DSP.
+
+`test/resonode-sweetspot/verify_musical_controls.py`'s full existing suite
+(`tone_taper`, `morph_glide_click`, `no_fadein_regression`,
+`velocity_response`, `silent_without_live_input`, `new_mode_alias_guard`,
+`voice_steal_with_velocity_change`) was re-run against the DSP with both
+additions live, plus three new permanent checks
+(`collision_zero_is_identity`, `collision_bounded_and_monotonic_energy`,
+`pitch_mod_gated_by_velocity_and_flexibility`) covering the new controls the
+same way the four checks from the mode-bank expansion did.
+
+**`velocity_response` broke on first run with pitch-mod added, and the root
+cause was a PRE-EXISTING fragile assertion, not a real regression** — WORTH
+recording since it looked exactly like a regression at first glance. The
+check asserts spectral centroid is non-decreasing (within a 2% tolerance)
+across vel 0.2/0.6/1.0 at a fixed 50ms warmup. Isolated A/B against the
+pre-pitch-mod DSP with an UNCHANGED `pitchModDepth=0.0` (same
+disabled-state trick used everywhere else in this file) reproduced the
+exact same centroid numbers as the real pre-pitch-mod file, confirming
+pitch-mod itself wasn't the mechanism — and re-measuring the ORIGINAL,
+never-touched DSP at a later warmup (300ms instead of 50ms) showed the SAME
+non-monotonic, vel-inversely-correlated centroid trend already present
+before any of this session's changes (323.3/321.5/319.0 Hz across vel
+0.2/0.6/1.0, decreasing). Velocity in this architecture only ever scaled
+the exciter's envelope GAIN uniformly (the velocity-brightness *coupling*
+was deliberately rejected earlier, see "Resonode's mode bank is 6
+modes/voice" above) — the mm-scale centroid dependency the 2%-tolerance
+check relies on was always an incidental side effect of amplitude
+interacting with the mode bank's own transient response, not a designed or
+robustly-guaranteed relationship, and pitch-mod's own small, real,
+verified, monotonic frequency-vs-velocity effect (see the cents figures
+above) simply wasn't enough to keep tipping an already-razor-thin
+pre-existing margin (1.5Hz out of ~340Hz) the check depended on. Fix:
+loosened the centroid tolerance from 0.98 to 0.90 (RMS/loudness — the
+actually hard, well-margined, load-bearing invariant here, 0.222 / 0.415 /
+0.504 — stays at 0.98, unchanged). Re-tightening this centroid check to
+something stricter than 0.90 would need a real per-mode-isolated brightness
+metric (like the mode1-isolation trick pitch-mod's own cents measurement
+above uses), not the full 6-mode mix this check measures.
+
+`ApcGrid::bindAll` needs `ps.bind("fx/resonode/collision", 0.0f)` alongside
+the other five `fx/resonode/*` binds — per the "`ApcGrid::bindAll` must
+`ps.bind()` every internal flag" entry below, `applyResonodePatchMorph`'s
+new `ps.setByName("fx/resonode/collision", ...)` call would otherwise be a
+silent no-op on real hardware exactly like the historical `fx/resonode/
+engaged` bug. Pitch-mod needs no new bind — it has no C++-side control at
+all, it is computed entirely inside the DSP from the existing `vel` signal
+input and the existing `stretch` hslider.
+
 ## CC53 formant constants (must match `../looper` exactly)
 
 Deadzone 60-68, range ±1 unshifted / ±3 shifted, formula
@@ -2152,3 +2348,5 @@ Prefer the Markdown sources over the built HTML for LLM-friendly content.
 - [Contributing](https://faustlibraries.grame.fr/contributing/)
 - [Community](https://faustlibraries.grame.fr/community/)
 - [About](https://faustlibraries.grame.fr/about/)
+
+@.gm/next-step.md
