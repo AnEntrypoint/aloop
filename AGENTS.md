@@ -355,6 +355,24 @@ sshpass-wrapping are both explicitly rejected by the user. Use
 A fresh netboot generates a new host key every boot, breaking raw `ssh`/
 known_hosts but not `ssh2`.
 
+**`sftp.fastGet`/`fastPut` fail with a real server-side `SSH_FX_NO_SUCH_FILE`
+against this device's Alpine `internal-sftp`, even for a trivial known-good
+local file and a path plain `exec` (`echo | tee`) can write seconds earlier.**
+A raw `sftp.open(path, 'w', cb)` + `sftp.write(handle, ...)` sequence succeeds
+on the FIRST call within a fresh SFTP session, but a second `open` in a new
+connection (or `fastPut`'s own internal chunked-write pipelining) then fails
+the same way — consistent with `internal-sftp` only tolerating one real
+open-for-write per session cleanly, not a path or permissions issue. Proven
+reliable fallback for pushing a file to the device: base64-encode locally,
+append it in ~60KB chunks via repeated `exec("printf '%s' '<chunk>' >>
+<path>.b64")` calls (same `ssh2` `Client.exec`, no SFTP subsystem involved),
+then `exec("base64 -d <path>.b64 > <path> && rm <path>.b64")` once complete.
+On Windows/Git-Bash, `/tmp/...`-style remote path arguments get silently
+rewritten to a Windows path by MSYS's own path-conversion layer before ever
+reaching `node` — prefix the command with `MSYS_NO_PATHCONV=1` or every write
+target lands in `C:/Users/.../AppData/Local/Temp/...` instead of the device's
+real `/tmp`.
+
 ## The `REBOOT:<token>` UDP listener lives INSIDE the aloop process
 
 `config/aloop.conf`'s `[remote] token=` enables a `udp/4446` listener

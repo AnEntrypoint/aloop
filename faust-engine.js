@@ -121,14 +121,14 @@ async function mirrorRepoTreeIntoCompilerFs(compiler, repoRootUrl, fs) {
   fs.mkdirTree("/aloop-src/dsp");
   fs.mkdirTree("/aloop-src/effects/home/faust");
   for (const name of dspRootFiles) {
-    const text = await fetchText(repoRootUrl + "dsp/" + name);
+    const text = await fetchText(repoRootUrl + "../../dsp/" + name);
     fs.writeFile("/aloop-src/dsp/" + name, text);
   }
   for (const name of homeFaustFiles) {
-    const text = await fetchText(repoRootUrl + "effects/home/faust/" + name);
+    const text = await fetchText(repoRootUrl + "../../effects/home/faust/" + name);
     fs.writeFile("/aloop-src/effects/home/faust/" + name, text);
   }
-  const pitchStub = await fetchText(repoRootUrl + "demo/faust/pitch_stub_browser.dsp");
+  const pitchStub = await fetchText(repoRootUrl + "../demo/faust/pitch_stub_browser.dsp");
   fs.writeFile("/aloop-src/effects/home/faust/pitch.dsp", pitchStub);
 }
 
@@ -211,7 +211,7 @@ export class AloopFaustEngine {
     this.guitarBridge = new ParamBridge(guitarNode);
     this.guitarNode = guitarNode;
 
-    await this.audioContext.audioWorklet.addModule(this.repoRootUrl + "demo/faust/control-processor.js");
+    await this.audioContext.audioWorklet.addModule(this.repoRootUrl + "../demo/faust/control-processor.js");
     const controlNode = new AudioWorkletNode(this.audioContext, "aloop-control-processor", {
       numberOfInputs: 3,
       numberOfOutputs: 1,
