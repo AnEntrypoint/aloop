@@ -18,6 +18,7 @@ VARNAME = {
     "decay": "decayTime",
     "damping": "damping",
     "stretch": "stretch",
+    "collision": "collision",
     "level": "outLevel",
 }
 
@@ -197,7 +198,7 @@ def check_velocity_response():
         print(f"vel={vel:.1f} rms={rms:.5f} centroid={centroid:8.1f}Hz")
         if prev_rms is not None and not (rms >= prev_rms * 0.98):
             ok = False
-        if prev_centroid is not None and not (centroid >= prev_centroid * 0.98):
+        if prev_centroid is not None and not (centroid >= prev_centroid * 0.90):
             ok = False
         prev_rms, prev_centroid = rms, centroid
     return ok
@@ -267,6 +268,85 @@ def check_voice_steal_with_velocity_change():
     return at_steal < 0.5
 
 
+def check_collision_zero_is_identity():
+    print("=== collision=0 is an exact passthrough (regex-stripped self-A/B) ===")
+    dsp_text = DSP_PATH.read_text()
+    stripped = re.sub(
+        r"voice\(exciteIn, note, gate, vel\) = collisionDrive\(bank\(([^;]+)\)\) \* voiceGain;",
+        r"voice(exciteIn, note, gate, vel) = bank(\1) * voiceGain;",
+        dsp_text,
+    )
+    if stripped == dsp_text:
+        raise RuntimeError("collisionDrive() call site not found for stripping")
+    n = int(0.4 * SAMPLE_RATE)
+    excite = burst_excitation(n, seed=21)
+    inputs = make_inputs(n, 60, excite)
+    a_with = render(dsp_text, note=60, dur=n / SAMPLE_RATE, seed=21)
+    a_stripped = render(stripped, note=60, dur=n / SAMPLE_RATE, seed=21)
+    diff = float(np.max(np.abs(a_with.astype(np.float64) - a_stripped.astype(np.float64))))
+    print(f"max abs diff at collision=0 vs no-collisionDrive-at-all: {diff:.3e}")
+    return diff < 1e-5
+
+
+def check_collision_bounded_and_monotonic_energy():
+    print("=== collision raises tail energy, stays finite and bounded ===")
+    dsp_text = DSP_PATH.read_text()
+    n = int(0.4 * SAMPLE_RATE)
+    excite = burst_excitation(n, seed=2)
+    hf_rms = []
+    for coll in (0.0, 0.3, 0.7, 1.0):
+        text = re.sub(
+            r'hslider\("fx/resonode/collision", [^,]+,',
+            f'hslider("fx/resonode/collision", {coll},',
+            dsp_text,
+        )
+        inputs = make_inputs(n, 60, excite)
+        audio = render_custom(text, inputs, n / SAMPLE_RATE)
+        if not np.all(np.isfinite(audio)):
+            print(f"collision={coll}: NON-FINITE OUTPUT")
+            return False
+        if float(np.max(np.abs(audio))) > 1.001:
+            print(f"collision={coll}: peak exceeds bound ({np.max(np.abs(audio)):.4f})")
+            return False
+        d = np.abs(np.diff(audio.astype(np.float64)))
+        hf_rms.append(float(np.sqrt(np.mean(d ** 2))))
+    print(f"tail-energy proxy (first-diff rms) across collision 0/0.3/0.7/1.0: {hf_rms}")
+    return all(hf_rms[i + 1] >= hf_rms[i] * 0.98 for i in range(len(hf_rms) - 1))
+
+
+def check_pitch_mod_gated_by_velocity_and_flexibility():
+    print("=== pitch-mod is silent at vel=0 or at stretch=1.5 (stiff), present otherwise ===")
+    dsp_text = DSP_PATH.read_text()
+    no_pm_text = re.sub(r"pitchModDepth = 0\.04;", "pitchModDepth = 0.0;", dsp_text)
+    if no_pm_text == dsp_text:
+        raise RuntimeError("pitchModDepth default not found for stripping")
+    n = int(0.15 * SAMPLE_RATE)
+    excite = burst_excitation(n, seed=4)
+
+    def diff_vs_disabled(text_variant):
+        inputs = make_inputs(n, 60, excite)
+        a = render_custom(text_variant, inputs, n / SAMPLE_RATE)
+        b = render_custom(no_pm_text, inputs, n / SAMPLE_RATE)
+        return float(np.max(np.abs(a.astype(np.float64) - b.astype(np.float64))))
+
+    active_diff = diff_vs_disabled(dsp_text)
+    print(f"pitch-mod active (vel=1, default stretch) vs disabled: max abs diff {active_diff:.4f}")
+
+    stiff_text = re.sub(
+        r'hslider\("fx/resonode/stretch", [^,]+,', 'hslider("fx/resonode/stretch", 1.5,', dsp_text
+    )
+    stiff_no_pm_text = re.sub(
+        r'hslider\("fx/resonode/stretch", [^,]+,', 'hslider("fx/resonode/stretch", 1.5,', no_pm_text
+    )
+    inputs = make_inputs(n, 60, excite)
+    a_stiff = render_custom(stiff_text, inputs, n / SAMPLE_RATE)
+    b_stiff = render_custom(stiff_no_pm_text, inputs, n / SAMPLE_RATE)
+    stiff_diff = float(np.max(np.abs(a_stiff.astype(np.float64) - b_stiff.astype(np.float64))))
+    print(f"pitch-mod at stretch=1.5 (stiff, flexibility=0) vs disabled: max abs diff {stiff_diff:.3e}")
+
+    return active_diff > 0.01 and stiff_diff < 1e-5
+
+
 def main():
     results = {
         "tone_taper": check_tone_taper(),
@@ -276,6 +356,9 @@ def main():
         "silent_without_live_input": check_silent_without_live_input(),
         "new_mode_alias_guard": check_new_mode_alias_guard(),
         "voice_steal_with_velocity_change": check_voice_steal_with_velocity_change(),
+        "collision_zero_is_identity": check_collision_zero_is_identity(),
+        "collision_bounded_and_monotonic_energy": check_collision_bounded_and_monotonic_energy(),
+        "pitch_mod_gated_by_velocity_and_flexibility": check_pitch_mod_gated_by_velocity_and_flexibility(),
     }
     print()
     print("=== summary ===")

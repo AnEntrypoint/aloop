@@ -47,6 +47,7 @@ void ApcGrid::bindAll(ParamStore& ps) {
     ps.bind("fx/resonode/decay", 1.2f);
     ps.bind("fx/resonode/damping", 0.85f);
     ps.bind("fx/resonode/stretch", 0.0f);
+    ps.bind("fx/resonode/collision", 0.0f);
     ps.bind("fx/resonode/level", 0.8f);
     ps.bind("fx/microrepeat_div");
     ps.bind("fx/monitorfold");
@@ -673,14 +674,14 @@ static const GranPatch kGranPatches[kGranPatchCount] = {
     {  14.0f, 150.0f, 90.0f, 300.0f, 4.5f, 0.50f, 1.00f },
 };
 
-struct ResonodePatch { float position, decay, damping, stretch; };
+struct ResonodePatch { float position, decay, damping, stretch, collision; };
 
 constexpr int kResonodePatchCount = 4;
 static const ResonodePatch kResonodePatches[kResonodePatchCount] = {
-    { 0.080f, 0.150f, 0.800f, -0.100f },
-    { 0.080f, 7.000f, 0.970f,  1.200f },
-    { 0.080f, 7.000f, 0.970f, -0.100f },
-    { 0.420f, 7.000f, 0.150f, -0.100f },
+    { 0.080f, 0.150f, 0.800f, -0.100f, 0.550f },
+    { 0.080f, 7.000f, 0.970f,  1.200f, 0.150f },
+    { 0.080f, 7.000f, 0.970f, -0.100f, 0.000f },
+    { 0.600f, 1.200f, 0.350f,  0.050f, 0.250f },
 };
 
 struct ResonodeDirectKnobRange { const char* zone; float lo; float hi; bool logTaper; };
@@ -703,19 +704,21 @@ void ApcGrid::applyResonodePatchMorph(ParamStore& ps) {
 
     ResonodePatch blend = kResonodePatches[0];
     if (totalWeight > 0.0001f) {
-        blend = ResonodePatch{0.0f, 0.0f, 0.0f, 0.0f};
+        blend = ResonodePatch{0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
         for (int p = 0; p < kResonodePatchCount; p++) {
             float wn = weight[p] / totalWeight;
-            blend.position += wn * kResonodePatches[p].position;
-            blend.decay    += wn * kResonodePatches[p].decay;
-            blend.damping  += wn * kResonodePatches[p].damping;
-            blend.stretch  += wn * kResonodePatches[p].stretch;
+            blend.position  += wn * kResonodePatches[p].position;
+            blend.decay     += wn * kResonodePatches[p].decay;
+            blend.damping   += wn * kResonodePatches[p].damping;
+            blend.stretch   += wn * kResonodePatches[p].stretch;
+            blend.collision += wn * kResonodePatches[p].collision;
         }
     }
     ps.setByName("fx/resonode/position", blend.position);
     ps.setByName("fx/resonode/decay", blend.decay);
     ps.setByName("fx/resonode/damping", blend.damping);
     ps.setByName("fx/resonode/stretch", blend.stretch);
+    ps.setByName("fx/resonode/collision", blend.collision);
 }
 
 void ApcGrid::applyGranulatorMorph(Sampler* sampler) {
@@ -802,15 +805,14 @@ void ApcGrid::onLofiFxPress(unsigned now_ms, ParamStore&, Sampler* sampler) {
     m_granulatorHeld = true;
     m_granulatorPressAt = now_ms;
     m_resonodeEngaged = false;
-    if (sampler) sampler->setGranulatorEnabled(true);
+    m_granulatorLatched = !m_granulatorLatched;
+    if (sampler) sampler->setGranulatorEnabled(m_granulatorLatched);
 }
-void ApcGrid::onLofiFxRelease(unsigned now_ms, ParamStore& ps, Sampler* sampler) {
+void ApcGrid::onLofiFxRelease(unsigned, ParamStore& ps, Sampler* sampler) {
     if (m_resonodeEngaged) {
         releaseAllResonodeVoices(ps);
         m_resonodeEngaged = false;
         ps.setByName("fx/resonode/engaged", 0.0f);
-    } else if (now_ms - m_granulatorPressAt < kGranulatorTapMs) {
-        m_granulatorLatched = !m_granulatorLatched;
     }
     m_granulatorHeld = false;
     m_activeBank = m_bankBeforeGranulatorHold;

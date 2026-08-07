@@ -12,10 +12,10 @@ const GRANULATOR_TAP_MS = 1000;
 const DUB_TARGETS = ["fx/reverb", "fx/delay", "fx/time", "fx/hp", "fx/lpres", "fx/lp", "fx/pitch"];
 const GUITAR_TARGETS = ["fx2/FLANGEAMT", "fx2/TREMOLOAMT", "fx2/BANKSPEED", "fx2/PHASERAMT", null, null, "fx2/COMPRESSAMT"];
 const RESONODE_PATCHES = [
-  { position: 0.08, decay: 0.15, damping: 0.8, stretch: -0.1 },
-  { position: 0.08, decay: 7.0, damping: 0.97, stretch: 1.2 },
-  { position: 0.08, decay: 7.0, damping: 0.97, stretch: -0.1 },
-  { position: 0.42, decay: 7.0, damping: 0.15, stretch: -0.1 },
+  { position: 0.08, decay: 0.15, damping: 0.8, stretch: -0.1, collision: 0.55 },
+  { position: 0.08, decay: 7.0, damping: 0.97, stretch: 1.2, collision: 0.15 },
+  { position: 0.08, decay: 7.0, damping: 0.97, stretch: -0.1, collision: 0.0 },
+  { position: 0.6, decay: 1.2, damping: 0.35, stretch: 0.05, collision: 0.25 },
 ];
 const RESONODE_DIRECT_RANGES = [
   { zone: "fx/resonode/tone", lo: 200.0, hi: 18000.0, logTaper: true },
@@ -461,19 +461,21 @@ export class AloopFaustEngine {
     const total = weights.reduce((a, b) => a + b, 0);
     let blend = RESONODE_PATCHES[0];
     if (total > 0.0001) {
-      blend = { position: 0, decay: 0, damping: 0, stretch: 0 };
+      blend = { position: 0, decay: 0, damping: 0, stretch: 0, collision: 0 };
       for (let p = 0; p < RESONODE_PATCHES.length; p++) {
         const wn = weights[p] / total;
         blend.position += wn * RESONODE_PATCHES[p].position;
         blend.decay += wn * RESONODE_PATCHES[p].decay;
         blend.damping += wn * RESONODE_PATCHES[p].damping;
         blend.stretch += wn * RESONODE_PATCHES[p].stretch;
+        blend.collision += wn * RESONODE_PATCHES[p].collision;
       }
     }
     this.homeBridge.set("fx/resonode/position", blend.position);
     this.homeBridge.set("fx/resonode/decay", blend.decay);
     this.homeBridge.set("fx/resonode/damping", blend.damping);
     this.homeBridge.set("fx/resonode/stretch", blend.stretch);
+    this.homeBridge.set("fx/resonode/collision", blend.collision);
   }
 
   applyResonodeDirectKnob(knobIndex, v01) {
@@ -494,14 +496,13 @@ export class AloopFaustEngine {
     this.granulatorHeld = true;
     this.granulatorPressStartMs = nowMs;
     this.resonodeEngaged = false;
+    this.granulatorLatched = !this.granulatorLatched;
   }
-  onLofiFxRelease(nowMs) {
+  onLofiFxRelease(_nowMs) {
     if (this.resonodeEngaged) {
       this.releaseAllResonodeVoices();
       this.resonodeEngaged = false;
       this.homeBridge.set("fx/resonode/engaged", 0.0);
-    } else if (nowMs - this.granulatorPressStartMs < GRANULATOR_TAP_MS) {
-      this.granulatorLatched = !this.granulatorLatched;
     }
     this.granulatorHeld = false;
     this.setBank(this.bankBeforeGranulatorHold);
