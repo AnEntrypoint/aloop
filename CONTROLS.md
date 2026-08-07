@@ -60,7 +60,7 @@ continues depends on how long it's held:
     carrying its own real MIDI velocity into the exciter's gain — a harder
     key press rings out louder.
   - Knob slots 1–4 are the blend weight of one of 4 named material patches —
-    **Percussive, Metal/Glass, Strings, Wood/Membrane** — each a full point
+    **Percussive, Metal/Glass, Strings, Dance Bass** — each a full point
     in position/decay/damping/stretch/collision space, blended as a convex
     combination exactly like the granulator's own patch surface below. Knob
     slots 5–6 are direct performative dials: **tone** (exponential-taper
