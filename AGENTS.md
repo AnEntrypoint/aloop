@@ -1518,7 +1518,7 @@ release) — what differs is what happens if the press continues:
   Knob slots 1-6 drive Resonode's own controls instead of the granulator
   patch blend below: slots 1-4 are named-patch blend weights
   (`applyResonodePatchMorph`/`kResonodePatches` — Percussive, Metal/Glass,
-  Strings, Wood/Membrane; see "Resonode named sweetspot patches" below), slots
+  Strings, Dance Bass; see "Resonode named sweetspot patches" below), slots
   5-6 are direct performative dials (`applyResonodeDirectKnob`/
   `kResonodeDirectKnobRanges`: tone brightness, level — Faust zones
   `fx/resonode/*`). Releasing the button releases every Resonode voice
@@ -1954,7 +1954,7 @@ output finite and sane across the whole keybed.
 | Percussive | 0.08 | 0.15 | 0.80 | -0.10 | 0.55 | 60ms decay, transient ratio ~35.3 (sharp tap) |
 | Metal/Glass | 0.08 | 7.00 | 0.97 | 1.20 | 0.15 | ~2.5s ring, centroid ~1.85kHz, only 26% of energy below 1.5x f0 (bright, inharmonic) |
 | Strings | 0.08 | 7.00 | 0.97 | -0.10 | 0.00 | ~2.5s ring, centroid ~632Hz (~2-3x f0), harmonic partials audibly present (not a bare sine) |
-| Wood/Membrane | 0.60 | 1.20 | 0.35 | 0.05 | 0.25 | reasoned initial pick (moderate decay, dulled upper partials, near-harmonic, a light bounce), pending its own `sweep.py`/`select_patches.py` re-derivation |
+| Dance Bass | 0.42 | 7.00 | 0.15 | -0.10 | 0.30 | long ring (decay=7.0, damping=0.15), 93-97% of spectral energy below 1.5x f0 across notes 28/36/48 (sub-bass-dominant), sustain ratio 0.86-0.94 (RMS at 500-600ms vs 50-150ms) |
 
 `collision` is hand-set per patch from Objekt-informed design intent (a
 percussive/mallet hit should have real "bounce," a clean plucked string
@@ -1969,13 +1969,39 @@ grid-search-verified 6-mode values from the prior re-sweep (adding
 doesn't invalidate that search — pitch-mod settles to true pitch by ~40-50ms,
 well before the sweep's 100-400ms centroid measurement window, and
 `collision` defaults are outside the swept dimensions entirely).
-Wood/Membrane, replacing the old Dance Bass, needed a genuinely NEW target
-character (Objekt's own documented palette leans toward bells/mallets/
-strings/skin/wood body resonance, not a bass-pinned sine) and its own
-`sweep.py`/`select_patches.py` pass — same 625-combo grid, a new
-`WoodMembrane` target direction (moderate decay, a real but not razor-sharp
-attack, a darker-but-not-bass-pinned centroid, near-zero/mildly-warm
-`stretch`) — was run to confirm or refine the point above.
+**Dance Bass was accidentally lost in a later pass** (swapped for a
+"Wood/Membrane" patch that pointed slot 3 at a body-resonance/skin character
+instead) and is restored here, in its original slot, at its original,
+already grid-search-verified `(position,decay,damping,stretch)` point —
+`select_patches.py`'s `DanceBass` target direction (a heavy
+`lowFreqEnergyRatio` bonus, a strong negative `spectralCentroidHz` weight,
+and a `stretchAbsPenalty` favoring near-harmonic tuning, i.e. "keep the
+fundamental dominant and everything else penalized") was re-run against the
+current 6-mode+collision+pitch-mod engine (same 625-combo grid) and landed on
+the identical grid corner, for the same reason the other three patches'
+picks carried over: the target direction is dominated by pushing
+decay/damping toward their sustain-favoring extreme and stretch toward zero,
+which the added modes/collision/pitch-mod don't change.
+
+`collision` didn't exist when Dance Bass was first swept, so it was hand-set
+the same way as the other three patches: measured, not guessed. A
+same-environment DawDreamer JIT sweep of `collision` 0.0-0.6 at the shipped
+`position`/`decay`/`damping`/`stretch` point (note 40, held) showed a
+monotonic rise in decay-tail energy (first-diff-RMS proxy 0.138 -> 0.243,
++76% from `collision` 0.0 to 0.6) while the dominant sub-bass character
+stayed almost untouched (`lowFreqEnergyRatio` 0.999 -> 0.973, spectral
+centroid 82.5Hz -> 87.2Hz). `0.30` was chosen as the point giving a clearly
+audible harmonic/grit boost — useful for cutting through a mix and
+translating on small speakers, the exact quality dance/dubstep bass sound
+design leans on physical-modeling resonance for — while `lowFreqEnergyRatio`
+at that setting is still north of 0.99: well short of Percussive's 0.55
+(built to be all-transient) and above Metal/Glass's 0.15 / Strings' 0.0
+(built to stay clean). `test/resonode-sweetspot/verify_musical_controls.py`
+gained a permanent `dance_bass_shipped_patch` check (renders the exact
+shipped point at notes 28/36/48 and asserts `lowFreqEnergyRatio > 0.85`, a
+sustain ratio > 0.5 between the 500-600ms and 50-150ms windows, and a
+finite/bounded output) specifically so a future patch-table edit can't
+silently swap Dance Bass out again without a red test.
 
 Metal/Glass and Strings share `position`/`decay`/`damping` and differ only
 in `stretch` — the sweep independently rediscovered (both times) that

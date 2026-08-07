@@ -12,7 +12,7 @@ TARGET_DIRECTION = {
     "Percussive":   {"decayTimeMs": -1.0, "transientRatio": +1.0, "spectralCentroidHz":  0.0, "lowFreqEnergyRatio":  0.0, "stretchBonus": 0.0, "stretchAbsPenalty": 0.0},
     "MetalGlass":   {"decayTimeMs": +0.6, "transientRatio": -0.4, "spectralCentroidHz": +1.0, "lowFreqEnergyRatio": -1.0, "stretchBonus": 1.5, "stretchAbsPenalty": 0.0},
     "Strings":      {"decayTimeMs": +0.5, "transientRatio": -0.4, "spectralCentroidHz": +0.15, "lowFreqEnergyRatio": -0.6, "stretchBonus": 0.0, "stretchAbsPenalty": 1.0},
-    "WoodMembrane": {"decayTimeMs": +0.1, "transientRatio": +0.35, "spectralCentroidHz": -0.4, "lowFreqEnergyRatio": +0.3, "stretchBonus": 0.0, "stretchAbsPenalty": 0.5},
+    "DanceBass":    {"decayTimeMs": +0.2, "transientRatio": +0.1, "spectralCentroidHz": -1.0, "lowFreqEnergyRatio": +1.0, "stretchBonus": 0.0, "stretchAbsPenalty": 0.6},
 }
 
 
