@@ -33,7 +33,10 @@ attackEdge(note, gate) = (gate > gate') + stealEvent(note, gate);
 velGain(vel) = max(0.0, min(1.0, vel));
 flexibility = max(0.0, min(1.0, (0.5 - stretch)));
 
-pitchEnv(note, gate) = 0.0;
+pitchEnv(note, gate) = e
+letrec {
+    'e = ba.if(attackEdge(note, gate) > 0.5, 1.0, e * pitchModPole);
+};
 
 exciteFor(exciteIn, note, gate, vel) = exciteIn : fi.lowpass(2, tone) : *(en.asr(0.02, 1.0, 0.3, xgate) * velGain(vel))
 with {
@@ -46,11 +49,7 @@ letrec {
     with { target = ba.midikey2hz(note) * (1.0 + pitchModDepth*velGain(vel)*flexibility*pitchEnv(note, gate)); };
 };
 
-collisionDrive(x) = x*(1.0 - collision) + collisionShaped(x)*collision
-with {
-    driveAmt = 1.0 + collision*6.0;
-    collisionShaped(x) = ma.tanh(x*driveAmt)/ma.tanh(driveAmt);
-};
+collisionDrive(x) = x;
 
 aliasGuard(f) = min(1.0, max(0.0, (ma.SR*0.5 - f) / (ma.SR*0.05)));
 
