@@ -26,12 +26,12 @@ pitchStage  = component("effects/home/faust/pitch.dsp")[ SEMIS=SEMIS; FORMANT=FO
 harmonize = component("effects/home/faust/multitranspose.dsp");
 resonode  = component("effects/home/faust/resonode_synth.dsp");
 
-process(dry, loopSum, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5, on0,og0,ov0, on1,og1,ov1) = mainOut, loopHarmonyWet
+process(dry, loopSum, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5, on0,og0,ov0, on1,og1,ov1, on2,og2,ov2, on3,og3,ov3) = mainOut, loopHarmonyWet
 with {
     anyVoiceGated = min(1.0, g0+g1+g2+g3+g4+g5);
     dryGate = (1.0 - anyVoiceGated*(1.0-freeXpose)) : si.smoo;
     resonodeEngageGate = RESONODE_ENGAGED : si.smoo;
-    resonodeOut = resonode(dry, on0,og0,ov0, on1,og1,ov1);
+    resonodeOut = resonode(dry, on0,og0,ov0, on1,og1,ov1, on2,og2,ov2, on3,og3,ov3);
     harmonyBus     = harmonize(dry, loopSum, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5);
     dryWet         = harmonyBus : _,!;
     loopHarmonyWet = harmonyBus : !,_;

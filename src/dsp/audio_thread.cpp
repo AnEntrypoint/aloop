@@ -215,7 +215,7 @@ static void* worker(void*) {
         resonodeGateBuf[v].assign((size_t)N, 0.0f);
         resonodeVelBuf[v].assign((size_t)N, 1.0f);
     }
-    float* fins[26] = {
+    float* fins[32] = {
         fin.data(), prevFiltOut.data(), clearBuf.data(), speedBuf.data(), masterPhaseBuf.data(), masterLenBuf.data(), sidechainEnvBuf.data(),
         freeXposeBuf.data(),
         xposeNoteBuf[0].data(), xposeGateBuf[0].data(),
@@ -226,6 +226,8 @@ static void* worker(void*) {
         xposeNoteBuf[5].data(), xposeGateBuf[5].data(),
         resonodeNoteBuf[0].data(), resonodeGateBuf[0].data(), resonodeVelBuf[0].data(),
         resonodeNoteBuf[1].data(), resonodeGateBuf[1].data(), resonodeVelBuf[1].data(),
+        resonodeNoteBuf[2].data(), resonodeGateBuf[2].data(), resonodeVelBuf[2].data(),
+        resonodeNoteBuf[3].data(), resonodeGateBuf[3].data(), resonodeVelBuf[3].data(),
     };
     int sidechainSrcSlot[AudioThread::Telemetry::kLoopers];
     for (int lp = 0; lp < AudioThread::Telemetry::kLoopers; lp++) sidechainSrcSlot[lp] = -1;
