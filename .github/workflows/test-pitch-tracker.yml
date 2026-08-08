@@ -4,7 +4,7 @@ on:
   push:
     paths:
       - 'effects/home/faust/multitranspose.dsp'
-      - 'test/pitch-tracker-highoctave/**'
+      - 'test/pitch-tracker-transient/**'
       - '.github/workflows/test-pitch-tracker.yml'
   workflow_dispatch:
 
@@ -22,4 +22,4 @@ jobs:
           pip install dawdreamer numpy
 
       - name: Run high-octave transient pitch-tracker check
-        run: python3 test/pitch-tracker-highoctave/verify_highoctave_transient.py
+        run: python3 test/pitch-tracker-transient/verify_highoctave_transient.py

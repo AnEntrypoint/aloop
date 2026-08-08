@@ -122,10 +122,10 @@ def check_high_octave_transient(freq_hz, target_note_offset_semis=0):
 
 
 def main():
-    print("multitranspose.dsp high-octave transient pitch-tracking check")
+    print("multitranspose.dsp transient pitch-tracking check (low + high octaves)")
     print(f"DSP: {DSP_PATH}")
     results = []
-    for freq_hz in (880.0, 1046.5, 1318.5):
+    for freq_hz in (82.0, 196.0, 880.0, 1046.5, 1318.5):
         early_signed, early_max, late_max = check_high_octave_transient(freq_hz)
         results.append((freq_hz, early_signed, early_max, late_max))
 
