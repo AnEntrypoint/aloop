@@ -20,7 +20,7 @@
 {"@context":"https://schema.org","@type":"WebPage","headline":"aloop — technical constraints reference","url":"https://anentrypoint.github.io/mc-420/AGENTS.html"}</script>
 <!-- End Jekyll SEO tag -->
 
-    <link rel="stylesheet" href="/mc-420/assets/css/style.css?v=b224d03f769011d6bb24c9a4a58142b5f0360124">
+    <link rel="stylesheet" href="/mc-420/assets/css/style.css?v=f6c498faf7a4358e0f80a6e37fab7146029d0555">
     <!--[if lt IE 9]>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
     <![endif]-->
@@ -1426,6 +1426,38 @@ single audio-rate `resonodeIn` signal input instead of the old
 engaged, or zeros it when not (the existing `resonodeEngageGate` crossfade in
 `effects_runtime.dsp` is unchanged, it just reads from a C++-fed buffer now
 instead of an in-Faust component call).
+
+**A real regression shipped with this refactor and stayed silent for a whole
+session: `RESONODE_ENGAGED`'s Faust zone was never written after the move.**
+`targetToZone()` was changed to return `""` for every `fx/resonode/*` target
+(comment: "pushed via `Lv2Host::setControl` ... never through this Faust-zone
+path"), which is correct for `resonode.lv2`'s own control ports
+(position/tone/decay/damping/stretch/collision/level, per-voice note/gate/vel)
+but WRONG for `fx/resonode/engaged` specifically — that flag has TWO real
+consumers, not one: (1) the C++ gate deciding whether `resonodeFx.process()`
+runs at all (added correctly, reads `resonodeEngagedSlot` from `ParamStore`),
+and (2) `effects_runtime.dsp`'s own `RESONODE_ENGAGED` checkbox, which drives
+`resonodeEngageGate`, the crossfade that actually mixes `resonodeIn` into the
+audible output. Only consumer (1) got wired; consumer (2) was left assuming
+the OLD `targetToZone`/`resolvedControls` path still reached it, which it no
+longer did once that path was deliberately blocked. Net effect: `resonodeIn`
+was correctly computed (the LV2 plugin genuinely ran) but permanently
+multiplied by a gate stuck at its compiled-in `0` default — WITNESSED on real
+hardware as "mic sounds completely normal after Shift+LofiFx, keys don't
+resonate with the mic as an exciter" — the dry/pitch-lock term stayed fully
+open the whole time, indistinguishable from Resonode doing nothing at all,
+even though the plugin was genuinely computing real audio underneath.
+Fixed with a direct `fui.set("fx/resonode/engaged", resonodeEngagedNow ?
+1.0f : 0.0f)` call right where `resonodeEngagedNow` is computed in the worker
+loop, matching how `MONITORFOLD`/`GLITCHFOLD`/other C++-internal flags
+already reach Faust zones directly (never through `targetToZone`). **Lesson,
+generalizable beyond this one flag**: when a single control target gains a
+second consumer during a refactor (here: an LV2 control port AND a Faust
+crossfade checkbox, previously unified under one `targetToZone` string), each
+consumer needs its OWN explicit write path audited — routing the primary
+consumer correctly does not imply the secondary one still works, and nothing
+in this codebase's `ParamStore`/Faust-zone architecture fails loudly when a
+zone silently stops being written; it just reads its default forever.
 
 **Signal-flow order was corrected at the same time**: guitar/lofi-fx
 (`homeFx`/`userFx`) now run as an INPUT stage — on `fin`, before
