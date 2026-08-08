@@ -15,7 +15,7 @@ constexpr int kApcCols = 8;
 constexpr int kLooperCount = 20;
 constexpr int kPresetCount = 10;
 constexpr int kTransposeVoices = 6;
-constexpr int kResonodeVoices = 4;
+constexpr int kResonodeVoices = 2;
 constexpr unsigned kHoldEraseMs = 1000;
 constexpr int kSampleRate = 48000;
 constexpr int kBlockSize  = 64;
@@ -165,7 +165,6 @@ private:
     bool m_resonodeEngaged = false;
     bool m_resonodeLatched = false;
     bool m_resonodeHoldFiredThisPress = false;
-    int m_resonodeDroneNote = 57;
     int m_resonodeVoiceNote[kResonodeVoices] = {-1, -1, -1, -1};
     uint32_t m_resonodeVoiceOrder[kResonodeVoices] = {};
     uint32_t m_resonodeVoiceCounter = 0;
@@ -173,7 +172,6 @@ private:
     void releaseResonodeVoice(int note, ParamStore& ps);
     void releaseAllResonodeVoices(ParamStore& ps);
     void applyResonodePatchMorph(ParamStore& ps);
-    void engageResonodeDrone(ParamStore& ps);
 
     bool m_guitarFxHeld = false;
     bool m_guitarFxConsumedByLooperPress = false;

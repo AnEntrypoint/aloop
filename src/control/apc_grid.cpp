@@ -312,7 +312,6 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps, LinkBridge* link, Audio
         m_resonodeEngaged = m_resonodeLatched;
         ps.setByName("fx/resonode/engaged", m_resonodeLatched ? 1.0f : 0.0f);
         if (!m_resonodeLatched) releaseAllResonodeVoices(ps);
-        else engageResonodeDrone(ps);
         if (m_granulatorLatched) {
             m_granulatorLatched = false;
             if (audio && audio->sampler()) audio->sampler()->setGranulatorEnabled(false);
@@ -550,16 +549,6 @@ void ApcGrid::releaseAllResonodeVoices(ParamStore& ps) {
         snprintf(gateName, sizeof gateName, "fx/resonodevoice%d/gate", v);
         ps.setByName(gateName, 0.0f);
     }
-}
-void ApcGrid::engageResonodeDrone(ParamStore& ps) {
-    int v = allocateResonodeVoice(m_resonodeDroneNote);
-    char noteName[28], gateName[28], velName[28];
-    snprintf(noteName, sizeof noteName, "fx/resonodevoice%d/note", v);
-    snprintf(gateName, sizeof gateName, "fx/resonodevoice%d/gate", v);
-    snprintf(velName, sizeof velName, "fx/resonodevoice%d/vel", v);
-    ps.setByName(noteName, (float)m_resonodeDroneNote);
-    ps.setByName(velName, 1.0f);
-    ps.setByName(gateName, 1.0f);
 }
 void ApcGrid::onKeybedNoteOn(int note, int vel, ParamStore& ps, Sampler* sampler) {
     if (m_resonodeEngaged) {
