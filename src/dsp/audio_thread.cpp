@@ -694,10 +694,21 @@ static void* worker(void*) {
             // filter/delay/reverb downstream.
             bool resonodeEngagedNow = g_params && resonodeEngagedSlot >= 0 &&
                                        g_params->getBySlot(resonodeEngagedSlot) > 0.5f;
-            if (resonodeEngagedNow) {
+            if (resonodeEngagedNow && resonodeFx.hasPlugins()) {
                 std::copy(fin.begin(), fin.end(), resonodeInBuf.begin());
                 resonodeFx.process(resonodeInBuf.data(), N);
             } else {
+                // Engaged but no resonode.lv2 loaded (e.g. an older deploy
+                // that predates this bundle, or a stale fx/resonode/engaged
+                // ParamStore value from an old preset): Lv2Host::process()
+                // no-ops on an empty plugin list, which would otherwise leave
+                // resonodeInBuf holding the raw copied mic signal -- that
+                // then gets crossfaded in at full resonodeEngageGate as if it
+                // were genuine Resonode output, silently leaking unprocessed
+                // dry mic disguised as "Resonode engaged". Zero it instead:
+                // silence is the correct, named degraded behavior here, not
+                // a passthrough (unlike homeFx/userFx, where dry-passthrough
+                // IS the correct degraded mode for "no user effect present").
                 std::fill(resonodeInBuf.begin(), resonodeInBuf.end(), 0.0f);
             }
             faustHome.compute(N, fins, fouts);

@@ -118,6 +118,15 @@ public:
     enum class Topology { SERIAL, FORK_JOIN };
     void setTopology(Topology t) { topology_ = t; }
 
+    // True once at least one plugin bundle loaded successfully. Callers that
+    // need to distinguish "process() is a deliberate dry-passthrough because
+    // no user effect is present" (the DEGRADED-MODES default for homeFx/
+    // userFx) from "process() would silently leave the buffer unprocessed
+    // because nothing loaded at all" (wrong for a dedicated single-purpose
+    // host like resonodeFx, where the caller's own engaged-flag already
+    // means "the user wants processed output") should check this first.
+    bool hasPlugins() const { return !plugins_.empty(); }
+
     // Crash isolation: the SIGSEGV handler calls this with the faulting plugin
     // (identified by the run() it was in) to disable it and continue degraded.
     void disablePlugin(Lv2Plugin* p);
