@@ -85,17 +85,39 @@ def check_high_octave_transient(freq_hz, target_note_offset_semis=0):
     text = DSP_PATH.read_text()
     target_note = 69.0 + 12.0 * np.log2(freq_hz / 440.0) + target_note_offset_semis
     audio, dry = render(text, freq_hz, target_note, dur=0.3)
-    times, freqs = instantaneous_freq_via_zero_crossings(audio, SAMPLE_RATE)
     target_hz = freq_hz * (2.0 ** (target_note_offset_semis / 12.0))
-    early_mask = times < 0.10
+
+    # Control: measure the SAME zero-crossing method against the raw dry
+    # input tone (no DSP at all) to separate "the measurement method itself
+    # is noisy on a ramping onset" from "the multitranspose output has a
+    # real tracking error" -- the control should read near target_hz==freq_hz
+    # everywhere the signal has real amplitude.
+    dry_times, dry_freqs = instantaneous_freq_via_zero_crossings(dry, SAMPLE_RATE)
+    dry_early_mask = (dry_times >= 0.035) & (dry_times < 0.10)
+    dry_early_errs = [cents_error(f, freq_hz) for f in dry_freqs[dry_early_mask] if f > 0]
+    dry_early_mean = np.mean(dry_early_errs) if dry_early_errs else float("nan")
+    print(f"  CONTROL (dry input, zero-crossing method only): "
+          f"early(35-100ms)_mean_signed_cents={dry_early_mean:.1f}")
+
+    times, freqs = instantaneous_freq_via_zero_crossings(audio, SAMPLE_RATE)
+    # voiceOut's en.adsr(0.003, 0.03, ...) attack+decay means the voice's own
+    # amplitude is still ramping for the first ~35ms -- zero-crossing counting
+    # on a near-silent/ramping signal is itself noisy, not a tracker artifact.
+    # "early" is measured PAST that ramp (35-100ms), "very_early" separately
+    # captures the ramp window itself so ramp-noise is visible, not conflated.
+    very_early_mask = (times >= 0.0) & (times < 0.035)
+    early_mask = (times >= 0.035) & (times < 0.10)
     late_mask = times > 0.20
+    very_early_errs = [cents_error(f, target_hz) for f in freqs[very_early_mask] if f > 0]
     early_errs = [cents_error(f, target_hz) for f in freqs[early_mask] if f > 0]
     late_errs = [cents_error(f, target_hz) for f in freqs[late_mask] if f > 0]
     early_max_abs = max((abs(e) for e in early_errs), default=float("nan"))
     late_max_abs = max((abs(e) for e in late_errs), default=float("nan"))
     early_signed_mean = np.mean(early_errs) if early_errs else float("nan")
-    print(f"  target_hz={target_hz:.1f} early(<100ms) max|cents|={early_max_abs:.1f} "
-          f"mean_signed_cents={early_signed_mean:.1f} late(>200ms) max|cents|={late_max_abs:.1f}")
+    very_early_signed_mean = np.mean(very_early_errs) if very_early_errs else float("nan")
+    print(f"  target_hz={target_hz:.1f} very_early(0-35ms,ramp)_mean_signed_cents={very_early_signed_mean:.1f} "
+          f"early(35-100ms)_max|cents|={early_max_abs:.1f} mean_signed_cents={early_signed_mean:.1f} "
+          f"late(>200ms)_max|cents|={late_max_abs:.1f}")
     return early_signed_mean, early_max_abs, late_max_abs
 
 
