@@ -143,10 +143,15 @@ static std::string targetToZone(const std::string& target) {
     if (target == "fx/formant") return "FORMANT";
     if (target == "fx/pitch")   return "SEMIS";
     if (target == "fx/bank")    return "fx/bank";
-    // fx/resonode/* and fx/resonodevoice*/* are NOT Faust zones anymore --
-    // Resonode moved to its own standalone LV2 bundle (resonode.lv2), so
-    // those targets are pushed via Lv2Host::setControl in the worker loop's
-    // own resonodeParamSlots resolution, never through this Faust-zone path.
+    // fx/resonode/position|tone|decay|damping|stretch|collision|level and
+    // fx/resonodevoice*/* are resonode.lv2's OWN control ports now (Resonode
+    // moved to a standalone LV2 bundle) -- pushed via Lv2Host::setControl in
+    // the worker loop's resonodeParamSlots resolution, never through this
+    // Faust-zone path. fx/resonode/engaged is different: it ALSO still
+    // drives AloopLoopDsp's own RESONODE_ENGAGED checkbox (effects_runtime.dsp's
+    // audio-path crossfade gate that mixes resonodeIn into the output) --
+    // written directly via fui.set() in the worker loop, not through
+    // targetToZone/resolvedControls (see the resonodeEngagedNow block).
     return "";
 }
 
@@ -694,6 +699,7 @@ static void* worker(void*) {
             // filter/delay/reverb downstream.
             bool resonodeEngagedNow = g_params && resonodeEngagedSlot >= 0 &&
                                        g_params->getBySlot(resonodeEngagedSlot) > 0.5f;
+            fui.set("fx/resonode/engaged", resonodeEngagedNow ? 1.0f : 0.0f);
             if (resonodeEngagedNow && resonodeFx.hasPlugins()) {
                 std::copy(fin.begin(), fin.end(), resonodeInBuf.begin());
                 resonodeFx.process(resonodeInBuf.data(), N);
