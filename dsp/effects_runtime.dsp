@@ -1,6 +1,6 @@
 declare name "EffectsRuntime";
 declare author "aloop";
-declare description "The dubfx effect stages with every param exposed as a runtime UI control (hslider/checkbox/nentry) instead of a compile-time constant, so the remappable control map can set them live. Zone labels match targetToZone in the native shell (HPCUT, LPCUT, LPRES, REVAMT, DELAYAMT, TIME, FORMANT, SEMIS); any fx/resonode/... or fx/xpose.../... target passes through targetToZone verbatim.";
+declare description "The dubfx effect stages with every param exposed as a runtime UI control (hslider/checkbox/nentry) instead of a compile-time constant, so the remappable control map can set them live. Zone labels match targetToZone in the native shell (HPCUT, LPCUT, LPRES, REVAMT, DELAYAMT, TIME, FORMANT, SEMIS); any fx/resonode/... or fx/xpose.../... target passes through targetToZone verbatim. resonodeIn is now an external audio-rate signal input (the resonode.lv2 bundle's own output, computed in C++ audio_thread.cpp ONLY when fx/resonode/engaged is true) rather than an in-Faust component -- Resonode's per-block cost used to be paid unconditionally on every block even when idle, since Faust has no runtime branching to skip a stage. dry is now the guitar/lofi-fx LV2 bundle's OUTPUT (an input-stage effect that now runs before this whole chain), not the raw mic signal.";
 
 import("stdfaust.lib");
 
@@ -24,17 +24,15 @@ microStage  = component("effects/home/faust/microrepeat.dsp")[ DIV=glitchDivisor
 pitchStage  = component("effects/home/faust/pitch.dsp")[ SEMIS=SEMIS; FORMANT=FORMANT; ENGAGED=ENGAGED; ];
 
 harmonize = component("effects/home/faust/multitranspose.dsp");
-resonode  = component("effects/home/faust/resonode_synth.dsp");
 
-process(dry, loopSum, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5, on0,og0,ov0, on1,og1,ov1, on2,og2,ov2, on3,og3,ov3) = mainOut, loopHarmonyWet
+process(dry, loopSum, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5, resonodeIn) = mainOut, loopHarmonyWet
 with {
     anyVoiceGated = min(1.0, g0+g1+g2+g3+g4+g5);
     dryGate = (1.0 - anyVoiceGated*(1.0-freeXpose)) : si.smoo;
     resonodeEngageGate = RESONODE_ENGAGED : si.smoo;
-    resonodeOut = resonode(dry, on0,og0,ov0, on1,og1,ov1, on2,og2,ov2, on3,og3,ov3);
     harmonyBus     = harmonize(dry, loopSum, freeXpose, s0,g0, s1,g1, s2,g2, s3,g3, s4,g4, s5,g5);
     dryWet         = harmonyBus : _,!;
     loopHarmonyWet = harmonyBus : !,_;
-    preChain = (pitchStage(dry)*dryGate + dryWet)*(1.0-resonodeEngageGate) + resonodeOut*resonodeEngageGate;
+    preChain = (pitchStage(dry)*dryGate + dryWet)*(1.0-resonodeEngageGate) + resonodeIn*resonodeEngageGate;
     mainOut = preChain : microStage : filterStage : delayStage : reverbStage;
 };

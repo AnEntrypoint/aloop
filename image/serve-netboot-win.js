@@ -452,6 +452,13 @@ async function checkAndUpdate() {
     // contained aloop.lv2, guitar_lofi_fx.lv2 missing on the running device).
     const lv2Dir = await downloadRunArtifact(lv2Run.id, 'home-fx-lv2', path.join(work, 'lv2'));
     await downloadRunArtifact(lv2Run.id, 'guitar-lofi-fx-lv2', lv2Dir);
+    // resonode-lv2 is a SEPARATE artifact into its OWN directory (never
+    // merged into lv2Dir) -- lib-boot-tree.sh's own home-FX find explicitly
+    // excludes resonode.lv2 by name and only lays it in via RESONODE_LV2_DIR,
+    // since it must never be loaded by the general homeFx/userFx hosts (see
+    // audio_thread.cpp's dedicated resonodeFx Lv2Host, only ever process()'d
+    // when fx/resonode/engaged is true).
+    const resonodeDir = await downloadRunArtifact(lv2Run.id, 'resonode-lv2', path.join(work, 'resonode'));
     const aloopBin = path.join(binDir, 'aloop');
     if (!fs.existsSync(aloopBin)) throw new Error('aloop binary not found in downloaded artifact at ' + aloopBin);
 
@@ -490,7 +497,7 @@ async function checkAndUpdate() {
     const REBUILD_TIMEOUT_MS = 5 * 60 * 1000;
     await execFileAsync(bashExe, [buildScript], {
       cwd: path.join(__dirname, '..'),
-      env: Object.assign({}, process.env, { OUT: ROOT, ALOOP_BIN: aloopBin, LV2_DIR: lv2Dir, NETBOOT_SERVER: NETBOOT_SERVER }),
+      env: Object.assign({}, process.env, { OUT: ROOT, ALOOP_BIN: aloopBin, LV2_DIR: lv2Dir, RESONODE_LV2_DIR: resonodeDir, NETBOOT_SERVER: NETBOOT_SERVER }),
       timeout: REBUILD_TIMEOUT_MS,
       killSignal: 'SIGKILL',
       maxBuffer: 64 * 1024 * 1024

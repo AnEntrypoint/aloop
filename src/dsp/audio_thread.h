@@ -30,6 +30,15 @@ struct AudioConfig {
     // after the .dsp (aloop.lv2), not "chain.lv2".
     std::string homeDir = "/effects/home";
     std::string userDir = "/effects/user";
+    // Standalone resonode.lv2 bundle directory. Separate from homeDir/userDir
+    // (never hot-swapped, never hosts more than the one Resonode plugin) so
+    // audio_thread.cpp can call Lv2Host::process() on it ONLY when
+    // fx/resonode/engaged is true -- Resonode used to live inside the
+    // always-on home Faust stack, where its per-block cost was paid every
+    // block regardless of engagement (Faust has no runtime branching to skip
+    // a stage's cost); moving it to its own LV2 bundle lets the C++ call site
+    // itself skip the work entirely when idle.
+    std::string resonodeDir = "/effects/resonode";
     // DIAGNOSTIC ONLY (aloop.conf [effects] disable_core3_lv2=1): skips both
     // homeFx.process()/userFx.process() every block entirely (not just
     // disabling individual plugins -- the Lv2Host::process() call itself,

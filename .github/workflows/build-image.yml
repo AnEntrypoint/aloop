@@ -76,6 +76,8 @@ jobs:
           # lib-boot-tree.sh's boot_tree_apkovl expects.
           [ -n "$LV2_RUN" ] && gh run download "$LV2_RUN" -n home-fx-lv2 -D dl/lv2/home-fx-lv2 || echo "no home-fx-lv2 artifact yet"
           [ -n "$LV2_RUN" ] && gh run download "$LV2_RUN" -n guitar-lofi-fx-lv2 -D dl/lv2/guitar-lofi-fx-lv2 || echo "no guitar-lofi-fx-lv2 artifact yet"
+          mkdir -p dl/resonode
+          [ -n "$LV2_RUN" ] && gh run download "$LV2_RUN" -n resonode-lv2 -D dl/resonode || echo "no resonode-lv2 artifact yet"
           find dl -type f | head -20
 
       - name: Locate payload
@@ -83,15 +85,19 @@ jobs:
         run: |
           BIN=$(find dl/bin -type f -name aloop 2>/dev/null | head -n1 || true)
           LV2DIR=""; [ -d dl/lv2 ] && [ -n "$(find dl/lv2 -maxdepth 2 -name '*.lv2' -type d 2>/dev/null)" ] && LV2DIR="dl/lv2"
+          RESONODEDIR=""; [ -d dl/resonode ] && [ -n "$(find dl/resonode -maxdepth 2 -name 'resonode.lv2' -type d 2>/dev/null)" ] && RESONODEDIR="dl/resonode"
           echo "bin=$BIN"   >> "$GITHUB_OUTPUT"
           echo "lv2dir=$LV2DIR" >> "$GITHUB_OUTPUT"
-          echo "found binary: '${BIN:-<none>}'  lv2 dir: '${LV2DIR:-<none>}'"
+          echo "resonodedir=$RESONODEDIR" >> "$GITHUB_OUTPUT"
+          echo "found binary: '${BIN:-<none>}'  lv2 dir: '${LV2DIR:-<none>}'  resonode dir: '${RESONODEDIR:-<none>}'"
           find dl/lv2 -maxdepth 2 -name '*.lv2' -type d 2>/dev/null
+          find dl/resonode -maxdepth 2 -name 'resonode.lv2' -type d 2>/dev/null
 
       - name: Build the flashable image (image/build-image.sh)
         env:
           ALOOP_BIN: ${{ steps.payload.outputs.bin }}
           LV2_DIR: ${{ steps.payload.outputs.lv2dir }}
+          RESONODE_LV2_DIR: ${{ steps.payload.outputs.resonodedir }}
           BOARD: ${{ matrix.board }}
           OUT: aloop-${{ matrix.board }}.img
         run: |
@@ -121,6 +127,7 @@ jobs:
         env:
           ALOOP_BIN: ${{ steps.payload.outputs.bin }}
           LV2_DIR: ${{ steps.payload.outputs.lv2dir }}
+          RESONODE_LV2_DIR: ${{ steps.payload.outputs.resonodedir }}
           BOARD: ${{ matrix.board }}
           OUT: aloop-netboot-${{ matrix.board }}
         run: |

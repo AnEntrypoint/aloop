@@ -122,7 +122,6 @@ aloop::UsbRecorder* g_usbRecorder = nullptr;
 
 float g_manualSpeedMul = 1.0f;
 constexpr int kTransposeVoices = 6;
-constexpr int kResonodeVoices = 4;
 
 
 static std::string targetToZone(const std::string& target) {
@@ -144,7 +143,10 @@ static std::string targetToZone(const std::string& target) {
     if (target == "fx/formant") return "FORMANT";
     if (target == "fx/pitch")   return "SEMIS";
     if (target == "fx/bank")    return "fx/bank";
-    if (target.rfind("fx/resonode/", 0) == 0) return target;
+    // fx/resonode/* and fx/resonodevoice*/* are NOT Faust zones anymore --
+    // Resonode moved to its own standalone LV2 bundle (resonode.lv2), so
+    // those targets are pushed via Lv2Host::setControl in the worker loop's
+    // own resonodeParamSlots resolution, never through this Faust-zone path.
     return "";
 }
 
@@ -207,15 +209,8 @@ static void* worker(void*) {
         xposeNoteBuf[v].assign((size_t)N, 0.0f);
         xposeGateBuf[v].assign((size_t)N, 0.0f);
     }
-    std::vector<float> resonodeNoteBuf[kResonodeVoices];
-    std::vector<float> resonodeGateBuf[kResonodeVoices];
-    std::vector<float> resonodeVelBuf[kResonodeVoices];
-    for (int v = 0; v < kResonodeVoices; v++) {
-        resonodeNoteBuf[v].assign((size_t)N, 0.0f);
-        resonodeGateBuf[v].assign((size_t)N, 0.0f);
-        resonodeVelBuf[v].assign((size_t)N, 1.0f);
-    }
-    float* fins[32] = {
+    std::vector<float> resonodeInBuf((size_t)N, 0.0f);
+    float* fins[21] = {
         fin.data(), prevFiltOut.data(), clearBuf.data(), speedBuf.data(), masterPhaseBuf.data(), masterLenBuf.data(), sidechainEnvBuf.data(),
         freeXposeBuf.data(),
         xposeNoteBuf[0].data(), xposeGateBuf[0].data(),
@@ -224,10 +219,7 @@ static void* worker(void*) {
         xposeNoteBuf[3].data(), xposeGateBuf[3].data(),
         xposeNoteBuf[4].data(), xposeGateBuf[4].data(),
         xposeNoteBuf[5].data(), xposeGateBuf[5].data(),
-        resonodeNoteBuf[0].data(), resonodeGateBuf[0].data(), resonodeVelBuf[0].data(),
-        resonodeNoteBuf[1].data(), resonodeGateBuf[1].data(), resonodeVelBuf[1].data(),
-        resonodeNoteBuf[2].data(), resonodeGateBuf[2].data(), resonodeVelBuf[2].data(),
-        resonodeNoteBuf[3].data(), resonodeGateBuf[3].data(), resonodeVelBuf[3].data(),
+        resonodeInBuf.data(),
     };
     int sidechainSrcSlot[AudioThread::Telemetry::kLoopers];
     for (int lp = 0; lp < AudioThread::Telemetry::kLoopers; lp++) sidechainSrcSlot[lp] = -1;
@@ -270,20 +262,10 @@ static void* worker(void*) {
             xposeGateSlot[v] = g_params ? g_params->getSlot(z) : -1;
         }
     }
-    int resonodeNoteSlot[kResonodeVoices];
-    int resonodeGateSlot[kResonodeVoices];
-    int resonodeVelSlot[kResonodeVoices];
-    {
-        char z[32];
-        for (int v = 0; v < kResonodeVoices; v++) {
-            snprintf(z, sizeof z, "fx/resonodevoice%d/note", v);
-            resonodeNoteSlot[v] = g_params ? g_params->getSlot(z) : -1;
-            snprintf(z, sizeof z, "fx/resonodevoice%d/gate", v);
-            resonodeGateSlot[v] = g_params ? g_params->getSlot(z) : -1;
-            snprintf(z, sizeof z, "fx/resonodevoice%d/vel", v);
-            resonodeVelSlot[v] = g_params ? g_params->getSlot(z) : -1;
-        }
-    }
+    struct ResonodeParamSlot { int slot; std::string lv2Symbol; };
+    std::vector<ResonodeParamSlot> resonodeParamSlots;
+    int resonodeEngagedSlot = -1;
+    int resonodeParamSlotsForCount = -1;
     std::vector<float> rawLoopSum((size_t)N, 0.0f);
     std::vector<float> rawFiltTap((size_t)N, 0.0f);
     float* fouts[3] = { fout.data(), rawLoopSum.data(), rawFiltTap.data() };
@@ -303,6 +285,13 @@ static void* worker(void*) {
     Lv2Host userFx;
     userFx.loadDir(g_cfg.userDir, g_cfg.userFxCore);
     userFx.connect(N, ch);
+
+    // Resonode: its own dedicated Lv2Host, loaded once, but process() is only
+    // ever called on it when fx/resonode/engaged is true (see the worker loop
+    // below). Never hot-swapped, never shares homeDir/userDir's rescan path.
+    Lv2Host resonodeFx;
+    resonodeFx.loadDir(g_cfg.resonodeDir, g_cfg.homeFxCore);
+    resonodeFx.connect(N, ch);
 
     UsbRecorder usbRecorder(g_cfg.usbMountPoint, g_cfg.sampleRate, g_cfg.usbChunkMinutes, g_cfg.usbChunkCount);
     if (g_cfg.usbRecordEnabled) g_usbRecorder = &usbRecorder;
@@ -438,6 +427,20 @@ static void* worker(void*) {
                     resolvedControlsForCount = g_params->count;
                 }
                 for (auto& rc : resolvedControls) *rc.zone = g_params->getBySlot(rc.slot);
+                if (resonodeParamSlotsForCount != g_params->count) {
+                    resonodeParamSlots.clear();
+                    resonodeEngagedSlot = -1;
+                    g_params->forEach([&](const std::string& target, int slotIdx){
+                        if (target == "fx/resonode/engaged") { resonodeEngagedSlot = slotIdx; return; }
+                        if (target.rfind("fx/resonode/", 0) == 0 || target.rfind("fx/resonodevoice", 0) == 0) {
+                            resonodeParamSlots.push_back({slotIdx, target});
+                        }
+                    });
+                    resonodeParamSlotsForCount = g_params->count;
+                }
+                for (auto& rp : resonodeParamSlots) {
+                    resonodeFx.setControl(rp.lv2Symbol, g_params->getBySlot(rp.slot));
+                }
                 bool clearAllHeld = g_params->get("cmd/clearall") > 0.5f;
                 std::fill(clearBuf.begin(), clearBuf.end(), clearAllHeld ? 1.0f : 0.0f);
                 if (clearAllHeld) {
@@ -458,11 +461,6 @@ static void* worker(void*) {
                 for (int v = 0; v < kTransposeVoices; v++) {
                     std::fill(xposeNoteBuf[v].begin(), xposeNoteBuf[v].end(), g_params->getBySlot(xposeNoteSlot[v]));
                     std::fill(xposeGateBuf[v].begin(), xposeGateBuf[v].end(), g_params->getBySlot(xposeGateSlot[v]));
-                }
-                for (int v = 0; v < kResonodeVoices; v++) {
-                    std::fill(resonodeNoteBuf[v].begin(), resonodeNoteBuf[v].end(), g_params->getBySlot(resonodeNoteSlot[v]));
-                    std::fill(resonodeGateBuf[v].begin(), resonodeGateBuf[v].end(), g_params->getBySlot(resonodeGateSlot[v]));
-                    std::fill(resonodeVelBuf[v].begin(), resonodeVelBuf[v].end(), g_params->getBySlot(resonodeVelSlot[v]));
                 }
                 std::fill(freeXposeBuf.begin(), freeXposeBuf.end(), g_params->get("fx/monitorfold") > 0.5f ? 1.0f : 0.0f);
                 float staticSemis = g_params->get("fx/pitch");
@@ -679,11 +677,30 @@ static void* worker(void*) {
             }
             timespec t0, t1;
             clock_gettime(CLOCK_MONOTONIC, &t0);
-            faustHome.compute(N, fins, fouts);
+            // guitar/lofi-fx now run as an INPUT stage, before the dubfx home
+            // chain -- they color what dubfx's pitch/harmony/filter/delay/
+            // reverb stages receive, not the finished mix. Previously these
+            // ran on fout AFTER faustHome.compute, i.e. purely at the output.
             if (!g_cfg.disableCore3Lv2) {
-                homeFx.process(fout.data(), N);
-                userFx.process(fout.data(), N);
+                homeFx.process(fin.data(), N);
+                userFx.process(fin.data(), N);
             }
+            // Resonode: excited from the SAME post-guitar/lofi-fx signal (so
+            // its excitation is colored by guitar/lofi-fx too, not just
+            // dubfx's later stages), but only actually computed when engaged
+            // -- the whole reason it was pulled out of the always-on Faust
+            // stack. Its output re-enters effects_runtime.dsp's existing
+            // resonodeIn crossfade, so it still passes through dubfx's
+            // filter/delay/reverb downstream.
+            bool resonodeEngagedNow = g_params && resonodeEngagedSlot >= 0 &&
+                                       g_params->getBySlot(resonodeEngagedSlot) > 0.5f;
+            if (resonodeEngagedNow) {
+                std::copy(fin.begin(), fin.end(), resonodeInBuf.begin());
+                resonodeFx.process(resonodeInBuf.data(), N);
+            } else {
+                std::fill(resonodeInBuf.begin(), resonodeInBuf.end(), 0.0f);
+            }
+            faustHome.compute(N, fins, fouts);
             prevLoopSum = rawLoopSum;
             prevFiltOut = rawFiltTap;
             clock_gettime(CLOCK_MONOTONIC, &t1);

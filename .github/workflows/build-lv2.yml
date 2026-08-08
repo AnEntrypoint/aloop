@@ -325,3 +325,95 @@ jobs:
           path: effects/home/*.lv2
           if-no-files-found: error
           retention-days: 3
+
+  # Resonode: pulled OUT of the always-on home Faust stack (effects_runtime.dsp)
+  # into its own standalone LV2 bundle, so audio_thread.cpp can call
+  # Lv2Host::process() on it ONLY when fx/resonode/engaged is true. WITNESSED
+  # real-hardware regression that motivated this: even a reduced 4-voice x
+  # 2-mode shape produced a sustained ~2ms readi gap (vs a 1.333ms block
+  # budget) with the instrument fully idle/unengaged, because Faust has no
+  # runtime branching to skip a stage's cost -- the whole mode bank computed
+  # every block regardless of engagement. Moving it here mirrors
+  # guitar-lofi-fx-lv2's own build exactly (a genuinely standalone Faust
+  # program, only component()-importing itself, no dependency on loop.dsp/
+  # aloop.dsp/effects_runtime.dsp), except note/gate/vel per voice are now
+  # LV2 control ports (hslider) instead of Faust signal inputs -- they were
+  # already only ever updated once per control-tick from ApcGrid's MIDI
+  # note-on/off, never per-sample, so this is a lossless representation
+  # change that lets Lv2Host::setControl push them the same way it already
+  # pushes guitar/lofi-fx's own knob targets.
+  resonode-lv2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Install Faust (host codegen only -- see the cross-compile step below)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y faust lv2-dev pkg-config build-essential libboost-dev
+
+      - name: Build resonode_synth.dsp as its own musl/aarch64 LV2 bundle
+        run: |
+          set -e
+          FAUSTLIB=$(dirname "$(ls -f /usr/share/faust/lv2ui.cpp /usr/local/share/faust/lv2ui.cpp 2>/dev/null | tail -1)")
+          cd effects/home/faust
+          CLSNAME=resonode
+          WORK=/tmp/lv2work
+          mkdir -p "$WORK/$CLSNAME.lv2"
+
+          faust -i -a "$FAUSTLIB/lv2.cpp" -vec -fun -dfs -vs 32 -nvi -ct 0 -cn "$CLSNAME" resonode_synth.dsp -o "$WORK/$CLSNAME.cpp"
+
+          CPPFLAGS="-DPLUGIN_URI=\"https://faustlv2.bitbucket.io/$CLSNAME\" -DFAUST_META=1 -DFAUST_MIDICC=1 -DFAUST_MTS=1 -DFAUST_UI=0 -DVOICE_CTRLS=1 -DNVOICES=-1"
+
+          g++ -std=c++11 -fvisibility=hidden -O3 -DDLLEXT="\".so\"" $CPPFLAGS \
+            -I"$(pwd)" "$WORK/$CLSNAME.cpp" -o "$WORK/$CLSNAME.meta"
+          "$WORK/$CLSNAME.meta" > "$WORK/$CLSNAME.lv2/$CLSNAME.ttl"
+
+          printf '%s\n' \
+            '@prefix doap: <http://usefulinc.com/ns/doap#> .' \
+            '@prefix foaf: <http://xmlns.com/foaf/0.1/> .' \
+            '@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .' \
+            '@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .' \
+            '' \
+            "<https://faustlv2.bitbucket.io/$CLSNAME>" \
+            '    a lv2:Plugin ;' \
+            "    lv2:binary <$CLSNAME.so> ;" \
+            "    rdfs:seeAlso <$CLSNAME.ttl> ." \
+            > "$WORK/$CLSNAME.lv2/manifest.ttl"
+
+          cp "$WORK/$CLSNAME.cpp" .
+          docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w \
+            -e CPPFLAGS="$CPPFLAGS" -e CLSNAME="$CLSNAME" \
+            alpine:3.20 sh -c '
+              set -e
+              apk add --no-cache build-base lv2-dev boost-dev
+              g++ -shared -std=c++11 -fvisibility=hidden -O3 -mcpu=cortex-a72 -fPIC -DDLLEXT="\".so\"" $CPPFLAGS \
+                -I. "$CLSNAME.cpp" -o "$CLSNAME.so"
+              file "$CLSNAME.so"
+            '
+          cp "$CLSNAME.so" "$WORK/$CLSNAME.lv2/"
+
+          ls -R "$WORK/$CLSNAME.lv2" || (echo "::error::no .lv2 bundle produced" && exit 1)
+          mkdir -p "$GITHUB_WORKSPACE/effects/resonode"
+          cp -r "$WORK/$CLSNAME.lv2" "$GITHUB_WORKSPACE/effects/resonode/"
+
+      - name: Validate the LV2 bundle
+        run: |
+          sudo apt-get install -y lv2-dev lilv-utils || true
+          cd effects/resonode
+          find . -name '*.ttl' -print
+          if command -v lv2_validate >/dev/null; then
+            lv2_validate $(find . -name 'manifest.ttl') || echo "::warning::lv2_validate reported issues"
+          fi
+
+      - name: Upload Resonode LV2 bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: resonode-lv2
+          path: effects/resonode/*.lv2
+          if-no-files-found: error
+          retention-days: 3

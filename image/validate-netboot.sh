@@ -80,6 +80,9 @@ if [ -f "$DIR/aloop.apkovl.tar.gz" ]; then
   echo "$INV" | grep -q 'effects/home/.*\.lv2' \
     && ok "apkovl: home-FX LV2 present" \
     || echo "  WARN apkovl has NO home-FX LV2 (layout-only build — set LV2_DIR)"
+  echo "$INV" | grep -q 'effects/resonode/resonode\.lv2' \
+    && ok "apkovl: Resonode LV2 present" \
+    || echo "  WARN apkovl has NO Resonode LV2 (layout-only build — set RESONODE_LV2_DIR; fx/resonode/engaged becomes a silent no-op on device)"
   if echo "$INV" | grep -q 'opt/aloop/aloop$'; then
     for lib in usr/lib/libasound.so.2 usr/lib/liblilv-0.so.0 usr/lib/libserd-0.so.0 \
                usr/lib/libsord-0.so.0 usr/lib/libsratom-0.so.0 usr/lib/libzix-0.so.0 \

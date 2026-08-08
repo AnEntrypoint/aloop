@@ -56,6 +56,8 @@ validate_apkovl() {
     || echo "  WARN apkovl has NO home-FX LV2 (layout-only build — set LV2_DIR)"
   echo "$INV" | grep -q 'effects/user' && ok "apkovl: /effects/user dir present" \
     || bad "apkovl missing /effects/user (user LV2 drop dir)"
+  echo "$INV" | grep -q 'effects/resonode/resonode\.lv2' && ok "apkovl: Resonode LV2 present" \
+    || echo "  WARN apkovl has NO Resonode LV2 (layout-only build — set RESONODE_LV2_DIR; fx/resonode/engaged becomes a silent no-op on device)"
 
   echo "[validate] boot-lint: runtime path references -> apkovl contents"
   LINT="$(mktemp -d)"; tar -xzf "$APKOVL_PATH" -C "$LINT" 2>/dev/null || true

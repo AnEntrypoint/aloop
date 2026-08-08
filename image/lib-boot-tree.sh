@@ -107,7 +107,7 @@ boot_tree_apkovl() {
   _work="$1"; _boot="$2"
   OVL="$_work/ovl"
   mkdir -p "$OVL/etc/local.d" "$OVL/etc/runlevels/boot" "$OVL/etc/runlevels/default" \
-           "$OVL/etc/init.d" "$OVL/opt/aloop" "$OVL/effects/home" "$OVL/effects/user"
+           "$OVL/etc/init.d" "$OVL/opt/aloop" "$OVL/effects/home" "$OVL/effects/user" "$OVL/effects/resonode"
 
   touch "$OVL/etc/.default_boot_services"
 
@@ -157,10 +157,16 @@ boot_tree_apkovl() {
     echo "[boot-tree] WARNING: no ALOOP_BIN — boot tree has no aloop binary"
   fi
   if [ -n "${LV2_DIR:-}" ] && [ -d "${LV2_DIR}" ]; then
-    find "${LV2_DIR}" -maxdepth 2 -name '*.lv2' ! -name 'aloop.lv2' -exec cp -r {} "$OVL/effects/home/" \;
+    find "${LV2_DIR}" -maxdepth 2 -name '*.lv2' ! -name 'aloop.lv2' ! -name 'resonode.lv2' -exec cp -r {} "$OVL/effects/home/" \;
     echo "[boot-tree] laid in home-FX LV2: $(ls "$OVL/effects/home")"
   else
     echo "[boot-tree] WARNING: no LV2_DIR — boot tree has no home-FX effects bundle"
+  fi
+  if [ -n "${RESONODE_LV2_DIR:-}" ] && [ -d "${RESONODE_LV2_DIR}" ]; then
+    find "${RESONODE_LV2_DIR}" -maxdepth 2 -name 'resonode.lv2' -exec cp -r {} "$OVL/effects/resonode/" \;
+    echo "[boot-tree] laid in Resonode LV2: $(ls "$OVL/effects/resonode")"
+  else
+    echo "[boot-tree] WARNING: no RESONODE_LV2_DIR — boot tree has no Resonode bundle, fx/resonode/engaged will be a silent no-op"
   fi
 
   cat > "$OVL/etc/init.d/aloop" <<'SVC'
