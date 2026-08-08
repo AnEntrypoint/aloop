@@ -1529,82 +1529,66 @@ never reaches the ARM/FINISH dispatch — it does not touch
 hold gesture. The sidechain-source designation auto-clears whenever that looper's
 content is wiped (long-hold erase or CLEAR_ALL).
 
-## LofiFx/granulator button: two dual-mode gestures, latch-on-press granulator vs real-hold Resonode-synth
+## LofiFx/granulator button: Shift disambiguates granulator-tap vs Resonode-tap
 
-The LofiFx/granulator button (`kApcBtnLofiFx`, note 69) disambiguates the two
-gestures via `kGranulatorTapMs` (1000ms), `ApcGrid::m_granulatorPressAt`
-stamped in `onLofiFxPress`. Every press always switches the active bank to
-LofiFx and flips `m_granulatorLatched` immediately on the press edge (not on
-release) — what differs is what happens if the press continues:
+The LofiFx/granulator button (`kApcBtnLofiFx`, note 69) disambiguates its two
+gestures via the SHIFT modifier (`ApcGrid::m_shift`, set/cleared by
+`onShiftPress`/`onShiftRelease`), not a hold-duration timer. A previous
+1000ms-hold design (`kGranulatorTapMs`, `pollHolds` polling for the threshold)
+was WITNESSED unreliable on real APC Key25 hardware — the user reported
+Resonode never actually engaged, the device "stayed on dub fx controls" the
+whole session. Both gestures now fire on the PRESS edge, instantly, matching
+every other instant gesture in this file (ARM/FINISH, bank-select) — no
+hold-duration timing anywhere in this path:
 
-- **The press itself**: `onLofiFxPress` toggles `m_granulatorLatched` and
-  calls `setGranulatorEnabled(m_granulatorLatched)` in the same call, so the
-  grain engine's on/off state lands instantly, in perceived real time, rather
-  than waiting for release to classify tap-vs-hold. This is "pressing
-  latches the granulator" — a press makes the grain engine a persistent,
-  backgrounded part of the sound (playing with whatever patch blend is
-  currently dialed in) exactly like pressing play on a texture, independent
-  of whether the knobs are being touched or whether the press turns into a
-  hold. A second press toggles it back off. On release the bank reverts to
-  whatever was active before the press; `setGranulatorEnabled` is re-applied
-  from `m_granulatorLatched` so a Resonode hold's forced disable (below) is
-  correctly undone.
-- **Real hold (still held at 1000ms)**: `pollHolds` detects the press crossing
-  `kGranulatorTapMs` while `m_granulatorHeld` is still true, sets
-  `m_resonodeEngaged = true`, and disables the granulator preview
-  (`setGranulatorEnabled(false)`) — the LofiFx button's second gesture is no
-  longer a granulator-morph dial surface, it SWITCHES the instrument entirely
-  to `effects/home/faust/resonode_synth.dsp`, a 4-voice, 6-mode-per-voice
-  modal-resonator synth (architecture ported from DawDreamer's own
-  `examples/resonaut/resonaut.py`, an independent from-scratch modal-resonator
-  instrument already living in the sibling DawDreamer repo — see that file's
-  own header for the mode-bank/exciter design it mirrors; Resonaut's
-  3-object/8-mode/8-voice offline design is reduced to a single fixed
-  STRING-like object at 4 voices x 6 modes to fit the Pi 4's real-time
-  budget, verified against DawDreamer's real libfaust JIT before shipping).
-  While engaged: the keybed (`onKeybedNoteOn`/`Off`) drives the 4 Resonode
-  voices (`allocateResonodeVoice`/`releaseResonodeVoice`, oldest-steal
-  allocator identical in shape to `allocateTransposeVoice`) via
-  `fx/resonodevoice{v}/note`, `fx/resonodevoice{v}/gate`, and
-  `fx/resonodevoice{v}/vel` signal inputs instead of the transpose/Sampler
-  routing — `vel` (real MIDI velocity, `onKeybedNoteOn`'s existing parameter)
-  scales that voice's exciter gain, so a harder key press rings out louder.
-  Knob slots 1-6 drive Resonode's own controls instead of the granulator
-  patch blend below: slots 1-4 are named-patch blend weights
-  (`applyResonodePatchMorph`/`kResonodePatches` — Percussive, Metal/Glass,
-  Strings, Dance Bass; see "Resonode named sweetspot patches" below), slots
-  5-6 are direct performative dials (`applyResonodeDirectKnob`/
-  `kResonodeDirectKnobRanges`: tone brightness, level — Faust zones
-  `fx/resonode/*`). Releasing the button releases every Resonode voice
-  (`releaseAllResonodeVoices`) and reverts the bank; `onClearAll` also releases
-  all Resonode voices (mirroring the existing transpose-voice release there),
-  since a stuck `fx/resonodevoice{v}/gate` would be the same class of bug
-  AGENTS.md's "every momentary Faust gate must be explicitly released" entry
-  warns about.
+- **Plain tap (Shift not held)**: `onLofiFxPress` toggles `m_granulatorLatched`
+  and calls `setGranulatorEnabled(m_granulatorLatched)` in the same call, so
+  the grain engine's on/off state lands instantly. This is "pressing latches
+  the granulator" — a press makes the grain engine a persistent, backgrounded
+  part of the sound (playing with whatever patch blend is currently dialed
+  in). A second plain tap toggles it back off.
+- **Shift+tap**: `onLofiFxPress` calls `toggleResonodeEngage`, which flips
+  `m_resonodeLatched`/`m_resonodeEngaged`, writes `fx/resonode/engaged` to the
+  ParamStore (the same flag `audio_thread.cpp`'s worker loop reads each block
+  to decide whether to call `resonodeFx.process()` at all — see "Resonode is a
+  separate, conditionally-called LV2 bundle" below), and forces the granulator
+  latch off if it was on (mirroring the old hold-gesture's behavior: engaging
+  Resonode always wins over a backgrounded granulator). Disengaging releases
+  every held Resonode voice via `releaseAllResonodeVoices`.
 
-Every press toggles `m_granulatorLatched` at its own onset, including the
-press that goes on to cross the 1000ms hold threshold — pressing-and-holding
-the button both flips the background granulator latch instantly AND, if held
-past 1s, additionally engages Resonode over whatever that flip just produced.
-A latch-on from an earlier, separate press plus a later real hold is still a
-legitimate combo: the granulator stays audible in the background (from the
-earlier latch) while the hold plays the Resonode synth over it, and once
-released, playback returns to whatever the latch was last left on (including
-by the hold-press's own toggle). LED feedback on the button itself
-(`apc_leds.h`): blinking red once Resonode is actually engaged, blinking green
-while still in the pre-threshold granulator-preview window, solid green while
-latched-on in the background, off otherwise — pulled out of the shared
-dub-fx/guitar-fx bank-select flash block since this button now carries
-persistent state, not just a transient selection flash.
+Every press still switches the active knob bank to LofiFx for as long as the
+button is held (`m_bankBeforeGranulatorHold` restores the prior bank on
+release) — this part is unchanged from the old design. While Resonode is
+engaged, the keybed (`onKeybedNoteOn`/`Off`) drives the 4 Resonode voices
+(`allocateResonodeVoice`/`releaseResonodeVoice`, oldest-steal allocator
+identical in shape to `allocateTransposeVoice`) via `Lv2Host::setControl`
+pushes to `fx/resonodevoice{v}/note`, `fx/resonodevoice{v}/gate`, and
+`fx/resonodevoice{v}/vel` LV2 control ports — `vel` (real MIDI velocity,
+`onKeybedNoteOn`'s existing parameter) scales that voice's exciter gain, so a
+harder key press rings out louder. Knob slots 1-6 drive Resonode's own
+controls instead of the granulator patch blend below: slots 1-4 are
+named-patch blend weights (`applyResonodePatchMorph`/`kResonodePatches` —
+Percussive, Metal/Glass, Strings, Dance Bass; see "Resonode named sweetspot
+patches" below), slots 5-6 are direct performative dials
+(`applyResonodeDirectKnob`/`kResonodeDirectKnobRanges`: tone brightness,
+level — Faust zones `fx/resonode/*`). `onClearAll` also releases all Resonode
+voices (mirroring the existing transpose-voice release there), since a stuck
+`fx/resonodevoice{v}/gate` would be the same class of bug AGENTS.md's "every
+momentary Faust gate must be explicitly released" entry warns about.
 
-Resonode is wired into the ALWAYS-ON home Faust stack (Core 1, `dsp/aloop.dsp`
-via `effects_runtime.dsp`), the same signal-input convention
-`multitranspose.dsp` uses for its own per-voice note/gate state (see "Faust
-has no runtime branching" / `par()`-replicated-controls entries above). Like
-`multitranspose.dsp`'s 6 voices, the 4 Resonode voices are computed every block
-whether or not the button is ever held — this is the established, accepted
-cost model in this codebase (Faust has no in-DSP way to skip a stage's cost
-conditionally), not a regression to fix.
+LED feedback on the button itself (`apc_leds.h`): blinking red while Resonode
+is engaged, solid green while the granulator is latched-on, off otherwise —
+no intermediate "pending hold" blink state anymore, since there is no more
+hold window to represent.
+
+Resonode is a SEPARATE, cost-gated LV2 bundle (`resonode.lv2`), not part of
+the always-on home Faust stack — see "Resonode is a separate,
+conditionally-called LV2 bundle" below for the full architecture and the
+real-hardware RT-budget regression that motivated pulling it out. The 4
+Resonode voices are only computed when engaged, unlike `multitranspose.dsp`'s
+6 always-on voices — Resonode's own DSP graph is genuinely skipped at the C++
+call site when `fx/resonode/engaged` is false, not merely crossfaded out
+inside a Faust program that keeps paying its cost.
 
 **Resonode is a real-input-excited resonator ("reactor mode"), not a
 self-contained synth voice, and must REPLACE dry, never layer over it.**
