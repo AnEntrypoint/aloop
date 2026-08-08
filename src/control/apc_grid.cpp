@@ -476,6 +476,7 @@ void ApcGrid::onClearAll(bool held, ParamStore& ps, LinkBridge* link) {
         m_resonodeLatched = false;
         m_resonodeEngaged = false;
         ps.setByName("fx/resonode/engaged", 0.0f);
+        if (!m_granulatorHeld) m_activeBank = m_bankBeforeGranulatorHold;
     }
     publishTransport(link);
 }
@@ -810,7 +811,7 @@ void ApcGrid::toggleResonodeEngage(ParamStore& ps, AudioThread* audio) {
 
 void ApcGrid::onLofiFxPress(unsigned now_ms, ParamStore& ps, Sampler* sampler, AudioThread* audio) {
     if (m_granulatorHeld) return;
-    m_bankBeforeGranulatorHold = m_activeBank;
+    if (!m_resonodeEngaged) m_bankBeforeGranulatorHold = m_activeBank;
     m_activeBank = FxBank::LofiFx;
     m_bankFlashWhich = FxBank::LofiFx;
     m_bankFlashReleaseAt = nonZeroDeadline(now_ms, kBankFlashMs);
@@ -824,7 +825,7 @@ void ApcGrid::onLofiFxPress(unsigned now_ms, ParamStore& ps, Sampler* sampler, A
 }
 void ApcGrid::onLofiFxRelease(unsigned, ParamStore&, Sampler*) {
     m_granulatorHeld = false;
-    m_activeBank = m_bankBeforeGranulatorHold;
+    if (!m_resonodeEngaged) m_activeBank = m_bankBeforeGranulatorHold;
 }
 void ApcGrid::onGuitarFxPress(unsigned now_ms, ParamStore&) {
     m_activeBank = FxBank::Guitar;
