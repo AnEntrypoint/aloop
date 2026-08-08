@@ -1588,10 +1588,29 @@ hold-duration timing anywhere in this path:
   Resonode always wins over a backgrounded granulator). Disengaging releases
   every held Resonode voice via `releaseAllResonodeVoices`.
 
-Every press still switches the active knob bank to LofiFx for as long as the
-button is held (`m_bankBeforeGranulatorHold` restores the prior bank on
-release) — this part is unchanged from the old design. While Resonode is
-engaged, the keybed (`onKeybedNoteOn`/`Off`) drives the 4 Resonode voices
+Every press switches the active knob bank to LofiFx, but the bank ONLY
+reverts to whatever was active before if Resonode is not engaged
+(`onLofiFxRelease` checks `!m_resonodeEngaged` before restoring
+`m_bankBeforeGranulatorHold`). WITNESSED real-hardware regression from the
+shift-tap gesture change itself: the OLD hold-based design left the bank on
+LofiFx for as long as the button was physically held down, so a real hold
+naturally kept the knobs reachable while a player also turned them (or the
+hold simply outlasted the knob adjustment). Once Resonode's engage became a
+plain tap, the button released almost instantly and `onLofiFxRelease`
+unconditionally reverted the bank BEFORE the player had any chance to touch
+a knob — the knobs stopped controlling Resonode entirely, even though it was
+now audible. `m_bankBeforeGranulatorHold` is also only captured on the FIRST
+press while not yet engaged (`if (!m_resonodeEngaged) m_bankBeforeGranulatorHold
+= m_activeBank`), not overwritten by every subsequent press while Resonode
+stays engaged — otherwise the SECOND press (the one that disengages) would
+capture `LofiFx` itself as "the bank to restore," stranding the bank on
+LofiFx forever after disengaging instead of returning to whatever was active
+before Resonode was ever touched. `onClearAll`'s own Resonode-disengage path
+(a separate write to `m_resonodeEngaged`/`m_resonodeLatched`, bypassing
+`onLofiFxRelease` entirely) needs the identical bank-restore call, guarded by
+`!m_granulatorHeld` so it doesn't clobber an in-progress button press.
+
+While Resonode is engaged, the keybed (`onKeybedNoteOn`/`Off`) drives the 4 Resonode voices
 (`allocateResonodeVoice`/`releaseResonodeVoice`, oldest-steal allocator
 identical in shape to `allocateTransposeVoice`) via `Lv2Host::setControl`
 pushes to `fx/resonodevoice{v}/note`, `fx/resonodevoice{v}/gate`, and
