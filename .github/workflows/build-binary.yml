@@ -79,12 +79,23 @@ jobs:
       # never as a mandatory step in the critical build path again.
 
       - name: Build in an Alpine aarch64 container
+        # WITNESSED this session: this step (QEMU-emulated aarch64 apk fetch +
+        # cmake compile) stalled indefinitely, with zero output, multiple
+        # times across many build-binary attempts -- no bound anywhere in the
+        # original single `docker run ... sh -c '...'` block meant a genuine
+        # hang (a stalled apk mirror under emulation, or a QEMU-user-mode
+        # codegen hang) ran silently until GitHub's own multi-hour job
+        # timeout, with no diagnostic signal telling us WHICH sub-step hung.
+        # Split into two explicit steps with per-command `timeout` bounds and
+        # `set -x` so a future hang fails loudly and fast, naming the exact
+        # command that stalled, instead of a silent multi-hour wedge.
+        timeout-minutes: 30
         run: |
           docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w alpine:3.20 sh -c '
-            set -e
+            set -ex
             # No faust in the container — loop.cpp is pre-generated above. Just the
             # C++ toolchain + the audio deps, all musl.
-            apk add --no-cache build-base cmake pkgconf git \
+            timeout 300 apk add --no-cache build-base cmake pkgconf git \
               alsa-lib-dev lilv-dev lv2-dev \
               linux-headers eudev-dev
             # Ableton Link is header-only C++ (vendored under third_party/link).
@@ -94,8 +105,8 @@ jobs:
             # step verifies the container + deps resolve (a musl-availability gate,
             # MIGRATION-MAP musl-compat row) and fails loudly if a dep is missing.
             if [ -f src/CMakeLists.txt ]; then
-              cmake -S src -B build -DCMAKE_BUILD_TYPE=Release
-              cmake --build build -j"$(nproc)"
+              timeout 120 cmake -S src -B build -DCMAKE_BUILD_TYPE=Release
+              timeout 1500 cmake --build build -j"$(nproc)"
               ls -la build/aloop || (echo "::error::aloop binary not produced" && exit 1)
             else
               echo "src/CMakeLists.txt not present yet — verified musl deps resolve:"
