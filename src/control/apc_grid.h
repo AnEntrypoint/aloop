@@ -86,9 +86,8 @@ public:
     void onFormantCC(uint8_t data2, ParamStore& ps);
 
     void onDubFxPress(unsigned now_ms, ParamStore& ps);
-    void onLofiFxPress(unsigned now_ms, ParamStore& ps, Sampler* sampler);
+    void onLofiFxPress(unsigned now_ms, ParamStore& ps, Sampler* sampler, class AudioThread* audio = nullptr);
     void onLofiFxRelease(unsigned now_ms, ParamStore& ps, Sampler* sampler);
-    bool granulatorHeld() const { return m_granulatorHeld; }
     bool granulatorLatched() const { return m_granulatorLatched; }
     bool resonodeEngaged() const { return m_resonodeEngaged; }
     bool resonodeLatched() const { return m_resonodeLatched; }
@@ -157,14 +156,11 @@ private:
 
     bool m_granulatorHeld = false;
     bool m_granulatorLatched = false;
-    unsigned m_granulatorPressAt = 0;
-    static constexpr unsigned kGranulatorTapMs = 1000;
     FxBank m_bankBeforeGranulatorHold = FxBank::Dub;
     void applyGranulatorMorph(Sampler* sampler);
 
     bool m_resonodeEngaged = false;
     bool m_resonodeLatched = false;
-    bool m_resonodeHoldFiredThisPress = false;
     int m_resonodeVoiceNote[kResonodeVoices] = {-1, -1, -1, -1};
     uint32_t m_resonodeVoiceOrder[kResonodeVoices] = {};
     uint32_t m_resonodeVoiceCounter = 0;
@@ -172,6 +168,7 @@ private:
     void releaseResonodeVoice(int note, ParamStore& ps);
     void releaseAllResonodeVoices(ParamStore& ps);
     void applyResonodePatchMorph(ParamStore& ps);
+    void toggleResonodeEngage(ParamStore& ps, AudioThread* audio);
 
     bool m_guitarFxHeld = false;
     bool m_guitarFxConsumedByLooperPress = false;

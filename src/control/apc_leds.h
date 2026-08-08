@@ -59,7 +59,6 @@ public:
         }
         sendCoalesced(kApcBtnLofiFx,
             grid.resonodeEngaged()   ? kLedRedBlink :
-            grid.granulatorHeld()    ? kLedGreenBlink :
             grid.granulatorLatched() ? kLedGreen :
                                         kLedOff,
             write);

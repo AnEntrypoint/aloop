@@ -306,17 +306,6 @@ void ApcGrid::pollHolds(unsigned now_ms, ParamStore& ps, LinkBridge* link, Audio
     if (m_bankFlashReleaseAt != 0 && now_ms >= m_bankFlashReleaseAt) {
         m_bankFlashReleaseAt = 0;
     }
-    if (m_granulatorHeld && !m_resonodeHoldFiredThisPress && now_ms - m_granulatorPressAt >= kGranulatorTapMs) {
-        m_resonodeHoldFiredThisPress = true;
-        m_resonodeLatched = !m_resonodeLatched;
-        m_resonodeEngaged = m_resonodeLatched;
-        ps.setByName("fx/resonode/engaged", m_resonodeLatched ? 1.0f : 0.0f);
-        if (!m_resonodeLatched) releaseAllResonodeVoices(ps);
-        if (m_granulatorLatched) {
-            m_granulatorLatched = false;
-            if (audio && audio->sampler()) audio->sampler()->setGranulatorEnabled(false);
-        }
-    }
     for (int looper = 0; looper < kLooperCount; looper++) {
         if (m_looperFinishTargetPending[looper] <= 0.0f) continue;
         bool reached;
@@ -807,27 +796,35 @@ void ApcGrid::onDubFxPress(unsigned now_ms, ParamStore&) {
     m_bankFlashWhich = FxBank::Dub;
     m_bankFlashReleaseAt = nonZeroDeadline(now_ms, kBankFlashMs);
 }
-void ApcGrid::onLofiFxPress(unsigned now_ms, ParamStore&, Sampler*) {
+
+void ApcGrid::toggleResonodeEngage(ParamStore& ps, AudioThread* audio) {
+    m_resonodeLatched = !m_resonodeLatched;
+    m_resonodeEngaged = m_resonodeLatched;
+    ps.setByName("fx/resonode/engaged", m_resonodeLatched ? 1.0f : 0.0f);
+    if (!m_resonodeLatched) releaseAllResonodeVoices(ps);
+    if (m_granulatorLatched) {
+        m_granulatorLatched = false;
+        if (audio && audio->sampler()) audio->sampler()->setGranulatorEnabled(false);
+    }
+}
+
+void ApcGrid::onLofiFxPress(unsigned now_ms, ParamStore& ps, Sampler* sampler, AudioThread* audio) {
     if (m_granulatorHeld) return;
     m_bankBeforeGranulatorHold = m_activeBank;
     m_activeBank = FxBank::LofiFx;
     m_bankFlashWhich = FxBank::LofiFx;
     m_bankFlashReleaseAt = nonZeroDeadline(now_ms, kBankFlashMs);
     m_granulatorHeld = true;
-    m_granulatorPressAt = now_ms;
-    m_resonodeHoldFiredThisPress = false;
-    m_resonodeEngaged = m_resonodeLatched;
-}
-void ApcGrid::onLofiFxRelease(unsigned now_ms, ParamStore& ps, Sampler* sampler) {
-    bool wasTap = !m_resonodeHoldFiredThisPress && (now_ms - m_granulatorPressAt) < kGranulatorTapMs;
-    if (wasTap) {
+    if (m_shift) {
+        toggleResonodeEngage(ps, audio);
+    } else {
         m_granulatorLatched = !m_granulatorLatched;
         if (sampler) sampler->setGranulatorEnabled(m_granulatorLatched);
     }
+}
+void ApcGrid::onLofiFxRelease(unsigned, ParamStore&, Sampler*) {
     m_granulatorHeld = false;
-    m_resonodeEngaged = m_resonodeLatched;
     m_activeBank = m_bankBeforeGranulatorHold;
-    if (sampler) sampler->setGranulatorEnabled(m_granulatorLatched);
 }
 void ApcGrid::onGuitarFxPress(unsigned now_ms, ParamStore&) {
     m_activeBank = FxBank::Guitar;

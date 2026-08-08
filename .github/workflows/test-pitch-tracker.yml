@@ -1,0 +1,25 @@
+name: test-pitch-tracker
+
+on:
+  push:
+    paths:
+      - 'effects/home/faust/multitranspose.dsp'
+      - 'test/pitch-tracker-highoctave/**'
+      - '.github/workflows/test-pitch-tracker.yml'
+  workflow_dispatch:
+
+jobs:
+  highoctave-transient:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Faust + Python DawDreamer deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y faust
+          pip install --upgrade pip
+          pip install dawdreamer numpy
+
+      - name: Run high-octave transient pitch-tracker check
+        run: python3 test/pitch-tracker-highoctave/verify_highoctave_transient.py
