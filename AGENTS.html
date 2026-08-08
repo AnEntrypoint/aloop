@@ -20,7 +20,7 @@
 {"@context":"https://schema.org","@type":"WebPage","headline":"aloop — technical constraints reference","url":"https://anentrypoint.github.io/mc-420/AGENTS.html"}</script>
 <!-- End Jekyll SEO tag -->
 
-    <link rel="stylesheet" href="/mc-420/assets/css/style.css?v=bda576d52bdc0d1f622a395b06bd0052819b95ad">
+    <link rel="stylesheet" href="/mc-420/assets/css/style.css?v=c4fc83ccd68c5516b4bb4258a0a67dbbbdccb73d">
     <!--[if lt IE 9]>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv.min.js"></script>
     <![endif]-->
@@ -1391,6 +1391,60 @@ block — into a standalone LV2 bundle purely as a CI reproducibility/packaging 
 (ADR-003). Deployed and loaded alongside `guitar_lofi_fx.lv2` it runs the whole home
 stack a second time: `core_busy` jumps from ~23-30% to ~63-65% with xruns climbing
 continuously. `image/lib-boot-tree.sh`'s copy step excludes it by name.
+
+## Resonode is a separate, conditionally-called LV2 bundle, not part of the always-on home stack
+
+`effects/home/faust/resonode_synth.dsp` used to live inside `effects_runtime.dsp`
+(the always-on Core-1 Faust program) as a `component()`, driven by per-voice
+note/gate/vel Faust *signal inputs*. WITNESSED real-hardware regression: even a
+reduced 4-voice x 2-mode shape produced a sustained ~2ms `readi` gap (vs the
+1.333ms block budget) with Resonode fully idle/unengaged — Faust has no runtime
+branching to skip a stage's cost (see "Faust has no runtime branching" above),
+so the whole mode bank computed every block regardless of whether the LofiFx
+hold-gesture had ever engaged it.
+
+Fixed by pulling it out entirely into its own standalone LV2 bundle
+(`resonode.lv2`, `build-lv2.yml`'s `resonode-lv2` job, mirroring
+`guitar-lofi-fx-lv2`'s own build exactly), loaded via a DEDICATED
+`Lv2Host resonodeFx` in `audio_thread.cpp` from `AudioConfig::resonodeDir`
+(`/effects/resonode`, never `homeDir`/`userDir` — `lib-boot-tree.sh`'s home-FX
+`find` explicitly excludes `resonode.lv2` by name so the general
+`homeFx`/`userFx` hosts never load it). `resonodeFx.process()` is only ever
+called when `fx/resonode/engaged` reads true — the genuine cost elimination
+this whole change was for, verifiable at the C++ call site rather than trusted
+to a Faust-side crossfade.
+
+**Per-voice note/gate/vel became LV2 control ports (`hslider`), not signal
+inputs.** They were already only ever updated once per control-tick from
+`ApcGrid`'s MIDI note-on/off handlers, never per-sample, so this is a lossless
+representation change — pushed via `Lv2Host::setControl`, matching
+`guitar_lofi_fx.dsp`'s own control-port convention for every other LV2-hosted
+control in this codebase. `effects_runtime.dsp`'s `process()` now takes a
+single audio-rate `resonodeIn` signal input instead of the old
+`on0,og0,ov0, on1,og1,ov1, on2,og2,ov2, on3,og3,ov3` twelve-wire bundle —
+`audio_thread.cpp` fills it from `resonodeFx.process()`'s own output when
+engaged, or zeros it when not (the existing `resonodeEngageGate` crossfade in
+`effects_runtime.dsp` is unchanged, it just reads from a C++-fed buffer now
+instead of an in-Faust component call).
+
+**Signal-flow order was corrected at the same time**: guitar/lofi-fx
+(`homeFx`/`userFx`) now run as an INPUT stage — on `fin`, before
+`faustHome.compute()` — rather than at the very output on `fout` after the
+whole dubfx chain. This means guitar/lofi-fx color what dubfx's own
+pitch/harmony/filter/delay/reverb stages receive, not the finished mix.
+Resonode's exciter is fed from that SAME post-guitar/lofi-fx signal (so its
+excitation is colored by guitar/lofi-fx too), and its output re-enters
+`effects_runtime.dsp`'s existing crossfade BEFORE `microStage:filterStage:
+delayStage:reverbStage`, so engaging Resonode still passes through dubfx's
+downstream filter/delay/reverb — it was never meant to bypass the home chain
+entirely, only replace the dry/pitch-lock/harmony term feeding into it.
+
+`kResonodeVoices` in `src/control/apc_grid.h` (still 4, driving voice
+allocation/stealing and the `fx/resonodevoice{v}/*` ParamStore binds) must stay
+in sync with `resonode_synth.dsp`'s real declared voice count by hand, same as
+before — nothing ties a Faust `.dsp` file's voice count to a C++ constant at
+compile time. `audio_thread.cpp` no longer needs its own copy of this constant
+at all (removed) since it no longer threads per-voice buffers through `fins[]`.
 
 ## Tracktion Engine was evaluated and REJECTED — do not re-open without new evidence
 
