@@ -165,7 +165,7 @@ private:
     bool m_resonodeEngaged = false;
     bool m_resonodeLatched = false;
     bool m_resonodeHoldFiredThisPress = false;
-    int m_resonodeVoiceNote[kResonodeVoices] = {-1, -1, -1, -1};
+    int m_resonodeVoiceNote[kResonodeVoices] = {-1, -1};
     uint32_t m_resonodeVoiceOrder[kResonodeVoices] = {};
     uint32_t m_resonodeVoiceCounter = 0;
     int allocateResonodeVoice(int note);
